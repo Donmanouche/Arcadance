@@ -1,0 +1,194 @@
+{
+    "axis_invert": {
+         "1": true,
+         "4": true
+    },
+    "mappings": {
+        "axis": {
+            "0": {
+                "midi_type": "cc",
+                "midi_id": 40,
+                "mode": "momentary",
+                "cc_min": 0,
+                "cc_max": 127
+            },
+            "1": {
+                "midi_type": "cc",
+                "midi_id": 41,
+                "mode": "momentary",
+                "cc_min": 0,
+                "cc_max": 127
+            },
+            "3": {
+                "midi_type": "cc",
+                "midi_id": 42,
+                "mode": "momentary",
+                "cc_min": 0,
+                "cc_max": 127
+            },
+            "2": {
+                "midi_type": "cc",
+                "midi_id": 50,
+                "mode": "momentary",
+                "cc_min": 0,
+                "cc_max": 127
+            },
+            "5": {
+                "midi_type": "cc",
+                "midi_id": 51,
+                "mode": "momentary",
+                "cc_min": 0,
+                "cc_max": 127
+            },
+            "4": {
+                "midi_type": "cc",
+                "midi_id": 43,
+                "mode": "momentary",
+                "cc_min": 0,
+                "cc_max": 127
+            }
+        },
+        "button": {
+            "0": {
+                "midi_type": "note",
+                "midi_id": 48,
+                "mode": "toggle"
+            },
+            "1": {
+                "midi_type": "note",
+                "midi_id": 51,
+                "mode": "toggle"
+            },
+            "2": {
+                "midi_type": "note",
+                "midi_id": 55,
+                "mode": "toggle"
+            },
+            "3": {
+                "midi_type": "note",
+                "midi_id": 58,
+                "mode": "toggle"
+            },
+            "4": {
+                "midi_type": "cc",
+                "midi_id": 52,
+                "mode": "toggle"
+            },
+               "5": {
+                "midi_type": "cc",
+                "midi_id": 53,
+                "mode": "toggle"
+            },
+            "6": {
+                "midi_type": "note",
+                "midi_id": 63,
+                "mode": "momentary"
+            },
+            "7": {
+                "midi_type": "note",
+                "midi_id": 50,
+                "mode": "momentary"
+            },
+            "8": {
+                "midi_type": "channel",
+                "midi_id": -1,
+                "mode": "momentary"
+            },
+            "9": {
+                "midi_type": "channel",
+                "midi_id": 1,
+                "mode": "momentary"
+            },
+            "12": {
+                "midi_type": "freeze",
+                "midi_id": 1,
+                "freeze_axis": [3, 4],
+                "mode": "momentary"
+            },
+            "11": {
+                "midi_type": "freeze",
+                "midi_id": 0,
+                "freeze_axis": [0, 1],
+                "mode": "momentary"
+            }
+        },
+        "hat": {
+            "0": {
+                "up": {
+                   "midi_type": "chord",
+                    "midi_id": "Ebmaj11",
+                    "mode": "toggle"
+                },
+                "down": {
+                    "midi_type": "cc",
+                    "midi_id": 45,
+                    "cc_value": 127
+                },
+                "left": {
+                    "midi_type": "chord",
+                    "midi_id": "Cm",
+                    "mode": "toggle"
+                },
+                "right": {
+                     "midi_type": "chord",
+                    "midi_id": "Fm7",
+                    "mode": "toggle"
+                },
+                "up_right": {
+                    "midi_type": "cc",
+                    "midi_id": 46,
+                    "cc_value": 127
+                },
+                "down_right": {
+                    "midi_type": "cc",
+                    "midi_id": 47,
+                    "cc_value": 64
+                },
+                "down_left": {
+                    "midi_type": "note",
+                    "midi_id": 62,
+                    "velocity": 100
+                },
+                "up_left": {
+                    "midi_type": "cc",
+                    "midi_id": 44,
+                    "cc_value": 127
+                }
+            }
+        },
+        "touchpad": {
+            "1": {
+                "x": {
+                    "midi_type": "cc",
+                    "midi_id": 60,
+                    "mode": "momentary",
+                    "cc_min": 0,
+                    "cc_max": 127
+                },
+                "y": {
+                    "midi_type": "cc",
+                    "midi_id": 61,
+                    "mode": "momentary",
+                    "cc_min": 0,
+                    "cc_max": 127
+                }
+            },
+            "2": {
+                "x": {
+                    "midi_type": "cc",
+                    "midi_id": 62,
+                    "mode": "momentary",
+                    "cc_min": 0,
+                    "cc_max": 127
+                },
+                "y": {
+                    "midi_type": "cc",
+                    "midi_id": 63,
+                    "mode": "momentary",
+                    "cc_min": 0,
+                    "cc_max": 127
+                }
+            }
+        }
+    }
+}
