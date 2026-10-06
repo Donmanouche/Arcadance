@@ -20,6 +20,8 @@ class EngineObserver {
 public:
     virtual ~EngineObserver() = default;
     virtual void channelChanged(int /*channel*/) {}
+    // One bit per Axis that is now frozen on `channel`.
+    virtual void freezeChanged(int /*channel*/, std::uint8_t /*frozenAxes*/) {}
 };
 
 // Turns controller events into MIDI according to the active preset.
@@ -51,6 +53,8 @@ public:
 
     // Turns off every note and CC still on, latched or held.
     void releaseAll();
+    // releaseAll(), and forgets which controls are held: for a disconnected controller.
+    void reset();
 
     bool isFrozen(Axis axis) const;
 

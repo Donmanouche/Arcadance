@@ -216,6 +216,11 @@ TEST_CASE_FIXTURE(Fixture, "sticks send scaled CCs without repeating values") {
 }
 
 TEST_CASE_FIXTURE(Fixture, "freeze holds the current value of its axes") {
+    struct FreezeLog : EngineObserver {
+        std::vector<int> masks;
+        void freezeChanged(int, std::uint8_t axes) override { masks.push_back(axes); }
+    } observer;
+    engine.setObserver(&observer);
     Preset p;
     p.base.axes[static_cast<std::size_t>(Axis::LeftX)] = axisCc(40);
     button(p, Button::LeftStick) = freeze({Axis::LeftX, Axis::LeftY});
@@ -231,6 +236,7 @@ TEST_CASE_FIXTURE(Fixture, "freeze holds the current value of its axes") {
     CHECK_FALSE(engine.isFrozen(Axis::LeftX));
     engine.axisMoved(Axis::LeftX, 0.0f);
     CHECK(sink.take() == Messages{cc(0, 40, 64)});
+    CHECK(observer.masks == std::vector{0b11, 0});
 }
 
 TEST_CASE_FIXTURE(Fixture, "triggers are both an axis and a digital button") {
@@ -331,4 +337,23 @@ TEST_CASE_FIXTURE(Fixture, "releaseAll turns off everything still sounding") {
     CHECK(std::find(sent.begin(), sent.end(), off(0, 48)) != sent.end());
     CHECK(std::find(sent.begin(), sent.end(), off(0, 50)) != sent.end());
     CHECK(std::find(sent.begin(), sent.end(), cc(0, 52, 0)) != sent.end());
+}
+
+TEST_CASE_FIXTURE(Fixture, "reset forgets held controls so a reconnected controller starts clean") {
+    Preset p;
+    button(p, Button::South) = note(48);
+    dpad(p, HatDir::Up) = note(60);
+    load(p);
+
+    engine.buttonChanged(Button::South, true);
+    engine.buttonChanged(Button::DpadUp, true);
+    sink.take();
+    engine.reset();
+    CHECK(sink.take() == Messages{off(0, 48), off(0, 60)});
+
+    engine.buttonChanged(Button::South, false);  // stale release: nothing left to stop
+    CHECK(sink.take().empty());
+    engine.buttonChanged(Button::South, true);
+    engine.buttonChanged(Button::DpadUp, true);
+    CHECK(sink.take() == Messages{on(0, 48, 100), on(0, 60, 100)});
 }

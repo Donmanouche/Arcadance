@@ -144,6 +144,15 @@ void Engine::releaseAll() {
     }
 }
 
+void Engine::reset() {
+    releaseAll();
+    pressed_.reset();
+    dpadBits_ = 0;
+    hatDir_.reset();
+    fingerZone_ = {};
+    triggerDown_ = {};
+}
+
 const TriggerBinding& Engine::bindingFor(int slot) const {
     static const TriggerBinding kUnbound;
     if (slot < kHatSlotBase)
@@ -276,6 +285,8 @@ void Engine::toggleFreeze(std::uint8_t axes) {
     auto& frozen = frozen_[static_cast<std::size_t>(channel_)];
     frozen = (frozen & axes) == axes ? static_cast<std::uint8_t>(frozen & ~axes)
                                      : static_cast<std::uint8_t>(frozen | axes);
+    if (observer_)
+        observer_->freezeChanged(channel_, frozen);
 }
 
 void Engine::updateDigitalTrigger(Axis axis, float position) {

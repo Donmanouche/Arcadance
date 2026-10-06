@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.24)
+cmake_minimum_required(VERSION 3.25)
 project(MidiPad VERSION 0.1.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
@@ -8,6 +8,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 option(MIDIPAD_BUILD_TESTS "Build the unit tests" ON)
 option(MIDIPAD_BUILD_TOOLS "Build the command-line tools" ON)
+option(MIDIPAD_BUILD_APP "Build the midipad application (needs SDL3 and RtMidi)" ON)
 
 include(cmake/Dependencies.cmake)
 
@@ -19,6 +20,10 @@ else()
 endif()
 
 add_subdirectory(src/core)
+
+if(MIDIPAD_BUILD_APP)
+    add_subdirectory(src/app)
+endif()
 
 if(MIDIPAD_BUILD_TOOLS)
     add_subdirectory(tools)

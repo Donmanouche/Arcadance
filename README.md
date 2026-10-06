@@ -9,15 +9,16 @@ La version Python de référence se trouve dans
 | Étape | Contenu | État |
 |---|---|---|
 | 1 | Moteur (logique pure), accords, format de preset, import des anciens presets, tests | fait |
-| 2 | Thread temps réel SDL3 (manette + touchpad) et RtMidi, exécutable sans interface | à faire |
+| 2 | Thread temps réel SDL3 (manette + touchpad) et RtMidi, exécutable sans interface | fait, validé sur DualSense |
 | 3 | Éditeur de mapping et gestion des presets (Dear ImGui) | à faire |
 | 4 | Écran performance animé | à faire |
 | 5 | Paquets Windows et macOS | à faire |
 
 ## Compiler
 
-Prérequis : CMake ≥ 3.24, Ninja, un compilateur C++20 (GCC 13 testé). Les
-dépendances (nlohmann/json, doctest) sont téléchargées par CMake.
+Prérequis : CMake ≥ 3.25, Ninja, un compilateur C++20 (GCC 13 testé). Les
+dépendances (nlohmann/json, doctest, SDL3, RtMidi) sont téléchargées par CMake.
+Sous Linux, il faut les en-têtes ALSA (`libasound2-dev`) ; JACK est optionnel.
 
 ```bash
 cmake --preset release
@@ -34,15 +35,58 @@ build/release/tools/midipad-import "<chemin>/Midipad-dev/configs" presets
 Chaque `<nom>.json` et ses fichiers `<nom>-<canal>.json` deviennent un seul
 preset ; les entrées non convertibles sont signalées.
 
+## Jouer
+
+```bash
+build/release/src/app/midipad presets/PS5_Test.json
+```
+
+Crée un port MIDI virtuel « MidiPad » (ALSA) à relier au DAW, et lit la
+première manette connectée (branchée avant ou après le lancement). Le preset
+est rechargé dès que son fichier est enregistré ; s'il est invalide, l'ancien
+reste actif et l'erreur est affichée.
+
+| Option | Rôle |
+|---|---|
+| `-c NOM` | envoyer vers un port existant (ex. `-c "OXI ONE"`) au lieu du port virtuel |
+| `-n NOM` | nom du port virtuel (ex. `-n "Bitwig Control"` comme la version Python) |
+| `--channel N` | canal de départ (1-16) |
+| `-m` | moniteur : affiche chaque message envoyé |
+| `-i` | affiche aussi les boutons et les changements de freeze |
+| `--stats` | temps de traitement mesurés, affichés à la sortie |
+| `--list-ports` | liste les ports MIDI de sortie |
+
+Le touchpad de la DualSense passe par `/dev/hidraw*` : la règle udev
+`/etc/udev/rules.d/70-dualsense.rules` de la version Python est nécessaire
+(elle est déjà installée sur cette machine). Sans elle, la manette fonctionne
+mais sans touchpad, et midipad le signale à la connexion.
+
+### Latence
+
+Un thread dédié lit l'état de la manette 1000 fois par seconde (`--poll-hz`),
+en priorité temps réel quand le système l'autorise, et envoie le MIDI
+directement. Mesuré sur cette machine avec une DualSense, sur une session de
+18 minutes : 21 µs de traitement par lecture en moyenne (0,5 ms au pire),
+réveil en retard de 1,6 ms au pire, aucune erreur d'envoi. La version Python attendait
+jusqu'à ~15 ms (sommeil de 5 ms + attente de 10 ms) avant de traiter un
+événement.
+
+Les événements manette de SDL sont volontairement désactivés : la boucle
+d'événements du thread principal servira à l'interface (étape 3), et
+l'animation ne doit pas retarder le MIDI.
+
 ## Architecture
 
 ```
+src/app/       midipad : lecture SDL3 (GamepadInput), sortie RtMidi (MidiOutput),
+               thread temps réel, rechargement du preset
 src/core/      bibliothèque sans dépendance système (testée)
   Engine       événements manette → messages MIDI ; aucune allocation à l'exécution
   Preset*      modèle de mapping, lecture/écriture JSON, import des anciens presets
   Chords/Notes théorie musicale
 tools/         midipad-import
-tests/         tests unitaires (doctest)
+tests/         tests unitaires (doctest), dont GamepadInput face à une
+               manette virtuelle SDL
 ```
 
 Les contrôles portent les noms de l'API gamepad de SDL3 (`south`, `left_x`,
