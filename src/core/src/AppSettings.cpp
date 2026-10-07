@@ -55,6 +55,15 @@ AppSettings loadSettings(const std::filesystem::path& file, AppSettings s) {
     read(j, "output_chosen", s.outputChosen);
     if (s.output == AppSettings::Output::ExistingPort && !s.existingPortName.empty())
         s.outputChosen = true;  // settings written before this field existed
+    int keyRoot = s.key ? s.key->root : -1;
+    std::string keyScale = s.key ? std::string(s.key->type().id) : std::string();
+    read(j, "key_root", keyRoot);
+    read(j, "key_scale", keyScale);
+    const auto scale = findScale(keyScale);
+    if (keyRoot >= 0 && keyRoot < 12 && scale)
+        s.key = Key{keyRoot, *scale};
+    else
+        s.key.reset();
     read(j, "monitor_midi", s.monitorMidi);
     read(j, "show_buttons", s.showButtons);
     readPath(j, "legacy_import_dir", s.legacyImportDir);
@@ -71,6 +80,8 @@ void saveSettings(const AppSettings& s, const std::filesystem::path& file) {
     j["virtual_port_name"] = s.virtualPortName;
     j["existing_port_name"] = s.existingPortName;
     j["output_chosen"] = s.outputChosen;
+    j["key_root"] = s.key ? s.key->root : -1;
+    j["key_scale"] = s.key ? std::string(s.key->type().id) : std::string();
     j["monitor_midi"] = s.monitorMidi;
     j["show_buttons"] = s.showButtons;
     j["legacy_import_dir"] = s.legacyImportDir.string();

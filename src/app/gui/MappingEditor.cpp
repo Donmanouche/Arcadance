@@ -144,10 +144,10 @@ void setupAxisColumns(const char* first) {
 }
 
 // A clickable cell for a grid (D-pad, touchpad zones).
-bool gridCell(const std::string& title, const TriggerBinding& b, bool selected, bool live, ImVec2 size) {
+bool gridCell(const std::string& title, const TriggerBinding& b, bool selected, bool live, ImVec2 size, bool flats) {
     if (live)
         ImGui::PushStyleColor(ImGuiCol_Header, ImGui::ColorConvertU32ToFloat4(kLiveColor));
-    const std::string text = title + "\n" + describe(b);
+    const std::string text = title + "\n" + describe(b, flats);
     const bool clicked = ImGui::Selectable(text.c_str(), selected || live, 0, size);
     if (live)
         ImGui::PopStyleColor();
@@ -182,7 +182,8 @@ bool MappingEditor::select(const std::string& spec) {
     return false;
 }
 
-bool MappingEditor::draw(Mapping& mapping, const LiveState& live, bool readOnly) {
+bool MappingEditor::draw(Mapping& mapping, const LiveState& live, bool readOnly, const std::optional<Key>& key) {
+    key_ = key;
     bool changed = false;
     const float sideWidth = std::max(ImGui::GetFontSize() * 26, ImGui::GetContentRegionAvail().x * 0.38f);
 
@@ -246,7 +247,7 @@ bool MappingEditor::drawButtons(Mapping& m, const LiveState& live) {
             selection_ = me;
         ImGui::PopID();
         ImGui::TableNextColumn();
-        ImGui::TextUnformatted(describe(m.buttons[static_cast<std::size_t>(index)]).c_str());
+        ImGui::TextUnformatted(describe(m.buttons[static_cast<std::size_t>(index)], flats()).c_str());
     }
     ImGui::EndTable();
     return false;
@@ -268,7 +269,7 @@ bool MappingEditor::drawDpad(Mapping& m, const LiveState& live) {
             const HatDir dir = *row[col];
             const Selection me{Selection::Kind::Dpad, static_cast<int>(dir)};
             ImGui::PushID(me.index);
-            if (gridCell(label(dir), m.dpad[static_cast<std::size_t>(dir)], selection_ == me, current == dir, size))
+            if (gridCell(label(dir), m.dpad[static_cast<std::size_t>(dir)], selection_ == me, current == dir, size, flats()))
                 selection_ = me;
             ImGui::PopID();
         }
@@ -372,7 +373,7 @@ bool MappingEditor::drawTouchpad(Mapping& m, const LiveState& live) {
                 const Selection me{Selection::Kind::Zone, z, f};
                 ImGui::PushID(z);
                 if (gridCell(label(zone), finger.zones[static_cast<std::size_t>(z)], selection_ == me, current == zone,
-                             cell))
+                             cell, flats()))
                     selection_ = me;
                 ImGui::PopID();
             }
@@ -462,9 +463,7 @@ bool MappingEditor::drawTriggerEditor(TriggerBinding& b) {
     case ActionType::None:
         break;
     case ActionType::Note:
-        changed |= inputU7("Note", b.number);
-        ImGui::SameLine();
-        ImGui::Text("%s", noteName(b.number).c_str());
+        changed |= drawNoteField(b.number);
         changed |= sliderU7("Vélocité", b.velocity, 1, 127);
         changed |= modeRadio(b.mode);
         break;
@@ -530,61 +529,197 @@ bool MappingEditor::drawTriggerEditor(TriggerBinding& b) {
     return changed;
 }
 
+const std::vector<KeyChord>& MappingEditor::keyChords() {
+    if (key_ != chordsFor_) {
+        chordsFor_ = key_;
+        chords_ = key_ ? chordsInKey(*key_) : std::vector<KeyChord>{};
+    }
+    return chords_;
+}
+
+bool MappingEditor::drawNoteField(std::uint8_t& note) {
+    if (!key_) {
+        const bool changed = inputU7("Note", note);
+        ImGui::SameLine();
+        ImGui::Text("%s", noteName(note).c_str());
+        return changed;
+    }
+
+    // With a tonality: only the notes of the scale, on every octave. A note
+    // outside it (from an older preset) stays listed so it is not lost.
+    bool changed = false;
+    const Key& key = *key_;
+    auto label = [&](int n) {
+        return noteName(n, flats()) + "  (" + std::to_string(n) + ")" + (inKey(key, n) ? "" : "  hors gamme");
+    };
+    auto step = [&](int direction) {
+        for (int n = note + direction; n >= 0 && n <= 127; n += direction) {
+            if (inKey(key, n)) {
+                note = static_cast<std::uint8_t>(n);
+                changed = true;
+                return;
+            }
+        }
+    };
+    if (ImGui::ArrowButton("##notedown", ImGuiDir_Left))
+        step(-1);
+    ImGui::SameLine(0, ImGui::GetStyle().ItemInnerSpacing.x);
+    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 9);
+    if (ImGui::BeginCombo("##note", label(note).c_str(), ImGuiComboFlags_HeightLarge)) {
+        if (!inKey(key, note)) {
+            ImGui::Selectable(label(note).c_str(), true);
+            ImGui::Separator();
+        }
+        for (int n = 0; n <= 127; ++n) {
+            if (!inKey(key, n))
+                continue;
+            const bool selected = n == note;
+            if (ImGui::Selectable(label(n).c_str(), selected) && !selected) {
+                note = static_cast<std::uint8_t>(n);
+                changed = true;
+            }
+            if (selected)
+                ImGui::SetItemDefaultFocus();
+        }
+        ImGui::EndCombo();
+    }
+    ImGui::SameLine(0, ImGui::GetStyle().ItemInnerSpacing.x);
+    if (ImGui::ArrowButton("##noteup", ImGuiDir_Right))
+        step(+1);
+    ImGui::SameLine();
+    ImGui::TextUnformatted("Note");
+    ImGui::SetItemTooltip("Notes de %s ; les flèches passent à la note voisine de la gamme.", keyName(key).c_str());
+    return changed;
+}
+
 bool MappingEditor::drawChordFields(TriggerBinding& b) {
     bool changed = false;
     // The text field keeps what is typed even while it is not a valid chord;
     // the binding only takes valid names.
     if (!(chordTextFor_ == selection_)) {
         chordTextFor_ = selection_;
-        if (!b.chordName.empty()) {
-            chordText_ = b.chordName;
-        } else {
-            chordText_.clear();
-        }
+        chordText_ = b.chordName;
     }
 
     auto apply = [&](const std::string& text) {
         if (auto chord = parseChord(text)) {
             b.chordName = text;
             b.chord = *chord;
+            chordText_ = text;
             changed = true;
         }
     };
 
+    // With a tonality: every chord of the scale, by degree.
+    if (key_) {
+        static constexpr const char* kDegrees[] = {"I", "II", "III", "IV", "V", "VI", "VII"};
+        const auto& chords = keyChords();
+        const auto scale = scalePitchClasses(*key_);
+        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 14);
+        const std::string preview = b.chordName.empty() ? std::string("-") : b.chordName;
+        if (ImGui::BeginCombo("Accord de la gamme", preview.c_str(), ImGuiComboFlags_HeightLargest)) {
+            int degree = -1;
+            for (const auto& chord : chords) {
+                if (chord.degree != degree) {
+                    degree = chord.degree;
+                    const std::string title = std::string(degree < 7 ? kDegrees[degree] : "") + "  " +
+                                              pitchName(scale[static_cast<std::size_t>(degree)], flats());
+                    ImGui::SeparatorText(title.c_str());
+                }
+                std::string notes;
+                for (auto n : chord.notes.view())
+                    notes += pitchName(n, flats()) + " ";
+                const std::string text = chord.name + "##" + chord.name;
+                const bool selected = chord.name == b.chordName;
+                if (ImGui::Selectable(text.c_str(), selected))
+                    apply(chord.name);
+                if (selected)
+                    ImGui::SetItemDefaultFocus();
+                ImGui::SameLine(ImGui::GetFontSize() * 7);
+                ImGui::TextDisabled("%s", notes.c_str());
+            }
+            ImGui::EndCombo();
+        }
+        ImGui::SetItemTooltip("%zu accords dont toutes les notes appartiennent à %s", chords.size(),
+                              keyName(*key_).c_str());
+    }
+
     ImGui::SetNextItemWidth(ImGui::GetFontSize() * 10);
-    if (ImGui::InputText("Accord", &chordText_))
-        apply(chordText_);
+    if (ImGui::InputText(key_ ? "Saisie libre" : "Accord", &chordText_)) {
+        if (auto chord = parseChord(chordText_)) {
+            b.chordName = chordText_;
+            b.chord = *chord;
+            changed = true;
+        }
+    }
 
     const auto typed = parseChord(chordText_);
     if (!typed && !chordText_.empty()) {
         ImGui::TextColored(kErrorColor, "Accord inconnu (l'accord précédent reste actif)");
     } else if (b.chord.count) {
         std::string notes;
-        for (auto n : b.chord.view())
-            notes += noteName(n) + " ";
+        bool outside = false;
+        for (auto n : b.chord.view()) {
+            notes += noteName(n, flats()) + " ";
+            outside |= key_ && !inKey(*key_, n);
+        }
         ImGui::Text("Notes : %s", notes.c_str());
+        if (outside)
+            ImGui::TextColored(kErrorColor, "Contient des notes hors de %s", keyName(*key_).c_str());
     }
 
-    // Builder: root + quality.
+    // Builder: root + quality, narrowed to the tonality when there is one.
     std::size_t rootLength = 0;
     const auto rootPitch = parsePitch(b.chordName, &rootLength);
-    int root = rootPitch ? ((*rootPitch % 12) + 12) % 12 : 0;
+    const int root = rootPitch ? ((*rootPitch % 12) + 12) % 12 : 0;
     const std::string quality = rootPitch ? b.chordName.substr(rootLength) : std::string();
+    std::vector<int> roots;
+    if (key_)
+        roots = scalePitchClasses(*key_);
+    else
+        for (int pc = 0; pc < 12; ++pc)
+            roots.push_back(pc);
+    const bool rootInKey = std::find(roots.begin(), roots.end(), root) != roots.end();
+    auto rootName = [&](int pc) { return key_ ? pitchName(pc, flats()) : std::string(kRoots[static_cast<std::size_t>(pc)]); };
+
+    // A root outside the scale keeps the spelling of the chord name.
+    const std::string rootPreview = rootInKey || !rootPitch ? rootName(root) : b.chordName.substr(0, rootLength);
     ImGui::SetNextItemWidth(ImGui::GetFontSize() * 5);
-    if (ImGui::Combo("Fondamentale", &root, kRoots.data(), static_cast<int>(kRoots.size()))) {
-        chordText_ = kRoots[static_cast<std::size_t>(root)] + quality;
-        apply(chordText_);
+    if (ImGui::BeginCombo("Fondamentale", rootPreview.c_str())) {
+        for (int pc : roots) {
+            if (!ImGui::Selectable(rootName(pc).c_str(), pc == root))
+                continue;
+            std::string candidate = rootName(pc) + quality;
+            if (key_) {  // keep the chord inside the scale: same quality if it fits, else the first that does
+                const auto& chords = keyChords();
+                const auto same = std::find_if(chords.begin(), chords.end(),
+                                               [&](const KeyChord& c) { return c.name == candidate; });
+                const auto first = std::find_if(chords.begin(), chords.end(), [&](const KeyChord& c) {
+                    return parsePitch(c.name) && ((*parsePitch(c.name) % 12) + 12) % 12 == pc;
+                });
+                if (same == chords.end() && first != chords.end())
+                    candidate = first->name;
+            }
+            apply(candidate);
+        }
+        ImGui::EndCombo();
     }
     ImGui::SameLine();
     ImGui::SetNextItemWidth(ImGui::GetFontSize() * 7);
     const std::string preview = quality.empty() ? "majeur" : quality;
     if (ImGui::BeginCombo("Type", preview.c_str())) {
         for (std::string_view q : chordQualities()) {
-            const std::string name = q.empty() ? "majeur" : std::string(q);
-            if (ImGui::Selectable(name.c_str(), q == quality)) {
-                chordText_ = kRoots[static_cast<std::size_t>(root)] + std::string(q);
-                apply(chordText_);
+            const std::string candidate = rootPreview + std::string(q);
+            if (key_ && rootInKey) {
+                const auto& chords = keyChords();
+                const bool fits = std::any_of(chords.begin(), chords.end(),
+                                              [&](const KeyChord& c) { return c.name == candidate; });
+                if (!fits)
+                    continue;
             }
+            const std::string name = q.empty() ? "majeur" : std::string(q);
+            if (ImGui::Selectable(name.c_str(), q == quality))
+                apply(candidate);
         }
         ImGui::EndCombo();
     }

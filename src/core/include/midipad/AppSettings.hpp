@@ -1,6 +1,9 @@
 #pragma once
 
+#include "midipad/Scales.hpp"
+
 #include <filesystem>
+#include <optional>
 #include <string>
 
 namespace midipad {
@@ -15,6 +18,9 @@ struct AppSettings {
     std::string virtualPortName = "MidiPad";
     std::string existingPortName;  // matched as a substring, like --connect
     bool outputChosen = false;     // false: ask which output to use at startup
+
+    // Narrows the notes and chords offered by the editor; none: every note.
+    std::optional<Key> key;
 
     bool monitorMidi = false;
     bool showButtons = false;

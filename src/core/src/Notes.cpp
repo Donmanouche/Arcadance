@@ -70,12 +70,19 @@ std::optional<int> parseNoteName(std::string_view text) {
     return note;
 }
 
-std::string noteName(int midiNote) {
-    static constexpr std::array<std::string_view, 12> kNames = {"C",  "C#", "D",  "D#", "E",  "F",
-                                                                "F#", "G",  "G#", "A",  "A#", "B"};
+std::string pitchName(int pitchClass, bool flats) {
+    static constexpr std::array<std::string_view, 12> kSharps = {"C", "C#", "D", "D#", "E", "F",
+                                                                 "F#", "G", "G#", "A", "A#", "B"};
+    static constexpr std::array<std::string_view, 12> kFlats = {"C", "Db", "D", "Eb", "E", "F",
+                                                                "Gb", "G", "Ab", "A", "Bb", "B"};
+    const auto pc = static_cast<std::size_t>(((pitchClass % 12) + 12) % 12);
+    return std::string(flats ? kFlats[pc] : kSharps[pc]);
+}
+
+std::string noteName(int midiNote, bool flats) {
     if (midiNote < 0 || midiNote > 127)
         return {};
-    return std::string(kNames[static_cast<std::size_t>(midiNote % 12)]) + std::to_string(midiNote / 12 - 1);
+    return pitchName(midiNote % 12, flats) + std::to_string(midiNote / 12 - 1);
 }
 
 }  // namespace midipad

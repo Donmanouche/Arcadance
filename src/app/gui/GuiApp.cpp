@@ -15,6 +15,8 @@
 #include "midipad/LegacyImport.hpp"
 #include "midipad/PresetIO.hpp"
 #include "midipad/PresetLibrary.hpp"
+#include "midipad/Scales.hpp"
+#include "midipad/Notes.hpp"
 
 #include <SDL3/SDL.h>
 #include <imgui.h>
@@ -24,6 +26,7 @@
 
 #include <cctype>
 #include <chrono>
+#include <cstdio>
 #include <deque>
 #include <filesystem>
 #include <functional>
@@ -65,6 +68,7 @@ struct GuiOptions {
     std::optional<fs::path> screenshot;  // render a few frames, save a BMP, quit
     std::optional<MappingEditor::Tab> tab;
     std::optional<std::string> select;
+    std::vector<std::pair<float, float>> clicks;  // simulated mouse clicks, for screenshots
     bool help = false;
     std::string error;
 };
@@ -89,6 +93,12 @@ GuiOptions parseGuiArgs(const std::vector<std::string>& args) {
                 o.tab = MappingEditor::Tab::Touchpad;
             else
                 o.error = "--tab attend buttons, dpad, axes ou touchpad";
+        } else if (a == "--click" && i + 1 < args.size()) {
+            float x = 0, y = 0;
+            if (std::sscanf(args[++i].c_str(), "%f,%f", &x, &y) == 2)
+                o.clicks.emplace_back(x, y);
+            else
+                o.error = "--click attend X,Y";
         } else if (a == "--select" && i + 1 < args.size()) {
             o.select = args[++i];
         } else if (!a.empty() && a[0] == '-') {
@@ -141,6 +151,7 @@ private:
     void draw();
     void drawPresetBar();
     void drawOutputBar(const LiveState& live);
+    void drawKeyBar();
     void drawMappingArea(const LiveState& live);
     void drawLog();
     void drawStatusBar(const LiveState& live);
@@ -351,8 +362,28 @@ int GuiApp::run() {
     const bool ok = init();
     if (ok) {
         while (!quit_) {
+            // Simulated clicks: one every other frame, from the third frame on.
+            const int click = (frameCount_ - 2) / 2;
+            if (frameCount_ >= 2 && click < static_cast<int>(options_.clicks.size())) {
+                SDL_Event e{};
+                const auto [x, y] = options_.clicks[static_cast<std::size_t>(click)];
+                e.type = (frameCount_ % 2 == 0) ? SDL_EVENT_MOUSE_BUTTON_DOWN : SDL_EVENT_MOUSE_BUTTON_UP;
+                e.button.windowID = SDL_GetWindowID(window_);
+                e.button.button = SDL_BUTTON_LEFT;
+                e.button.down = e.type == SDL_EVENT_MOUSE_BUTTON_DOWN;
+                e.button.x = x;
+                e.button.y = y;
+                SDL_Event motion{};
+                motion.type = SDL_EVENT_MOUSE_MOTION;
+                motion.motion.windowID = e.button.windowID;
+                motion.motion.x = x;
+                motion.motion.y = y;
+                SDL_PushEvent(&motion);
+                SDL_PushEvent(&e);
+            }
             frame();
-            if (options_.screenshot && ++frameCount_ == 4) {
+            const int screenshotFrame = 4 + 2 * static_cast<int>(options_.clicks.size());
+            if (options_.screenshot && ++frameCount_ == screenshotFrame) {
                 if (!saveScreenshot(*options_.screenshot))
                     std::cerr << "midipad : capture impossible : " << SDL_GetError() << '\n';
                 quit_ = true;
@@ -706,6 +737,7 @@ void GuiApp::draw() {
 
     drawPresetBar();
     drawOutputBar(live);
+    drawKeyBar();
     ImGui::Separator();
 
     const float logHeight = ImGui::GetTextLineHeightWithSpacing() * 8;
@@ -833,6 +865,60 @@ void GuiApp::drawOutputBar(const LiveState& live) {
         ImGui::TextColored(kHintColor, "Aucune manette : branchez-la, elle sera détectée");
 }
 
+void GuiApp::drawKeyBar() {
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted("Tonalité");
+    ImGui::SameLine();
+    const bool flats = settings_.key && prefersFlats(*settings_.key);
+    const std::string rootPreview = settings_.key ? pitchName(settings_.key->root, flats) : std::string("Aucune");
+    bool changed = false;
+    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 6);
+    if (ImGui::BeginCombo("##keyroot", rootPreview.c_str())) {
+        if (ImGui::Selectable("Aucune", !settings_.key)) {
+            settings_.key.reset();
+            changed = true;
+        }
+        for (int pc = 0; pc < 12; ++pc) {
+            // Both spellings for the black keys: the scale decides which one is shown.
+            const std::string name = pitchName(pc) == pitchName(pc, true) ? pitchName(pc)
+                                                                         : pitchName(pc) + " / " + pitchName(pc, true);
+            if (ImGui::Selectable(name.c_str(), settings_.key && settings_.key->root == pc)) {
+                settings_.key = Key{pc, settings_.key ? settings_.key->scale : 0};
+                changed = true;
+            }
+        }
+        ImGui::EndCombo();
+    }
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!settings_.key);
+    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 11);
+    const std::string scalePreview = settings_.key ? std::string(settings_.key->type().label) : std::string("-");
+    if (ImGui::BeginCombo("##keyscale", scalePreview.c_str())) {
+        for (std::size_t i = 0; i < scaleTypes().size(); ++i) {
+            const std::string name(scaleTypes()[i].label);
+            if (ImGui::Selectable(name.c_str(), settings_.key && settings_.key->scale == i)) {
+                settings_.key->scale = i;
+                changed = true;
+            }
+        }
+        ImGui::EndCombo();
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::PushStyleColor(ImGuiCol_Text, kHintColor);
+    if (settings_.key) {
+        std::string notes;
+        for (int pc : scalePitchClasses(*settings_.key))
+            notes += pitchName(pc, flats) + " ";
+        ImGui::Text("Notes : %s  - l'éditeur ne propose que ces notes et les accords qu'elles forment", notes.c_str());
+    } else {
+        ImGui::TextUnformatted("Aucune : toutes les notes et tous les accords sont proposés");
+    }
+    ImGui::PopStyleColor();
+    if (changed)
+        persistSettings();
+}
+
 void GuiApp::drawMappingArea(const LiveState& live) {
     // Following shows what plays on the active channel: its own mapping if it
     // has one, the base otherwise. A channel picked in the list stays shown
@@ -904,7 +990,7 @@ void GuiApp::drawMappingArea(const LiveState& live) {
         ImGui::PopStyleColor();
     }
 
-    if (editor_.draw(*target, live, readOnly))
+    if (editor_.draw(*target, live, readOnly, settings_.key))
         edited();
 }
 

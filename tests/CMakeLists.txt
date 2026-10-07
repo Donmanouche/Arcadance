@@ -7,6 +7,7 @@ add_executable(midipad_tests
     test_notes.cpp
     test_preset_io.cpp
     test_preset_library.cpp
+    test_scales.cpp
     test_settings.cpp
     test_spsc_ring.cpp
 )

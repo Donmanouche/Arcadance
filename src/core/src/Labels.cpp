@@ -78,12 +78,12 @@ std::string withMode(std::string text, Mode mode) {
 
 }  // namespace
 
-std::string describe(const TriggerBinding& b) {
+std::string describe(const TriggerBinding& b, bool flats) {
     switch (b.type) {
     case ActionType::None:
         return "-";
     case ActionType::Note: {
-        std::string s = "Note " + noteName(b.number) + " (" + std::to_string(b.number) + ")";
+        std::string s = "Note " + noteName(b.number, flats) + " (" + std::to_string(b.number) + ")";
         if (b.velocity != 100)
             s += ", vél. " + std::to_string(b.velocity);
         return withMode(s, b.mode);
@@ -98,7 +98,7 @@ std::string describe(const TriggerBinding& b) {
             s += b.chordName;
         } else {
             for (std::uint8_t i = 0; i < b.chord.count; ++i)
-                s += (i ? " " : "") + noteName(b.chord.notes[i]);
+                s += (i ? " " : "") + noteName(b.chord.notes[i], flats);
         }
         if (b.velocity != 100)
             s += ", vél. " + std::to_string(b.velocity);

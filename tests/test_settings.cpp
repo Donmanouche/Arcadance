@@ -23,6 +23,7 @@ TEST_CASE("settings round-trip and fall back to defaults") {
     s.existingPortName = "OXI ONE";
     s.outputChosen = true;
     s.monitorMidi = true;
+    s.key = Key{9, *findScale("harmonic_minor")};
     saveSettings(s, file);
 
     const AppSettings loaded = loadSettings(file, defaults);
@@ -32,12 +33,16 @@ TEST_CASE("settings round-trip and fall back to defaults") {
     CHECK(loaded.existingPortName == "OXI ONE");
     CHECK(loaded.outputChosen);
     CHECK(loaded.monitorMidi);
+    REQUIRE(loaded.key);
+    CHECK(loaded.key->root == 9);
+    CHECK(loaded.key->type().id == "harmonic_minor");
     CHECK(loaded.virtualPortName == "MidiPad");
 
     std::ofstream(file) << R"({"last_preset": 42, "presets_dir": "/x"})";
     const AppSettings partial = loadSettings(file, defaults);
     CHECK(partial.presetsDir == "/x");
     CHECK(partial.lastPreset.empty());  // wrong type: default kept
+    CHECK_FALSE(partial.key);           // no tonality unless one was chosen
 
     CHECK_FALSE(loadSettings(file, defaults).outputChosen);
     std::ofstream(file) << R"({"output": "port", "existing_port_name": "VirMIDI 3-0"})";

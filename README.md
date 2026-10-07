@@ -49,6 +49,12 @@ Ouvre la fenêtre MidiPad, qui joue en même temps qu'elle édite :
   version Python, changer de dossier de presets.
 - **Sortie MIDI** : port virtuel « MidiPad » ou un port existant ; canal actif ;
   « Tout couper » pour les notes collées.
+- **Tonalité** (facultative) : une fondamentale et une gamme (majeur, mineur
+  naturel, harmonique, mélodique, modes, pentatoniques, blues, par tons).
+  L'éditeur ne propose alors que les notes de la gamme et, pour les accords,
+  un menu « Accord de la gamme » listant par degré tous les accords dont les
+  notes appartiennent à la gamme ; la saisie libre reste possible, et une note
+  ou un accord hors gamme est signalé. « Aucune » : tout est proposé.
 - **Mapping** : la base ou le mapping spécifique d'un canal. « Suivre le canal
   actif » affiche ce qui joue sur le canal en cours, y compris quand il change
   depuis la manette. Quatre onglets : boutons, croix directionnelle, sticks et

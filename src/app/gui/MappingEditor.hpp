@@ -3,8 +3,10 @@
 #include "Runtime.hpp"
 
 #include "midipad/Preset.hpp"
+#include "midipad/Scales.hpp"
 
 #include <optional>
+#include <vector>
 #include <string>
 
 // Tabs listing every control of one Mapping, and a side panel editing the
@@ -18,8 +20,9 @@ public:
     // For screenshots; returns false if `spec` names no control.
     bool select(const std::string& spec);
 
-    // Returns true when `mapping` was changed. `live` lights up the controls in use.
-    bool draw(midipad::Mapping& mapping, const LiveState& live, bool readOnly);
+    // Returns true when `mapping` was changed. `live` lights up the controls in
+    // use; `key`, if any, narrows the notes and chords offered.
+    bool draw(midipad::Mapping& mapping, const LiveState& live, bool readOnly, const std::optional<midipad::Key>& key);
 
 private:
     struct Selection {
@@ -36,6 +39,9 @@ private:
     bool drawSidePanel(midipad::Mapping& m);
     bool drawTriggerEditor(midipad::TriggerBinding& b);
     bool drawChordFields(midipad::TriggerBinding& b);
+    bool drawNoteField(std::uint8_t& note);
+    const std::vector<midipad::KeyChord>& keyChords();
+    bool flats() const { return key_ && midipad::prefersFlats(*key_); }
 
     midipad::TriggerBinding* selected(midipad::Mapping& m);
     std::string selectedTitle() const;
@@ -45,4 +51,7 @@ private:
     Selection selection_;
     Selection chordTextFor_;
     std::string chordText_;
+    std::optional<midipad::Key> key_;
+    std::optional<midipad::Key> chordsFor_;
+    std::vector<midipad::KeyChord> chords_;
 };

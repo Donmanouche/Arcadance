@@ -14,7 +14,8 @@ std::string label(HatDir d);
 std::string label(Zone z);
 
 // One-line summaries for tables: "Note C3 (48), bascule", "CC 40 (0-127), inversé".
-std::string describe(const TriggerBinding& b);
+// `flats` spells notes with flats (Bb rather than A#).
+std::string describe(const TriggerBinding& b, bool flats = false);
 std::string describe(const AxisBinding& a);
 
 }  // namespace midipad
