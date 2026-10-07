@@ -14,6 +14,7 @@ struct AppSettings {
     Output output = Output::VirtualPort;
     std::string virtualPortName = "MidiPad";
     std::string existingPortName;  // matched as a substring, like --connect
+    bool outputChosen = false;     // false: ask which output to use at startup
 
     bool monitorMidi = false;
     bool showButtons = false;

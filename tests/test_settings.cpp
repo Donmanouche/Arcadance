@@ -21,6 +21,7 @@ TEST_CASE("settings round-trip and fall back to defaults") {
     s.lastPreset = "PS5_Test";
     s.output = AppSettings::Output::ExistingPort;
     s.existingPortName = "OXI ONE";
+    s.outputChosen = true;
     s.monitorMidi = true;
     saveSettings(s, file);
 
@@ -29,6 +30,7 @@ TEST_CASE("settings round-trip and fall back to defaults") {
     CHECK(loaded.lastPreset == "PS5_Test");
     CHECK(loaded.output == AppSettings::Output::ExistingPort);
     CHECK(loaded.existingPortName == "OXI ONE");
+    CHECK(loaded.outputChosen);
     CHECK(loaded.monitorMidi);
     CHECK(loaded.virtualPortName == "MidiPad");
 
@@ -36,6 +38,10 @@ TEST_CASE("settings round-trip and fall back to defaults") {
     const AppSettings partial = loadSettings(file, defaults);
     CHECK(partial.presetsDir == "/x");
     CHECK(partial.lastPreset.empty());  // wrong type: default kept
+
+    CHECK_FALSE(loadSettings(file, defaults).outputChosen);
+    std::ofstream(file) << R"({"output": "port", "existing_port_name": "VirMIDI 3-0"})";
+    CHECK(loadSettings(file, defaults).outputChosen);  // older settings: a remembered port was chosen
 
     std::ofstream(file) << "{ broken";
     CHECK(loadSettings(file, defaults).presetsDir == "/default/presets");

@@ -22,6 +22,7 @@
 #include <imgui_impl_sdlrenderer3.h>
 #include <misc/cpp/imgui_stdlib.h>
 
+#include <cctype>
 #include <chrono>
 #include <deque>
 #include <filesystem>
@@ -99,6 +100,20 @@ GuiOptions parseGuiArgs(const std::vector<std::string>& args) {
     return o;
 }
 
+// How Bitwig names a snd-virmidi port: it only lists kernel MIDI devices, as
+// "<device name>/<subdevice>", so "VirMIDI 3-0" reads "Virtual Raw MIDI/..." and
+// "VirMIDI 3-1" "Virtual Raw MIDI 2/...". Empty for other ports.
+std::string bitwigName(const std::string& port) {
+    const auto at = port.find(":VirMIDI ");
+    if (at == std::string::npos)
+        return {};
+    const auto dash = port.find('-', at);
+    if (dash == std::string::npos || dash + 1 >= port.size() || !std::isdigit(static_cast<unsigned char>(port[dash + 1])))
+        return {};
+    const int device = port[dash + 1] - '0';
+    return device == 0 ? "Virtual Raw MIDI" : "Virtual Raw MIDI " + std::to_string(device + 1);
+}
+
 constexpr const char* kUsage = R"(Usage : midipad [preset.json]
         midipad --headless [options] <preset.json>   (sans fenêtre, voir --headless --help)
 
@@ -135,6 +150,7 @@ private:
     void drawTrashDialog();
     void drawImportDialog();
     void drawErrorDialog();
+    void drawOutputDialog();
 
     // Presets.
     void refreshPresetList();
@@ -151,7 +167,7 @@ private:
 
     // MIDI output.
     void refreshPorts();
-    void useOutput(AppSettings::Output kind, const std::string& port);
+    bool useOutput(AppSettings::Output kind, const std::string& port);
     std::shared_ptr<MidiOutput> openOutput(AppSettings::Output kind, const std::string& port, std::string& error);
 
     void log(const std::string& line);
@@ -206,6 +222,8 @@ private:
     std::vector<std::string> importReport_;
     std::string errorMessage_;
     bool openErrorDialog_ = false;
+    bool openOutputDialog_ = false;
+    std::string outputDialogReason_;
 
     std::mutex folderMutex_;
     FolderTarget folderTarget_ = FolderTarget::None;
@@ -215,6 +233,9 @@ private:
 // --- Setup ------------------------------------------------------------------
 
 bool GuiApp::init() {
+    // Keep playing when another window (the DAW) has the focus: by default SDL
+    // ignores controllers while none of its windows is focused.
+    SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
         std::cerr << "midipad : SDL_Init a échoué : " << SDL_GetError() << '\n';
         return false;
@@ -240,11 +261,23 @@ bool GuiApp::init() {
     else
         openFirstOrUntitled();
 
+    // As in the Python version: reconnect to the last port used, otherwise ask
+    // which one to use. The virtual port stands in until the user answers.
     refreshPorts();
     std::string error;
-    output_ = openOutput(settings_.output, settings_.existingPortName, error);
+    if (settings_.outputChosen) {
+        output_ = openOutput(settings_.output, settings_.existingPortName, error);
+        if (output_) {
+            log("Sortie MIDI : " + outputLabel_);
+        } else {
+            outputDialogReason_ = "Le dernier port utilisé, « " + settings_.existingPortName + " », est introuvable.";
+            openOutputDialog_ = true;
+        }
+    } else {
+        outputDialogReason_ = "Choisissez où MidiPad envoie son MIDI.";
+        openOutputDialog_ = true;
+    }
     if (!output_) {
-        log("Sortie MIDI choisie indisponible (" + error + ") : port virtuel utilisé.");
         output_ = openOutput(AppSettings::Output::VirtualPort, {}, error);
         if (!output_)
             log("Aucune sortie MIDI : " + error);
@@ -564,9 +597,15 @@ void GuiApp::refreshPorts() {
     ports_.clear();
     try {
         MidiOutput probe(MidiOutput::Api::Default);
-        for (auto& name : probe.portNames())
-            if (!name.starts_with("MidiPad:"))  // our own ports
-                ports_.push_back(std::move(name));
+        for (auto& name : probe.portNames()) {
+            // Skip our own ports and the system ones nobody plays into, as the
+            // Python version did.
+            if (name.starts_with("MidiPad:") || name.find("Midi Through") != std::string::npos ||
+                name.find("rtpmidid") != std::string::npos || name.find("Announce") != std::string::npos ||
+                (name.starts_with("Client-") && name.find("pipewire") == std::string::npos))
+                continue;
+            ports_.push_back(std::move(name));
+        }
     } catch (const std::exception& e) {
         log(std::string("Liste des ports MIDI indisponible : ") + e.what());
     }
@@ -588,22 +627,24 @@ std::shared_ptr<MidiOutput> GuiApp::openOutput(AppSettings::Output kind, const s
     }
 }
 
-void GuiApp::useOutput(AppSettings::Output kind, const std::string& port) {
+bool GuiApp::useOutput(AppSettings::Output kind, const std::string& port) {
     const std::string previousLabel = outputLabel_;
     std::string error;
     auto out = openOutput(kind, port, error);
     if (!out) {
         outputLabel_ = previousLabel;
         showError("Sortie MIDI indisponible :\n" + error);
-        return;
+        return false;
     }
     output_ = out;
     runtime_->setOutput(std::move(out));
     settings_.output = kind;
+    settings_.outputChosen = true;
     if (kind == AppSettings::Output::ExistingPort)
         settings_.existingPortName = MidiOutput::stablePortName(port);
     persistSettings();
     log("Sortie MIDI : " + outputLabel_);
+    return true;
 }
 
 // --- Helpers ----------------------------------------------------------------
@@ -756,8 +797,12 @@ void GuiApp::drawOutputBar(const LiveState& live) {
         for (const auto& port : ports_)
             if (ImGui::Selectable(port.c_str(), outputLabel_ == port))
                 useOutput(AppSettings::Output::ExistingPort, port);
+            else if (const auto name = bitwigName(port); !name.empty())
+                ImGui::SetItemTooltip("Dans Bitwig : %s/…", name.c_str());
         ImGui::EndCombo();
     }
+    if (const auto name = bitwigName(outputLabel_); !name.empty())
+        ImGui::SetItemTooltip("Dans Bitwig, cette sortie s'appelle %s/…", name.c_str());
     ImGui::SameLine();
     if (ImGui::Button("Actualiser"))
         refreshPorts();
@@ -912,6 +957,7 @@ void GuiApp::drawDialogs() {
     drawTrashDialog();
     drawImportDialog();
     drawErrorDialog();
+    drawOutputDialog();
 }
 
 void GuiApp::drawNameDialog() {
@@ -1066,6 +1112,48 @@ void GuiApp::drawErrorDialog() {
     ImGui::TextUnformatted(errorMessage_.c_str());
     if (ImGui::Button("OK") || ImGui::IsKeyPressed(ImGuiKey_Escape) || ImGui::IsKeyPressed(ImGuiKey_Enter))
         ImGui::CloseCurrentPopup();
+    ImGui::EndPopup();
+}
+
+void GuiApp::drawOutputDialog() {
+    constexpr const char* kTitle = "Sortie MIDI";
+    if (openOutputDialog_) {
+        refreshPorts();
+        ImGui::OpenPopup(kTitle);
+        openOutputDialog_ = false;
+    }
+    ImGui::SetNextWindowSize(ImVec2(ImGui::GetFontSize() * 40, 0), ImGuiCond_Appearing);
+    if (!ImGui::BeginPopupModal(kTitle, nullptr))
+        return;
+    ImGui::TextWrapped("%s", outputDialogReason_.c_str());
+    ImGui::Spacing();
+    ImGui::PushStyleColor(ImGuiCol_Text, kHintColor);
+    ImGui::TextWrapped("Bitwig sous Linux ne voit pas le port virtuel « %s » : choisissez un port VirMIDI, "
+                       "puis l'entrée indiquée à droite dans Bitwig.",
+                       settings_.virtualPortName.c_str());
+    ImGui::PopStyleColor();
+
+    ImGui::BeginChild("ports", ImVec2(0, ImGui::GetTextLineHeightWithSpacing() * 9), ImGuiChildFlags_Borders);
+    if (ports_.empty())
+        ImGui::TextDisabled("Aucun port MIDI trouvé. Pour Bitwig, chargez le module snd-virmidi (voir le README).");
+    for (const auto& port : ports_) {
+        const std::string name = bitwigName(port);
+        const std::string text = name.empty() ? port : port + "      -> Bitwig : " + name + "/…";
+        if (ImGui::Selectable(text.c_str()) && useOutput(AppSettings::Output::ExistingPort, port))
+            ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndChild();
+
+    if (ImGui::Button("Actualiser"))
+        refreshPorts();
+    ImGui::SameLine();
+    const std::string virtualLabel = "Port virtuel « " + settings_.virtualPortName + " »";
+    if (ImGui::Button(virtualLabel.c_str()) && useOutput(AppSettings::Output::VirtualPort, {}))
+        ImGui::CloseCurrentPopup();
+    ImGui::SameLine();
+    if (ImGui::Button("Plus tard") || ImGui::IsKeyPressed(ImGuiKey_Escape))
+        ImGui::CloseCurrentPopup();
+    ImGui::SetItemTooltip("Garde le port virtuel pour cette fois ; la question reviendra au prochain démarrage");
     ImGui::EndPopup();
 }
 

@@ -61,6 +61,25 @@ sortie) sont gardés dans `~/.local/share/MidiPad/MidiPad/settings.json`.
 Le dossier des presets par défaut est `~/.local/share/MidiPad/MidiPad/presets`
 (`midipad chemin/vers/un/preset.json` ouvre plutôt le dossier de ce preset).
 
+### Bitwig sous Linux
+
+Bitwig ne voit que les périphériques MIDI « bruts » du noyau (`hw:`), pas les
+ports logiciels ALSA comme le port virtuel « MidiPad » (ni Midi Through,
+rtpmidid…). Il faut donc passer par le module `snd-virmidi` :
+
+1. dans MidiPad, choisir la sortie `VirMIDI N-0` ;
+2. dans Bitwig, utiliser l'entrée `Virtual Raw MIDI/…` (`VirMIDI N-1`
+   correspond à `Virtual Raw MIDI 2/…`, etc.).
+
+Au démarrage, MidiPad se reconnecte au dernier port utilisé, comme la version
+Python. S'il est introuvable (ou au tout premier lancement), une fenêtre demande
+quel port utiliser, en indiquant pour chaque port VirMIDI son nom dans Bitwig ;
+le port virtuel sert en attendant. Le numéro de carte N change selon l'ordre de
+branchement ; MidiPad retrouve son port VirMIDI malgré ce changement. Sous macOS, le port virtuel « MidiPad »
+apparaîtra directement dans Bitwig ; sous Windows, il faudra loopMIDI.
+
+La manette reste lue quand la fenêtre MidiPad est en arrière-plan.
+
 ## Jouer sans fenêtre
 
 ```bash

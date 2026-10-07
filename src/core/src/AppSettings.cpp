@@ -52,6 +52,9 @@ AppSettings loadSettings(const std::filesystem::path& file, AppSettings s) {
         s.output = AppSettings::Output::ExistingPort;
     read(j, "virtual_port_name", s.virtualPortName);
     read(j, "existing_port_name", s.existingPortName);
+    read(j, "output_chosen", s.outputChosen);
+    if (s.output == AppSettings::Output::ExistingPort && !s.existingPortName.empty())
+        s.outputChosen = true;  // settings written before this field existed
     read(j, "monitor_midi", s.monitorMidi);
     read(j, "show_buttons", s.showButtons);
     readPath(j, "legacy_import_dir", s.legacyImportDir);
@@ -67,6 +70,7 @@ void saveSettings(const AppSettings& s, const std::filesystem::path& file) {
     j["output"] = s.output == AppSettings::Output::VirtualPort ? "virtual" : "port";
     j["virtual_port_name"] = s.virtualPortName;
     j["existing_port_name"] = s.existingPortName;
+    j["output_chosen"] = s.outputChosen;
     j["monitor_midi"] = s.monitorMidi;
     j["show_buttons"] = s.showButtons;
     j["legacy_import_dir"] = s.legacyImportDir.string();
