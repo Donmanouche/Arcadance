@@ -4,8 +4,6 @@
 #include "midipad/Labels.hpp"
 #include "midipad/Notes.hpp"
 
-#include <imgui.h>
-
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -18,12 +16,20 @@ namespace {
 constexpr float kPi = 3.14159265358979f;
 
 // PlayStation colors for the face buttons.
-constexpr ImU32 kPsCross = IM_COL32(110, 145, 255, 255);
-constexpr ImU32 kPsCircle = IM_COL32(255, 90, 90, 255);
-constexpr ImU32 kPsSquare = IM_COL32(255, 110, 200, 255);
-constexpr ImU32 kPsTriangle = IM_COL32(64, 205, 160, 255);
-constexpr ImU32 kCubeRed = IM_COL32(225, 45, 60, 255);
-constexpr ImU32 kIce = IM_COL32(170, 215, 255, 255);
+constexpr ImU32 kPsCross = IM_COL32(0x7C, 0x9B, 0xFF, 255);
+constexpr ImU32 kPsCircle = IM_COL32(0xFF, 0x64, 0x64, 255);
+constexpr ImU32 kPsSquare = IM_COL32(0xFF, 0x7A, 0xD0, 255);
+constexpr ImU32 kPsTriangle = IM_COL32(0x4A, 0xD9, 0xAE, 255);
+constexpr ImU32 kPadGrey = IM_COL32(0xD6, 0xDA, 0xE0, 255);
+constexpr ImU32 kTrack = IM_COL32(0x15, 0x17, 0x1A, 255);
+constexpr ImU32 kKnob = IM_COL32(0x43, 0x47, 0x4E, 255);
+constexpr ImU32 kGraph = IM_COL32(0x20, 0x22, 0x26, 255);
+constexpr ImU32 kBadge = IM_COL32(0x45, 0x4A, 0x52, 255);
+
+// Fonts of the current frame (set by draw()).
+ImFont* gMedium = nullptr;
+ImFont* gBold = nullptr;
+ImFont* gCondensed = nullptr;
 
 ImU32 alpha(ImU32 c, float a) {
     const auto base = static_cast<float>((c >> IM_COL32_A_SHIFT) & 0xFF) / 255.0f;
@@ -42,24 +48,32 @@ ImU32 mix(ImU32 a, ImU32 b, float t) {
 
 ImU32 shade(ImU32 c, float factor) { return mix(IM_COL32(0, 0, 0, (c >> IM_COL32_A_SHIFT) & 0xFF), c, factor); }
 
-float em() { return ImGui::GetFontSize(); }
+// Sizes are designed for a 16 px base font; px() follows the UI scale.
+float px(float v) { return v * ImGui::GetFontSize() / 16.0f; }
 
-void text(ImDrawList* dl, ImVec2 pos, ImU32 col, const std::string& s, float size, bool centered = false) {
-    ImFont* font = ImGui::GetFont();
-    if (centered) {
-        const ImVec2 sz = font->CalcTextSizeA(size, FLT_MAX, 0, s.c_str());
-        pos.x -= sz.x * 0.5f;
-    }
-    dl->AddText(font, size, pos, col, s.c_str());
+enum class H { Left, Center, Right };
+enum class V { Top, Middle };
+
+float textWidth(ImFont* f, float size, const std::string& s) { return f->CalcTextSizeA(size, FLT_MAX, 0, s.c_str()).x; }
+
+void text(ImDrawList* dl, ImFont* f, float size, float x, float y, ImU32 col, const std::string& s, H h = H::Left,
+          V v = V::Top) {
+    const ImVec2 sz = f->CalcTextSizeA(size, FLT_MAX, 0, s.c_str());
+    if (h == H::Center)
+        x -= sz.x * 0.5f;
+    else if (h == H::Right)
+        x -= sz.x;
+    if (v == V::Middle)
+        y -= sz.y * 0.5f;
+    dl->AddText(f, size, ImVec2(x, y), col, s.c_str());
 }
 
-// Text clipped to `width`, ending with "…" when cut.
-std::string fit(const std::string& s, float size, float width) {
-    ImFont* font = ImGui::GetFont();
-    if (font->CalcTextSizeA(size, FLT_MAX, 0, s.c_str()).x <= width)
+// Text cut to `width`, ending with "…" when cut.
+std::string fit(ImFont* f, float size, const std::string& s, float width) {
+    if (textWidth(f, size, s) <= width)
         return s;
     std::string cut = s;
-    while (!cut.empty() && font->CalcTextSizeA(size, FLT_MAX, 0, (cut + "…").c_str()).x > width) {
+    while (!cut.empty() && textWidth(f, size, cut + "…") > width) {
         cut.pop_back();
         while (!cut.empty() && (static_cast<unsigned char>(cut.back()) & 0xC0) == 0x80)  // UTF-8 continuation
             cut.pop_back();
@@ -67,22 +81,19 @@ std::string fit(const std::string& s, float size, float width) {
     return cut + "…";
 }
 
-// Text reading bottom to top, centered on `center`, like the section labels
-// of hardware-style plugins.
-void verticalText(ImDrawList* dl, ImVec2 center, ImU32 col, const std::string& s, float size) {
-    ImFont* font = ImGui::GetFont();
-    const ImVec2 sz = font->CalcTextSizeA(size, FLT_MAX, 0, s.c_str());
-    const int first = dl->VtxBuffer.Size;
-    // AddText drops glyphs outside the clip rect before we rotate them: lay
-    // the text out unclipped, the rotated result lands inside the panel.
-    dl->PushClipRectFullScreen();
-    dl->AddText(font, size, ImVec2(center.x - sz.x * 0.5f, center.y - sz.y * 0.5f), col, s.c_str());
-    dl->PopClipRect();
-    for (int i = first; i < dl->VtxBuffer.Size; ++i) {
-        ImVec2& p = dl->VtxBuffer[i].pos;
-        const float dx = p.x - center.x, dy = p.y - center.y;
-        p = ImVec2(center.x + dy, center.y - dx);
-    }
+// A rounded badge with centered text; returns its width.
+float badge(ImDrawList* dl, ImFont* f, float size, float x, float y, float h, const std::string& s, ImU32 fg, ImU32 bg,
+            ImU32 border, H align = H::Center, float pad = 7) {
+    const float w = textWidth(f, size, s) + px(pad) * 2;
+    if (align == H::Center)
+        x -= w * 0.5f;
+    else if (align == H::Right)
+        x -= w;
+    dl->AddRectFilled(ImVec2(x, y), ImVec2(x + w, y + h), bg, h * 0.5f);
+    if (border)
+        dl->AddRect(ImVec2(x, y), ImVec2(x + w, y + h), border, h * 0.5f, px(1.3f));
+    text(dl, f, size, x + w * 0.5f, y + h * 0.5f, fg, s, H::Center, V::Middle);
+    return w;
 }
 
 // What a binding plays, in a few characters: "Ebmaj11", "C3", "CC 52".
@@ -101,64 +112,59 @@ std::string compact(const TriggerBinding& b, bool flats) {
     }
     case ActionType::Transport:
         return b.transport == TransportCommand::Start ? "Start" : b.transport == TransportCommand::Stop ? "Stop" : "Continue";
-    case ActionType::ChannelStep: return std::string("Channel ") + (b.channelStep > 0 ? "+" : "") + std::to_string(b.channelStep);
+    case ActionType::ChannelStep: return std::string("Ch ") + (b.channelStep > 0 ? "+" : "") + std::to_string(b.channelStep);
     case ActionType::Freeze: return "Freeze";
     }
     return {};
 }
 
-// A small loop arrow marking toggle (bascule) bindings.
+// A small loop arrow marking toggle bindings.
 void toggleMark(ImDrawList* dl, ImVec2 c, float r, ImU32 col) {
-    dl->PathArcTo(c, r, 0.2f * kPi, 1.8f * kPi, 16);
-    dl->PathStroke(col, 1.5f);
-    const ImVec2 tip(c.x + std::cos(1.8f * kPi) * r, c.y + std::sin(1.8f * kPi) * r);
-    dl->AddTriangleFilled(ImVec2(tip.x + r * 0.55f, tip.y), ImVec2(tip.x - r * 0.25f, tip.y - r * 0.45f),
-                          ImVec2(tip.x - r * 0.25f, tip.y + r * 0.45f), col);
+    dl->PathArcTo(c, r, 0.22f * kPi, 1.83f * kPi, 16);
+    dl->PathStroke(col, px(1.6f));
+    const ImVec2 tip(c.x + std::cos(1.83f * kPi) * r, c.y + std::sin(1.83f * kPi) * r);
+    dl->AddTriangleFilled(ImVec2(tip.x + r * 0.6f, tip.y), ImVec2(tip.x - r * 0.25f, tip.y - r * 0.5f),
+                          ImVec2(tip.x - r * 0.25f, tip.y + r * 0.5f), col);
 }
 
 void led(ImDrawList* dl, ImVec2 c, float r, ImU32 col, bool on) {
     if (on)
-        dl->AddCircleFilled(c, r * 2.2f, alpha(col, 0.25f));
-    dl->AddCircleFilled(c, r, on ? col : shade(col, 0.25f));
-    dl->AddCircle(c, r, IM_COL32(0, 0, 0, 120), 0, 1.0f);
+        dl->AddCircleFilled(c, r * 1.9f, alpha(col, 0.22f));
+    dl->AddCircleFilled(c, r, on ? col : shade(col, 0.35f));
 }
 
-// A knob showing `value` in [0, 1]: dark body, grey track, colored arc.
-void knob(ImDrawList* dl, ImVec2 c, float r, float value, ImU32 accent, bool enabled, const std::string& label,
-          const std::string& valueText) {
+// A knob showing `value` in [0, 1]: dark body, track, colored arc. The value
+// itself is printed below by the caller.
+void knob(ImDrawList* dl, ImVec2 c, float r, float value, ImU32 accent, bool enabled) {
     const float a0 = 0.75f * kPi, a1 = 2.25f * kPi;
     const float a = a0 + (a1 - a0) * std::clamp(value, 0.0f, 1.0f);
-    dl->AddCircleFilled(ImVec2(c.x, c.y + r * 0.08f), r * 1.02f, IM_COL32(0, 0, 0, 90));
-    dl->PathArcTo(c, r * 1.18f, a0, a1, 40);
-    dl->PathStroke(IM_COL32(28, 28, 30, 255), r * 0.16f);
+    dl->PathArcTo(c, r * 1.2f, a0, a1, 48);
+    dl->PathStroke(kTrack, r * 0.17f);
     if (enabled) {
-        dl->PathArcTo(c, r * 1.18f, a0, a, 40);
-        dl->PathStroke(accent, r * 0.16f);
+        dl->PathArcTo(c, r * 1.2f, a0, a, 48);
+        dl->PathStroke(accent, r * 0.17f);
     }
-    dl->AddCircleFilled(c, r * 0.92f, IM_COL32(58, 60, 64, 255));
-    dl->AddCircleFilled(ImVec2(c.x - r * 0.12f, c.y - r * 0.15f), r * 0.66f, IM_COL32(72, 74, 79, 255));
-    dl->AddCircle(c, r * 0.92f, IM_COL32(20, 20, 22, 255), 0, 1.5f);
+    dl->AddCircleFilled(ImVec2(c.x, c.y + r * 0.06f), r * 0.95f, IM_COL32(0, 0, 0, 90));
+    dl->AddCircleFilled(c, r * 0.92f, kKnob);
+    dl->AddCircleFilled(ImVec2(c.x - r * 0.1f, c.y - r * 0.12f), r * 0.66f, mix(kKnob, IM_COL32_WHITE, 0.07f));
     const ImVec2 tip(c.x + std::cos(a) * r * 0.68f, c.y + std::sin(a) * r * 0.68f);
-    dl->AddCircleFilled(tip, r * 0.11f, enabled ? accent : IM_COL32(110, 110, 110, 255));
-    const float small = em() * 0.72f;
-    text(dl, ImVec2(c.x, c.y - r * 1.25f - small * 1.15f), T::kDim, label, small, true);
-    text(dl, ImVec2(c.x, c.y + r * 1.25f), enabled ? T::kText : T::kDim, valueText, small, true);
+    dl->AddCircleFilled(tip, r * 0.1f, enabled ? accent : T::kDim);
 }
 
 // A CRT-like screen: dark glass, content, scanlines and a vignette.
 template <typename Content>
 void screen(ImDrawList* dl, ImVec2 a, ImVec2 b, ImU32 tint, Content&& content) {
-    dl->AddRectFilled(ImVec2(a.x - 3, a.y - 3), ImVec2(b.x + 3, b.y + 3), IM_COL32(22, 23, 25, 255), 6.0f);
-    dl->AddRectFilledMultiColor(a, b, shade(tint, 0.10f), shade(tint, 0.10f), shade(tint, 0.22f), shade(tint, 0.22f));
+    dl->AddRectFilled(ImVec2(a.x - 3, a.y - 3), ImVec2(b.x + 3, b.y + 3), IM_COL32(0x12, 0x13, 0x15, 255), px(7));
+    dl->AddRectFilledMultiColor(a, b, shade(tint, 0.10f), shade(tint, 0.10f), shade(tint, 0.24f), shade(tint, 0.24f));
     dl->PushClipRect(a, b, true);
     content();
     for (float y = a.y; y < b.y; y += 3.0f)
         dl->AddLine(ImVec2(a.x, y), ImVec2(b.x, y), IM_COL32(0, 0, 0, 55), 1.0f);
     const float v = std::min(b.x - a.x, b.y - a.y) * 0.18f;
-    dl->AddRectFilledMultiColor(a, ImVec2(b.x, a.y + v), IM_COL32(0, 0, 0, 120), IM_COL32(0, 0, 0, 120), 0, 0);
-    dl->AddRectFilledMultiColor(ImVec2(a.x, b.y - v), b, 0, 0, IM_COL32(0, 0, 0, 120), IM_COL32(0, 0, 0, 120));
+    dl->AddRectFilledMultiColor(a, ImVec2(b.x, a.y + v), IM_COL32(0, 0, 0, 110), IM_COL32(0, 0, 0, 110), 0, 0);
+    dl->AddRectFilledMultiColor(ImVec2(a.x, b.y - v), b, 0, 0, IM_COL32(0, 0, 0, 110), IM_COL32(0, 0, 0, 110));
     dl->PopClipRect();
-    dl->AddRect(a, b, IM_COL32(0, 0, 0, 200), 3.0f, 1.5f);
+    dl->AddRect(a, b, IM_COL32(0, 0, 0, 220), px(4), 1.5f);
 }
 
 // An organic shape, like the blobs of hardware-synth displays.
@@ -176,9 +182,10 @@ void blob(ImDrawList* dl, ImVec2 c, float r, ImU32 col, double t, float stretchX
         }
         dl->AddConcavePolyFilled(pts, kPoints, color);
     };
-    shape(1.35f, alpha(col, 0.18f), ImVec2(0, 0));
+    shape(1.45f, alpha(col, 0.16f), ImVec2(0, 0));
+    shape(1.2f, alpha(col, 0.27f), ImVec2(0, 0));
     shape(1.0f, col, ImVec2(0, 0));
-    shape(0.55f, alpha(mix(col, IM_COL32_WHITE, 0.55f), 0.8f), ImVec2(-r * 0.15f, -r * 0.18f));
+    shape(0.55f, alpha(mix(col, IM_COL32_WHITE, 0.6f), 0.86f), ImVec2(-r * 0.15f, -r * 0.18f));
 }
 
 float stickPosition(const LiveState& live, Axis a) {
@@ -218,30 +225,33 @@ std::optional<Button> freezeButton(const Mapping& m, std::uint8_t axes) {
     return std::nullopt;
 }
 
-struct Panel {
-    float x, y, w, h;
-    float bodyTop;  // below the header
-};
-
-Panel panel(ImDrawList* dl, float x, float y, float w, float h, const char* title, bool active) {
-    const float header = em() * 1.9f;
-    dl->AddRectFilled(ImVec2(x, y), ImVec2(x + w, y + h), T::kPanel, 4.0f);
-    dl->AddRectFilled(ImVec2(x, y), ImVec2(x + w, y + header), T::kPanelHeader, 4.0f, ImDrawFlags_RoundCornersTop);
-    dl->AddRect(ImVec2(x, y), ImVec2(x + w, y + h), T::kBorder, 4.0f, 1.0f);
-    // Grip, like the drag handles of the reference design.
-    for (int i = 0; i < 3; ++i)
-        for (int j = 0; j < 2; ++j)
-            dl->AddCircleFilled(ImVec2(x + em() * (0.7f + 0.3f * static_cast<float>(j)),
-                                       y + header * 0.5f + em() * 0.3f * static_cast<float>(i - 1)),
-                                1.3f, T::kDim);
-    text(dl, ImVec2(x + em() * 1.6f, y + (header - em()) * 0.5f), T::kText, title, em());
-    led(dl, ImVec2(x + w - em() * 0.9f, y + header * 0.5f), em() * 0.28f, T::kGreen, active);
-    return {x, y, w, h, y + header};
+// A module: rounded panel with a header (title and activity LED). Returns the
+// y where its content starts.
+float panel(ImDrawList* dl, float x, float y, float w, float h, const char* title, bool active) {
+    const float header = px(36);
+    const float r = px(6);
+    dl->AddRectFilled(ImVec2(x, y), ImVec2(x + w, y + h), T::kPanel, r);
+    dl->AddRectFilled(ImVec2(x, y), ImVec2(x + w, y + header), T::kPanelHeader, r, ImDrawFlags_RoundCornersTop);
+    dl->AddRect(ImVec2(x, y), ImVec2(x + w, y + h), T::kBorder, r, px(1));
+    text(dl, gBold, px(14), x + px(12), y + header * 0.5f, T::kText, title, H::Left, V::Middle);
+    led(dl, ImVec2(x + w - px(16), y + header * 0.5f), px(5), T::kGreen, active);
+    if (!active)
+        dl->AddCircleFilled(ImVec2(x + w - px(16), y + header * 0.5f), px(5), T::kDim);
+    return y + header;
 }
 
-void sectionLabel(ImDrawList* dl, float x, float top, float bottom, const char* label) {
-    verticalText(dl, ImVec2(x + em() * 0.65f, (top + bottom) * 0.5f), T::kDim, label, em() * 0.68f);
-    dl->AddLine(ImVec2(x + em() * 1.25f, top + 2), ImVec2(x + em() * 1.25f, bottom - 2), IM_COL32(0, 0, 0, 70));
+// A section title with a rule, e.g. "VALUES ————".
+void section(ImDrawList* dl, float x, float w, float y, const std::string& title) {
+    const float size = px(11);
+    text(dl, gBold, size, x + px(12), y, T::kDim, title, H::Left, V::Middle);
+    const float tw = textWidth(gBold, size, title);
+    dl->AddLine(ImVec2(x + px(16) + tw, y), ImVec2(x + w - px(12), y), IM_COL32(0x40, 0x44, 0x4B, 255), px(1));
+}
+
+// A full-width rounded row: a toggle, a status line...
+void row(ImDrawList* dl, float x, float y, float w, float h, ImU32 fill, ImU32 border) {
+    dl->AddRectFilled(ImVec2(x, y), ImVec2(x + w, y + h), fill, px(6));
+    dl->AddRect(ImVec2(x, y), ImVec2(x + w, y + h), border, px(6), px(1.3f));
 }
 
 bool hoverButton(const char* id, ImVec2 a, ImVec2 b) {
@@ -249,9 +259,20 @@ bool hoverButton(const char* id, ImVec2 a, ImVec2 b) {
     ImGui::InvisibleButton(id, ImVec2(std::max(b.x - a.x, 1.0f), std::max(b.y - a.y, 1.0f)));
     if (ImGui::IsItemHovered()) {
         ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
-        ImGui::GetWindowDrawList()->AddRect(a, b, IM_COL32(255, 255, 255, 60), 4.0f, 1.0f);
+        ImGui::GetWindowDrawList()->AddRect(a, b, IM_COL32(255, 255, 255, 70), px(6), px(1));
     }
     return ImGui::IsItemClicked();
+}
+
+// Screen geometry shared by the modules.
+struct ScreenBox {
+    ImVec2 a, b;
+};
+
+ScreenBox screenBox(float x, float top, float w, float h) {
+    const float pad = px(10);
+    const float sh = std::clamp(h * 0.30f, px(100), (w - 2 * pad) * 0.85f);
+    return {ImVec2(x + pad, top + px(10)), ImVec2(x + w - pad, top + px(10) + sh)};
 }
 
 }  // namespace
@@ -270,6 +291,9 @@ void PerformanceView::click(const std::string& spec) { clicked_ = spec; }
 
 std::optional<std::string> PerformanceView::draw(const Mapping& mapping, const LiveState& live,
                                                  const std::optional<Key>& key) {
+    gMedium = fonts_.medium ? fonts_.medium : ImGui::GetFont();
+    gBold = fonts_.bold ? fonts_.bold : gMedium;
+    gCondensed = fonts_.condensed ? fonts_.condensed : gBold;
     time_ = ImGui::GetTime();
     dt_ = ImGui::GetIO().DeltaTime;
     flats_ = key && prefersFlats(*key);
@@ -282,10 +306,15 @@ std::optional<std::string> PerformanceView::draw(const Mapping& mapping, const L
             lastPress_[static_cast<std::size_t>(b)] = time_;
     previousButtons_ = live.buttons;
 
+    // Stick history for the activity graphs.
+    const Axis kStickAxes[] = {Axis::LeftX, Axis::LeftY, Axis::RightX, Axis::RightY};
+    for (std::size_t i = 0; i < history_.size(); ++i)
+        history_[i].push(stickPosition(live, kStickAxes[i]));
+
     const ImVec2 origin = ImGui::GetCursorScreenPos();
     const ImVec2 avail = ImGui::GetContentRegionAvail();
-    const float gap = em() * 0.6f;
-    const float stripH = std::max(avail.y * 0.30f, em() * 9.5f);
+    const float gap = px(8);
+    const float stripH = std::clamp(avail.y * 0.31f, px(220), px(260));
     const float topH = avail.y - stripH - gap;
     const float colW = (avail.x - 4 * gap) / 5.0f;
 
@@ -316,63 +345,89 @@ void PerformanceView::drawStick(int index, const Mapping& m, const LiveState& li
     const auto& by = m.axes[static_cast<std::size_t>(ay)];
     const auto axisBits = static_cast<std::uint8_t>((1u << static_cast<unsigned>(ax)) | (1u << static_cast<unsigned>(ay)));
     const bool frozen = live.frozenAxes & axisBits;
+    const ImU32 color = frozen ? T::kIce : accent;
 
-    const Panel p = panel(dl, x, y, w, h, index == 0 ? "LEFT STICK" : "RIGHT STICK",
-                          live.connected && (bx.enabled || by.enabled));
-    const float pad = em() * 0.6f;
-    const ImVec2 sa(x + pad, p.bodyTop + pad), sb(x + w - pad, p.bodyTop + pad + std::min(w * 0.78f, h * 0.42f));
+    const float top = panel(dl, x, y, w, h, index == 0 ? "LEFT STICK" : "RIGHT STICK", live.connected && (bx.enabled || by.enabled));
+    const ScreenBox s = screenBox(x, top, w, h);
 
     const float sx = smooth(index * 4 + 0, stickPosition(live, ax), 18.0f);
     const float sy = smooth(index * 4 + 1, stickPosition(live, ay), 18.0f);
-    screen(dl, sa, sb, accent, [&] {
-        const ImVec2 c((sa.x + sb.x) * 0.5f, (sa.y + sb.y) * 0.5f);
-        const float rw = (sb.x - sa.x) * 0.5f, rh = (sb.y - sa.y) * 0.5f;
-        dl->AddLine(ImVec2(sa.x, c.y), ImVec2(sb.x, c.y), alpha(accent, 0.12f));
-        dl->AddLine(ImVec2(c.x, sa.y), ImVec2(c.x, sb.y), alpha(accent, 0.12f));
+    screen(dl, s.a, s.b, accent, [&] {
+        const ImVec2 c((s.a.x + s.b.x) * 0.5f, (s.a.y + s.b.y) * 0.5f);
+        const float rw = (s.b.x - s.a.x) * 0.5f, rh = (s.b.y - s.a.y) * 0.5f;
+        dl->AddLine(ImVec2(s.a.x, c.y), ImVec2(s.b.x, c.y), alpha(accent, 0.12f));
+        dl->AddLine(ImVec2(c.x, s.a.y), ImVec2(c.x, s.b.y), alpha(accent, 0.12f));
         dl->AddCircle(c, rh * 0.8f, alpha(accent, 0.10f), 48);
         const float deflection = std::min(1.0f, std::sqrt(sx * sx + sy * sy));
         const float r = rh * (0.20f + 0.12f * deflection);
         const ImVec2 pos(c.x + sx * (rw - r * 1.4f), c.y + sy * (rh - r * 1.4f));
-        blob(dl, pos, r, frozen ? kIce : accent, time_ * (frozen ? 0.2 : 1.0), 1.0f + std::abs(sx) * 0.35f,
-             1.0f + std::abs(sy) * 0.35f);
+        blob(dl, pos, r, color, time_ * (frozen ? 0.2 : 1.0), 1.0f + std::abs(sx) * 0.35f, 1.0f + std::abs(sy) * 0.35f);
         if (frozen)
-            text(dl, ImVec2(c.x, sb.y - em() * 1.3f), kIce, "FREEZE", em() * 0.8f, true);
+            badge(dl, gBold, px(12), c.x, s.b.y - px(30), px(22), "FROZEN", T::kIce, alpha(T::kIce, 0.16f), T::kIce);
     });
-    if (hoverButton(index == 0 ? "##stickL" : "##stickR", sa, sb))
+    if (hoverButton(index == 0 ? "##stickL" : "##stickR", s.a, s.b))
         click(index == 0 ? "axes:left_x,left_y" : "axes:right_x,right_y");
 
-    // Knobs: the CC each axis sends.
-    const float kTop = sb.y + em() * 2.2f;
-    const float r = std::min(w * 0.135f, em() * 1.8f);
-    const float kc = kTop + r + em() * 0.4f;
-    sectionLabel(dl, x, sb.y + em() * 0.8f, kc + r + em() * 1.6f, "VALUES");
+    // Values: one knob per axis, the CC value below it, then the CC badge.
+    const float valuesY = s.b.y + px(18);
+    section(dl, x, w, valuesY, "VALUES");
+    const float r = std::min(w * 0.14f, px(28));
+    const float kc = valuesY + px(52);
     auto axisKnob = [&](float cx, const AxisBinding& b, Axis a, const char* name, int smoothId) {
-        const float pos = axisPosition01(live, a);
-        const int value = ccValue(b, pos);
-        const float shown = smooth(smoothId, static_cast<float>(value) / 127.0f, 20.0f);
-        char label[32], val[16];
-        std::snprintf(label, sizeof label, b.enabled ? "%s  CC %d" : "%s", name, b.cc);
-        std::snprintf(val, sizeof val, b.enabled ? (frozen ? "frozen" : "%d") : "-", value);
-        knob(dl, ImVec2(cx, kc), r, shown, frozen ? kIce : accent, b.enabled, label, val);
+        const int value = ccValue(b, axisPosition01(live, a));
+        knob(dl, ImVec2(cx, kc), r, smooth(smoothId, static_cast<float>(value) / 127.0f, 20.0f), color, b.enabled);
+        text(dl, gBold, px(13), cx, kc - r * 1.37f - px(9), color, name, H::Center, V::Middle);
+        const std::string shown = !b.enabled ? "-" : frozen ? "frozen" : std::to_string(value);
+        text(dl, gBold, px(17), cx, kc + r * 1.28f, frozen ? T::kIce : T::kText, shown, H::Center);
+        if (b.enabled)
+            badge(dl, gCondensed, px(15), cx, kc + r * 1.28f + px(24), px(23), "CC " + std::to_string(b.cc), T::kText,
+                  alpha(color, 0.22f), color);
+        if (b.invert)
+            text(dl, gMedium, px(11), cx, kc + r * 1.28f + px(52), T::kLabel, "inverted", H::Center);
         const std::string spec = "axis:" + std::string(toString(a));
-        if (hoverButton(("##" + spec).c_str(), ImVec2(cx - r * 1.5f, kc - r * 1.3f - em()), ImVec2(cx + r * 1.5f, kc + r * 1.3f + em())))
+        if (hoverButton(("##" + spec).c_str(), ImVec2(cx - r * 1.5f, kc - r * 1.3f - px(14)),
+                        ImVec2(cx + r * 1.5f, kc + r * 1.28f + px(50))))
             click(spec);
     };
-    const float left = x + em() * 1.4f, right = x + w;
-    axisKnob(left + (right - left) * 0.28f, bx, ax, "X", index * 4 + 2);
-    axisKnob(left + (right - left) * 0.72f, by, ay, "Y", index * 4 + 3);
+    axisKnob(x + w * 0.28f, bx, ax, "X", index * 4 + 2);
+    axisKnob(x + w * 0.72f, by, ay, "Y", index * 4 + 3);
 
-    // Freeze status.
-    const float fTop = kc + r + em() * 2.2f;
-    if (fTop + em() * 2 < y + h) {
-        sectionLabel(dl, x, fTop, std::min(fTop + em() * 3.0f, y + h - 4), "FREEZE");
-        const auto button = freezeButton(m, axisBits);
-        led(dl, ImVec2(left + em() * 0.8f, fTop + em() * 1.0f), em() * 0.32f, kIce, frozen);
-        const std::string state = button ? label(*button) + (frozen ? ": frozen" : ": free") : "no button";
-        text(dl, ImVec2(left + em() * 1.6f, fTop + em() * 0.5f), frozen ? kIce : T::kDim, state, em() * 0.85f);
-        if (button && hoverButton(index == 0 ? "##freezeL" : "##freezeR", ImVec2(left, fTop),
-                                  ImVec2(x + w - em() * 0.4f, fTop + em() * 2.0f)))
-            click("button:" + std::string(toString(*button)));
+    // Freeze: which button freezes these axes, and whether they are frozen.
+    const float freezeY = valuesY + px(158);
+    if (freezeY + px(46) > y + h)
+        return;
+    section(dl, x, w, freezeY, "FREEZE");
+    const auto button = freezeButton(m, axisBits);
+    const float fy = freezeY + px(12), fh = px(34);
+    row(dl, x + px(12), fy, w - px(24), fh, frozen ? alpha(T::kIce, 0.18f) : T::kRow, frozen ? T::kIce : T::kRowBorder);
+    const ImVec2 dot(x + px(30), fy + fh * 0.5f);
+    if (frozen)
+        dl->AddCircleFilled(dot, px(6), T::kIce);
+    else
+        dl->AddCircle(dot, px(6), T::kIce, 0, px(2));
+    text(dl, gBold, px(14), x + px(44), fy + fh * 0.5f, T::kText, button ? label(*button) : "no button", H::Left, V::Middle);
+    text(dl, frozen ? gBold : gMedium, px(13), x + w - px(22), fy + fh * 0.5f, frozen ? T::kIce : T::kLabel,
+         frozen ? "frozen" : "free", H::Right, V::Middle);
+    if (button && hoverButton(index == 0 ? "##freezeL" : "##freezeR", ImVec2(x + px(12), fy), ImVec2(x + w - px(12), fy + fh)))
+        click("button:" + std::string(toString(*button)));
+
+    // Activity: the last seconds of the stick, X and Y.
+    const float activityY = valuesY + px(220);
+    const float gTop = activityY + px(10), gBottom = y + h - px(10);
+    if (gBottom - gTop < px(28))
+        return;
+    section(dl, x, w, activityY, "ACTIVITY");
+    const ImVec2 ga(x + px(12), gTop), gb(x + w - px(12), gBottom);
+    dl->AddRectFilled(ga, gb, kGraph, px(4));
+    const float midY = (ga.y + gb.y) * 0.5f, amp = (gb.y - ga.y) * 0.5f - px(5);
+    for (int k = 0; k < 2; ++k) {
+        const History& hist = history_[static_cast<std::size_t>(index * 2 + k)];
+        ImVec2 pts[History::kSize];
+        for (int i = 0; i < History::kSize; ++i) {
+            const float t = static_cast<float>(i) / (History::kSize - 1);
+            pts[i] = ImVec2(gb.x - px(4) - t * (gb.x - ga.x - px(8)), midY + hist.at(i) * amp);
+        }
+        dl->AddPolyline(pts, History::kSize, k == 0 ? color : mix(color, T::kText, 0.5f), px(2));
     }
 }
 
@@ -382,81 +437,75 @@ void PerformanceView::drawTriggers(const Mapping& m, const LiveState& live, floa
     const auto& br = m.axes[static_cast<std::size_t>(Axis::RightTrigger)];
     const auto& dl2 = m.buttons[static_cast<std::size_t>(Button::LeftTrigger)];
     const auto& dr2 = m.buttons[static_cast<std::size_t>(Button::RightTrigger)];
-    const Panel p = panel(dl, x, y, w, h, "TRIGGERS",
-                          live.connected && (bl.enabled || br.enabled || dl2.isSet() || dr2.isSet()));
-    const float pad = em() * 0.6f;
-    const ImVec2 sa(x + pad, p.bodyTop + pad), sb(x + w - pad, p.bodyTop + pad + std::min(w * 0.78f, h * 0.42f));
+    const float top = panel(dl, x, y, w, h, "TRIGGERS", live.connected && (bl.enabled || br.enabled || dl2.isSet() || dr2.isSet()));
+    const ScreenBox s = screenBox(x, top, w, h);
     const float vl = smooth(8, axisPosition01(live, Axis::LeftTrigger), 20.0f);
     const float vr = smooth(9, axisPosition01(live, Axis::RightTrigger), 20.0f);
     const bool soundL = live.isSounding(Engine::slotOf(Button::LeftTrigger));
     const bool soundR = live.isSounding(Engine::slotOf(Button::RightTrigger));
 
-    screen(dl, sa, sb, T::kPink, [&] {
-        const float W = sb.x - sa.x, H = sb.y - sa.y;
-        for (int i = 1; i < 4; ++i) {
-            const float gy = sa.y + H * static_cast<float>(i) / 4.0f;
-            dl->AddLine(ImVec2(sa.x, gy), ImVec2(sb.x, gy), IM_COL32(255, 255, 255, 14));
-        }
-        // Digital threshold.
-        const float ty = sb.y - H * 0.12f - (H * 0.76f) * Engine::kTriggerPress;
-        for (float dx = sa.x; dx < sb.x; dx += 8)
-            dl->AddLine(ImVec2(dx, ty), ImVec2(dx + 4, ty), alpha(T::kPink, 0.35f));
-        // One envelope per trigger: attack up to the pressure, then release.
-        auto envelope = [&](float x0, float x1, float v, bool sounding, const char* name) {
-            const float base = sb.y - H * 0.12f;
-            const float peak = base - (H * 0.76f) * v;
-            const ImVec2 pts[] = {{x0, base}, {x0 + (x1 - x0) * 0.25f, peak}, {x0 + (x1 - x0) * 0.6f, peak},
-                                  {x1, base}};
-            const ImU32 col = sounding ? T::kPink : mix(T::kPink, IM_COL32(180, 180, 180, 255), 0.4f);
-            const ImVec2 fill[] = {pts[0], pts[1], pts[2], pts[3]};
-            dl->AddConvexPolyFilled(fill, 4, alpha(col, 0.18f + 0.25f * v));
-            dl->AddPolyline(pts, 4, col, 2.0f);
-            const float hs = em() * 0.28f;
-            dl->AddRectFilled(ImVec2(pts[1].x - hs, peak - hs), ImVec2(pts[1].x + hs, peak + hs), col);
-            text(dl, ImVec2((x0 + x1) * 0.5f, sa.y + em() * 0.3f), sounding ? T::kText : T::kDim, name, em() * 0.8f,
-                 true);
+    screen(dl, s.a, s.b, T::kPink, [&] {
+        const float W = s.b.x - s.a.x, Hh = s.b.y - s.a.y;
+        const float base = s.b.y - Hh * 0.12f, travel = Hh * 0.72f;
+        const float ty = base - travel * Engine::kTriggerPress;
+        for (float dx = s.a.x; dx < s.b.x; dx += px(9))
+            dl->AddLine(ImVec2(dx, ty), ImVec2(dx + px(5), ty), alpha(T::kPink, 0.55f), px(1.2f));
+        auto envelope = [&](float x0, float x1, float v, bool on, const char* name) {
+            const float peak = base - travel * v;
+            const ImVec2 pts[] = {{x0, base}, {x0 + (x1 - x0) * 0.25f, peak}, {x0 + (x1 - x0) * 0.6f, peak}, {x1, base}};
+            const ImU32 col = on ? T::kPink : IM_COL32(0xA9, 0xA1, 0xA6, 255);
+            dl->AddConvexPolyFilled(pts, 4, alpha(col, 0.20f + 0.25f * v));
+            dl->AddPolyline(pts, 4, col, px(2.2f));
+            text(dl, gBold, px(13), (x0 + x1) * 0.5f, s.a.y + px(8), on ? T::kText : T::kLabel, name, H::Center);
         };
-        envelope(sa.x + W * 0.04f, sa.x + W * 0.48f, vl, soundL, "L2");
-        envelope(sa.x + W * 0.52f, sa.x + W * 0.96f, vr, soundR, "R2");
+        envelope(s.a.x + W * 0.04f, s.a.x + W * 0.48f, vl, soundL, "L2");
+        envelope(s.a.x + W * 0.52f, s.a.x + W * 0.96f, vr, soundR, "R2");
     });
-    if (hoverButton("##triggers", sa, sb))
+    if (hoverButton("##triggers", s.a, s.b))
         click("axes:left_trigger,right_trigger");
 
-    const float r = std::min(w * 0.135f, em() * 1.8f);
-    const float kc = sb.y + em() * 2.2f + r + em() * 0.4f;
-    sectionLabel(dl, x, sb.y + em() * 0.8f, kc + r + em() * 1.6f, "CC");
-    const float left = x + em() * 1.4f, right = x + w;
+    const float valuesY = s.b.y + px(18);
+    section(dl, x, w, valuesY, "CC");
+    const float r = std::min(w * 0.14f, px(28));
+    const float kc = valuesY + px(52);
     auto trigKnob = [&](float cx, const AxisBinding& b, Axis a, const char* name, int id) {
         const int value = ccValue(b, axisPosition01(live, a));
-        char label[32], val[16];
-        std::snprintf(label, sizeof label, b.enabled ? "%s  CC %d" : "%s", name, b.cc);
-        std::snprintf(val, sizeof val, b.enabled ? "%d" : "-", value);
-        knob(dl, ImVec2(cx, kc), r, smooth(id, static_cast<float>(value) / 127.0f, 20.0f), T::kPink, b.enabled, label,
-             val);
+        knob(dl, ImVec2(cx, kc), r, smooth(id, static_cast<float>(value) / 127.0f, 20.0f), T::kPink, b.enabled);
+        text(dl, gBold, px(13), cx, kc - r * 1.37f - px(9), T::kPink, name, H::Center, V::Middle);
+        text(dl, gBold, px(17), cx, kc + r * 1.28f, T::kText, b.enabled ? std::to_string(value) : "-", H::Center);
+        if (b.enabled)
+            badge(dl, gCondensed, px(15), cx, kc + r * 1.28f + px(24), px(23), "CC " + std::to_string(b.cc), T::kText,
+                  alpha(T::kPink, 0.22f), T::kPink);
         const std::string spec = "axis:" + std::string(toString(a));
-        if (hoverButton(("##" + spec).c_str(), ImVec2(cx - r * 1.5f, kc - r * 1.3f - em()), ImVec2(cx + r * 1.5f, kc + r * 1.3f + em())))
+        if (hoverButton(("##" + spec).c_str(), ImVec2(cx - r * 1.5f, kc - r * 1.3f - px(14)),
+                        ImVec2(cx + r * 1.5f, kc + r * 1.28f + px(50))))
             click(spec);
     };
-    trigKnob(left + (right - left) * 0.28f, bl, Axis::LeftTrigger, "L2", 10);
-    trigKnob(left + (right - left) * 0.72f, br, Axis::RightTrigger, "R2", 11);
+    trigKnob(x + w * 0.28f, bl, Axis::LeftTrigger, "L2", 10);
+    trigKnob(x + w * 0.72f, br, Axis::RightTrigger, "R2", 11);
 
     // The digital L2 / R2 buttons.
-    const float bTop = kc + r + em() * 2.2f;
-    if (bTop + em() * 3 < y + h) {
-        sectionLabel(dl, x, bTop, std::min(bTop + em() * 3.6f, y + h - 4), "BUTTONS");
-        auto row = [&](float ry, Button b, const TriggerBinding& t, bool sounding) {
-            led(dl, ImVec2(left + em() * 0.8f, ry + em() * 0.55f), em() * 0.3f, T::kPink, sounding);
-            text(dl, ImVec2(left + em() * 1.6f, ry), sounding ? T::kText : T::kDim,
-                 fit(label(b) + "   " + compact(t, flats_) + (t.isSet() && t.mode == Mode::Toggle ? ", toggle" : ""),
-                     em() * 0.82f, right - left - em() * 2.2f),
-                 em() * 0.82f);
-            if (hoverButton(b == Button::LeftTrigger ? "##l2" : "##r2", ImVec2(left, ry - 2),
-                            ImVec2(right - em() * 0.4f, ry + em() * 1.3f)))
-                click(b == Button::LeftTrigger ? "button:left_trigger" : "button:right_trigger");
-        };
-        row(bTop + em() * 0.3f, Button::LeftTrigger, dl2, soundL);
-        row(bTop + em() * 1.8f, Button::RightTrigger, dr2, soundR);
-    }
+    const float buttonsY = valuesY + px(158);
+    if (buttonsY + px(90) > y + h)
+        return;
+    section(dl, x, w, buttonsY, "AS BUTTONS");
+    auto button = [&](float ry, Button b, const TriggerBinding& t, bool on) {
+        const float rh = px(34);
+        row(dl, x + px(12), ry, w - px(24), rh, on ? alpha(T::kPink, 0.32f) : T::kRow, on ? T::kPink : T::kRowBorder);
+        text(dl, gBold, px(14), x + px(24), ry + rh * 0.5f, T::kText, label(b), H::Left, V::Middle);
+        std::string action = compact(t, flats_);
+        if (t.isSet() && t.mode == Mode::Toggle)
+            toggleMark(dl, ImVec2(x + w - px(30), ry + rh * 0.5f), px(6), on ? T::kPink : T::kLabel);
+        text(dl, gCondensed, px(17), x + w - px(t.mode == Mode::Toggle && t.isSet() ? 44 : 24), ry + rh * 0.5f,
+             on ? T::kText : T::kLabel, fit(gCondensed, px(17), action, w - px(90)), H::Right, V::Middle);
+        if (hoverButton(b == Button::LeftTrigger ? "##l2" : "##r2", ImVec2(x + px(12), ry), ImVec2(x + w - px(12), ry + rh)))
+            click(b == Button::LeftTrigger ? "button:left_trigger" : "button:right_trigger");
+    };
+    button(buttonsY + px(12), Button::LeftTrigger, dl2, soundL);
+    button(buttonsY + px(54), Button::RightTrigger, dr2, soundR);
+    const float noteY = buttonsY + px(106);
+    if (noteY + px(14) < y + h)
+        text(dl, gMedium, px(12), x + w * 0.5f, noteY, T::kLabel, "button at 25 % of travel", H::Center, V::Middle);
 }
 
 void PerformanceView::drawDpad(const Mapping& m, const LiveState& live, float x, float y, float w, float h) {
@@ -464,9 +513,8 @@ void PerformanceView::drawDpad(const Mapping& m, const LiveState& live, float x,
     bool any = false;
     for (const auto& t : m.dpad)
         any |= t.isSet();
-    const Panel p = panel(dl, x, y, w, h, "D-PAD", live.connected && any);
-    const float pad = em() * 0.6f;
-    const ImVec2 sa(x + pad, p.bodyTop + pad), sb(x + w - pad, p.bodyTop + pad + std::min(w * 0.78f, h * 0.42f));
+    const float top = panel(dl, x, y, w, h, "D-PAD", live.connected && any);
+    const ScreenBox s = screenBox(x, top, w, h);
     const auto current = liveHat(live);
     static constexpr std::optional<HatDir> kGrid[3][3] = {
         {HatDir::UpLeft, HatDir::Up, HatDir::UpRight},
@@ -474,27 +522,26 @@ void PerformanceView::drawDpad(const Mapping& m, const LiveState& live, float x,
         {HatDir::DownLeft, HatDir::Down, HatDir::DownRight},
     };
 
-    screen(dl, sa, sb, IM_COL32(150, 150, 160, 255), [&] {
+    screen(dl, s.a, s.b, IM_COL32(0x9A, 0x9A, 0xA4, 255), [&] {
         // Isometric cubes; the direction played rises and turns red.
-        const float W = sb.x - sa.x, H = sb.y - sa.y;
-        const float s = std::min(W / 7.0f, H / 5.4f);
-        const ImVec2 c((sa.x + sb.x) * 0.5f, sa.y + H * 0.30f);
+        const float W = s.b.x - s.a.x, Hh = s.b.y - s.a.y;
+        const float sz = std::min(W / 7.0f, Hh / 5.6f);
+        const ImVec2 c((s.a.x + s.b.x) * 0.5f, s.a.y + Hh * 0.30f);
         for (int row = 0; row < 3; ++row) {
             for (int col = 0; col < 3; ++col) {
                 const auto dir = kGrid[row][col];
                 const int id = 20 + row * 3 + col;
                 const bool active = dir && current == dir;
                 const bool sounding = dir && live.isSounding(Engine::slotOf(*dir));
-                const float lift = smooth(id, active ? 1.0f : sounding ? 0.45f : 0.0f, 16.0f) * s * 0.9f;
-                const ImVec2 base(c.x + static_cast<float>(col - row) * s, c.y + static_cast<float>(col + row) * s * 0.5f);
-                const float depth = s * 0.55f + lift;
-                const ImVec2 top(base.x, base.y - lift);
-                ImU32 face = dir ? IM_COL32(225, 225, 228, 255) : IM_COL32(110, 110, 115, 255);
+                const float lift = smooth(id, active ? 1.0f : sounding ? 0.45f : 0.0f, 16.0f) * sz * 0.9f;
+                const ImVec2 base(c.x + static_cast<float>(col - row) * sz, c.y + static_cast<float>(col + row) * sz * 0.5f);
+                const float depth = sz * 0.55f + lift;
+                const ImVec2 tp(base.x, base.y - lift);
+                ImU32 face = dir ? IM_COL32(0xE6, 0xE6, 0xEA, 255) : IM_COL32(0x6E, 0x6E, 0x74, 255);
                 if (dir && !m.dpad[static_cast<std::size_t>(*dir)].isSet())
-                    face = IM_COL32(150, 150, 155, 255);
-                face = mix(face, kCubeRed, smooth(id + 10, active || sounding ? 1.0f : 0.0f, 12.0f));
-                const ImVec2 t0(top.x, top.y - s * 0.5f), t1(top.x + s, top.y), t2(top.x, top.y + s * 0.5f),
-                    t3(top.x - s, top.y);
+                    face = IM_COL32(0x96, 0x96, 0x9B, 255);
+                face = mix(face, T::kRed, smooth(id + 10, active ? 1.0f : sounding ? 0.6f : 0.0f, 12.0f));
+                const ImVec2 t0(tp.x, tp.y - sz * 0.5f), t1(tp.x + sz, tp.y), t2(tp.x, tp.y + sz * 0.5f), t3(tp.x - sz, tp.y);
                 const ImVec2 left[] = {t3, t2, ImVec2(t2.x, t2.y + depth), ImVec2(t3.x, t3.y + depth)};
                 const ImVec2 right[] = {t2, t1, ImVec2(t1.x, t1.y + depth), ImVec2(t2.x, t2.y + depth)};
                 const ImVec2 topFace[] = {t0, t1, t2, t3};
@@ -504,41 +551,41 @@ void PerformanceView::drawDpad(const Mapping& m, const LiveState& live, float x,
             }
         }
         if (current) {
-            const auto& t = m.dpad[static_cast<std::size_t>(*current)];
-            dl->AddRectFilled(ImVec2(sa.x, sb.y - em() * 1.5f), sb, IM_COL32(0, 0, 0, 150));
-            text(dl, ImVec2((sa.x + sb.x) * 0.5f, sb.y - em() * 1.3f), T::kText,
-                 fit(label(*current) + ": " + compact(t, flats_), em() * 0.8f, W - em()), em() * 0.8f, true);
+            const float band = px(28);
+            dl->AddRectFilled(ImVec2(s.a.x, s.b.y - band), s.b, IM_COL32(0, 0, 0, 170));
+            const std::string caption = label(*current) + "  ·  " + compact(m.dpad[static_cast<std::size_t>(*current)], flats_);
+            text(dl, gBold, px(14), (s.a.x + s.b.x) * 0.5f, s.b.y - band * 0.5f, T::kText,
+                 fit(gBold, px(14), caption, W - px(12)), H::Center, V::Middle);
         }
     });
-    if (hoverButton("##dpadscreen", sa, sb) && current)
+    if (hoverButton("##dpadscreen", s.a, s.b) && current)
         click("dpad:" + std::string(toString(*current)));
 
     // The eight directions and what they play.
-    const float left = x + em() * 1.4f, right = x + w - em() * 0.4f;
-    const float top = sb.y + em() * 0.9f;
-    const float rowH = std::min(em() * 1.45f, (y + h - top - em() * 0.4f) / 8.0f);
-    sectionLabel(dl, x, top, top + rowH * 8, "DIRECTIONS");
     static constexpr HatDir kOrder[] = {HatDir::Up,   HatDir::UpRight,  HatDir::Right, HatDir::DownRight,
                                         HatDir::Down, HatDir::DownLeft, HatDir::Left,  HatDir::UpLeft};
+    const float listTop = s.b.y + px(14);
+    const float rowH = std::min(px(35), (y + h - px(8) - listTop) / 8.0f);
     for (int i = 0; i < 8; ++i) {
         const HatDir d = kOrder[i];
-        const float ry = top + rowH * static_cast<float>(i);
+        const float ry = listTop + rowH * static_cast<float>(i);
+        const float rh = rowH - px(3);
         const bool active = current == d;
         const bool sounding = live.isSounding(Engine::slotOf(d));
-        if (active)
-            dl->AddRectFilled(ImVec2(left, ry), ImVec2(right, ry + rowH - 1), alpha(kCubeRed, 0.25f), 3.0f);
-        led(dl, ImVec2(left + em() * 0.5f, ry + rowH * 0.5f), em() * 0.26f, kCubeRed, active || sounding);
-        const float size = em() * 0.8f;
-        text(dl, ImVec2(left + em() * 1.1f, ry + (rowH - size) * 0.5f), T::kDim, label(d), size);
-        const float descX = left + em() * 5.6f;
         const auto& t = m.dpad[static_cast<std::size_t>(d)];
         const bool toggle = t.isSet() && t.mode == Mode::Toggle;
-        const float markR = em() * 0.28f;
-        text(dl, ImVec2(descX, ry + (rowH - size) * 0.5f), active || sounding ? T::kText : mix(T::kDim, T::kText, 0.4f),
-             fit(compact(t, flats_), size, right - descX - (toggle ? markR * 3 : 0)), size);
+        if (active || sounding)
+            row(dl, x + px(8), ry, w - px(16), rh, alpha(T::kRed, active ? 0.30f : 0.16f), alpha(T::kRed, active ? 1.0f : 0.6f));
+        led(dl, ImVec2(x + px(20), ry + rh * 0.5f), px(4.5f), T::kRed, active || sounding);
+        text(dl, gMedium, px(13), x + px(32), ry + rh * 0.5f, active || sounding ? T::kText : T::kLabel, label(d), H::Left,
+             V::Middle);
+        const float right = x + w - px(toggle ? 36 : 14);
+        const float bh = std::min(px(22), rh - px(4));
+        badge(dl, gCondensed, px(14), right, ry + (rh - bh) * 0.5f, bh,
+              fit(gCondensed, px(14), compact(t, flats_), w * 0.45f), t.isSet() ? T::kText : T::kDim, kBadge, 0, H::Right);
         if (toggle)
-            toggleMark(dl, ImVec2(right - markR * 1.6f, ry + rowH * 0.5f), markR, sounding ? kCubeRed : T::kDim);
-        if (hoverButton(("##dir" + std::to_string(i)).c_str(), ImVec2(left, ry), ImVec2(right, ry + rowH - 1)))
+            toggleMark(dl, ImVec2(x + w - px(22), ry + rh * 0.5f), px(6), active || sounding ? T::kRed : T::kLabel);
+        if (hoverButton(("##dir" + std::to_string(i)).c_str(), ImVec2(x + px(8), ry), ImVec2(x + w - px(8), ry + rh)))
             click("dpad:" + std::string(toString(d)));
     }
 }
@@ -546,10 +593,9 @@ void PerformanceView::drawDpad(const Mapping& m, const LiveState& live, float x,
 void PerformanceView::drawTouchpad(const Mapping& m, const LiveState& live, float x, float y, float w, float h) {
     ImDrawList* dl = ImGui::GetWindowDrawList();
     const bool any = m.fingers[0].mode != TouchMode::Off || m.fingers[1].mode != TouchMode::Off;
-    const Panel p = panel(dl, x, y, w, h, "TOUCHPAD", live.connected && live.hasTouchpad && any);
-    const float pad = em() * 0.6f;
-    const ImVec2 sa(x + pad, p.bodyTop + pad), sb(x + w - pad, p.bodyTop + pad + std::min(w * 0.78f, h * 0.42f));
-    const ImU32 fingerColors[] = {IM_COL32(120, 220, 255, 255), T::kOrange};
+    const float top = panel(dl, x, y, w, h, "TOUCHPAD", live.connected && live.hasTouchpad && any);
+    const ScreenBox s = screenBox(x, top, w, h);
+    const ImU32 fingerColors[] = {T::kCyan, T::kOrange};
 
     for (int f = 0; f < kFingerCount; ++f) {
         auto& trail = trails_[static_cast<std::size_t>(f)];
@@ -564,14 +610,13 @@ void PerformanceView::drawTouchpad(const Mapping& m, const LiveState& live, floa
         }
     }
 
-    screen(dl, sa, sb, T::kPink, [&] {
-        const float W = sb.x - sa.x, H = sb.y - sa.y;
-        for (float gx = sa.x + 6; gx < sb.x; gx += 12)
-            for (float gy = sa.y + 6; gy < sb.y; gy += 12)
-                dl->AddCircleFilled(ImVec2(gx, gy), 1.0f, IM_COL32(255, 255, 255, 22));
-        dl->AddLine(ImVec2(sa.x + W * 0.5f, sa.y), ImVec2(sa.x + W * 0.5f, sb.y), IM_COL32(255, 255, 255, 25));
-        dl->AddLine(ImVec2(sa.x, sa.y + H * 0.5f), ImVec2(sb.x, sa.y + H * 0.5f), IM_COL32(255, 255, 255, 25));
-        // Zones that are playing.
+    screen(dl, s.a, s.b, T::kPink, [&] {
+        const float W = s.b.x - s.a.x, Hh = s.b.y - s.a.y;
+        for (float gx = s.a.x + px(6); gx < s.b.x; gx += px(12))
+            for (float gy = s.a.y + px(6); gy < s.b.y; gy += px(12))
+                dl->AddCircleFilled(ImVec2(gx, gy), 1.0f, IM_COL32(255, 255, 255, 26));
+        dl->AddLine(ImVec2(s.a.x + W * 0.5f, s.a.y), ImVec2(s.a.x + W * 0.5f, s.b.y), IM_COL32(255, 255, 255, 40));
+        dl->AddLine(ImVec2(s.a.x, s.a.y + Hh * 0.5f), ImVec2(s.b.x, s.a.y + Hh * 0.5f), IM_COL32(255, 255, 255, 40));
         for (int f = 0; f < kFingerCount; ++f) {
             if (m.fingers[static_cast<std::size_t>(f)].mode != TouchMode::Zones)
                 continue;
@@ -579,77 +624,80 @@ void PerformanceView::drawTouchpad(const Mapping& m, const LiveState& live, floa
                 const float on = smooth(40 + f * 4 + z, live.isSounding(Engine::slotOf(f, static_cast<Zone>(z))) ? 1.0f : 0.0f, 10.0f);
                 if (on < 0.01f)
                     continue;
-                const float zx = sa.x + static_cast<float>(z % 2) * W * 0.5f, zy = sa.y + static_cast<float>(z / 2) * H * 0.5f;
-                dl->AddRectFilled(ImVec2(zx + 2, zy + 2), ImVec2(zx + W * 0.5f - 2, zy + H * 0.5f - 2),
-                                  alpha(fingerColors[f], 0.30f * on), 3.0f);
+                const float zx = s.a.x + static_cast<float>(z % 2) * W * 0.5f, zy = s.a.y + static_cast<float>(z / 2) * Hh * 0.5f;
+                dl->AddRectFilled(ImVec2(zx + 2, zy + 2), ImVec2(zx + W * 0.5f - 2, zy + Hh * 0.5f - 2),
+                                  alpha(fingerColors[f], 0.30f * on), px(3));
             }
         }
         for (int f = 0; f < kFingerCount; ++f) {
             const auto& trail = trails_[static_cast<std::size_t>(f)];
             for (std::size_t i = 1; i < trail.points.size(); ++i) {
                 const float age = static_cast<float>((time_ - trail.times[i]) / 0.45);
-                const ImVec2 a(sa.x + trail.points[i - 1].first * W, sa.y + trail.points[i - 1].second * H);
-                const ImVec2 b(sa.x + trail.points[i].first * W, sa.y + trail.points[i].second * H);
-                dl->AddLine(a, b, alpha(fingerColors[f], 0.8f * (1.0f - age)), 3.0f * (1.0f - age) + 1.0f);
+                const ImVec2 a(s.a.x + trail.points[i - 1].first * W, s.a.y + trail.points[i - 1].second * Hh);
+                const ImVec2 b(s.a.x + trail.points[i].first * W, s.a.y + trail.points[i].second * Hh);
+                dl->AddLine(a, b, alpha(fingerColors[f], 0.8f * (1.0f - age)), px(3) * (1.0f - age) + 1.0f);
             }
             const auto& finger = live.fingers[static_cast<std::size_t>(f)];
             if (finger.down) {
-                const ImVec2 c(sa.x + finger.x * W, sa.y + finger.y * H);
+                const ImVec2 c(s.a.x + finger.x * W, s.a.y + finger.y * Hh);
                 const float pulse = 1.0f + 0.15f * std::sin(static_cast<float>(time_) * 9.0f);
-                dl->AddCircleFilled(c, em() * 1.0f * pulse, alpha(fingerColors[f], 0.18f));
-                dl->AddCircleFilled(c, em() * 0.45f, fingerColors[f]);
-                text(dl, ImVec2(c.x + em() * 0.6f, c.y - em() * 1.2f), IM_COL32_WHITE, f == 0 ? "1" : "2", em() * 0.8f);
+                dl->AddCircleFilled(c, px(16) * pulse, alpha(fingerColors[f], 0.20f));
+                dl->AddCircleFilled(c, px(7), fingerColors[f]);
+                text(dl, gBold, px(13), c.x + px(10), c.y - px(22), T::kText, f == 0 ? "1" : "2");
             }
         }
         if (!live.hasTouchpad && live.connected)
-            text(dl, ImVec2((sa.x + sb.x) * 0.5f, sa.y + H * 0.42f), T::kDim, "touchpad not detected", em() * 0.8f, true);
+            text(dl, gMedium, px(13), (s.a.x + s.b.x) * 0.5f, s.a.y + Hh * 0.45f, T::kLabel, "touchpad not detected",
+                 H::Center, V::Middle);
     });
-    if (hoverButton("##touchscreen", sa, sb))
+    if (hoverButton("##touchscreen", s.a, s.b))
         click("fingers");
 
     // Per finger: X/Y knobs or the four zones.
-    const float left = x + em() * 1.4f, right = x + w - em() * 0.4f;
-    float top = sb.y + em() * 0.9f;
-    const float block = (y + h - top - em() * 0.4f) / 2.0f;
-    for (int f = 0; f < kFingerCount; ++f) {
+    float sectionY = s.b.y + px(18);
+    const float block = std::min(px(146), (y + h - sectionY) / 2.0f);
+    for (int f = 0; f < kFingerCount; ++f, sectionY += block) {
         const FingerBinding& fb = m.fingers[static_cast<std::size_t>(f)];
         const auto& finger = live.fingers[static_cast<std::size_t>(f)];
-        const float bTop = top + block * static_cast<float>(f);
-        sectionLabel(dl, x, bTop, bTop + block - em() * 0.3f, f == 0 ? "FINGER 1" : "FINGER 2");
+        const std::string title = std::string(f == 0 ? "FINGER 1" : "FINGER 2") +
+                                  (fb.mode != TouchMode::Off && !finger.down ? "  ·  not touching" : "");
+        section(dl, x, w, sectionY, title);
+        const ImVec2 areaA(x + px(8), sectionY + px(8)), areaB(x + w - px(8), sectionY + block - px(6));
         if (fb.mode == TouchMode::Axis) {
-            const float r = std::min({w * 0.11f, em() * 1.25f, block * 0.22f});
-            const float kc = bTop + block * 0.5f;
+            const float r = std::min(w * 0.11f, px(22));
+            const float kc = sectionY + px(46);
             auto touchKnob = [&](float cx, const AxisBinding& b, float pos, const char* name, int id) {
                 const int value = ccValue(b, pos);
-                char lbl[32], val[16];
-                std::snprintf(lbl, sizeof lbl, b.enabled ? "%s  CC %d" : "%s", name, b.cc);
-                std::snprintf(val, sizeof val, b.enabled && finger.down ? "%d" : "-", value);
                 knob(dl, ImVec2(cx, kc), r, smooth(id, finger.down ? static_cast<float>(value) / 127.0f : 0.0f, 16.0f),
-                     fingerColors[f], b.enabled, lbl, val);
+                     fingerColors[f], b.enabled);
+                text(dl, gBold, px(12), cx, kc - r * 1.37f - px(8), fingerColors[f], name, H::Center, V::Middle);
+                text(dl, gBold, px(15), cx, kc + r * 1.3f, finger.down && b.enabled ? T::kText : T::kDim,
+                     finger.down && b.enabled ? std::to_string(value) : "-", H::Center);
+                if (b.enabled)
+                    badge(dl, gCondensed, px(14), cx, kc + r * 1.3f + px(20), px(22), "CC " + std::to_string(b.cc), T::kText,
+                          alpha(fingerColors[f], 0.22f), fingerColors[f]);
             };
-            touchKnob(left + (right - left) * 0.28f, fb.x, finger.x, "X", 50 + f * 2);
-            touchKnob(left + (right - left) * 0.72f, fb.y, 1.0f - finger.y, "Y", 51 + f * 2);
-            if (hoverButton(f == 0 ? "##f1" : "##f2", ImVec2(left, bTop), ImVec2(right, bTop + block - em() * 0.3f)))
+            touchKnob(x + w * 0.28f, fb.x, finger.x, "X", 50 + f * 2);
+            touchKnob(x + w * 0.72f, fb.y, 1.0f - finger.y, "Y", 51 + f * 2);
+            if (hoverButton(f == 0 ? "##f1" : "##f2", areaA, areaB))
                 click(f == 0 ? "finger:1" : "finger:2");
         } else if (fb.mode == TouchMode::Zones) {
-            const float cw = (right - left - em() * 0.4f) / 2.0f, ch = (block - em() * 0.8f) / 2.0f;
+            const float cw = (areaB.x - areaA.x - px(6)) / 2.0f, ch = (areaB.y - areaA.y - px(6)) / 2.0f;
             for (int z = 0; z < kZoneCount; ++z) {
-                const ImVec2 a(left + static_cast<float>(z % 2) * (cw + em() * 0.4f),
-                               bTop + static_cast<float>(z / 2) * (ch + em() * 0.3f));
+                const ImVec2 a(areaA.x + static_cast<float>(z % 2) * (cw + px(6)), areaA.y + static_cast<float>(z / 2) * (ch + px(6)));
                 const ImVec2 b(a.x + cw, a.y + ch);
                 const bool on = live.isSounding(Engine::slotOf(f, static_cast<Zone>(z)));
-                dl->AddRectFilled(a, b, on ? alpha(fingerColors[f], 0.45f) : IM_COL32(45, 47, 51, 255), 4.0f);
-                dl->AddRect(a, b, on ? fingerColors[f] : T::kBorder, 4.0f);
-                text(dl, ImVec2(a.x + em() * 0.3f, a.y + (ch - em() * 0.75f) * 0.5f), on ? T::kText : T::kDim,
-                     fit(compact(fb.zones[static_cast<std::size_t>(z)], flats_), em() * 0.75f, cw - em() * 0.5f),
-                     em() * 0.75f);
+                row(dl, a.x, a.y, cw, ch, on ? alpha(fingerColors[f], 0.35f) : T::kRow, on ? fingerColors[f] : T::kRowBorder);
+                text(dl, gCondensed, px(15), (a.x + b.x) * 0.5f, (a.y + b.y) * 0.5f, on ? T::kText : T::kLabel,
+                     fit(gCondensed, px(15), compact(fb.zones[static_cast<std::size_t>(z)], flats_), cw - px(8)), H::Center,
+                     V::Middle);
                 const std::string spec = "zone:" + std::to_string(f + 1) + ":" + std::string(toString(static_cast<Zone>(z)));
                 if (hoverButton(("##" + spec).c_str(), a, b))
                     click(spec);
             }
         } else {
-            text(dl, ImVec2(left + em() * 0.4f, bTop + block * 0.4f), T::kDim, "off", em() * 0.85f);
-            if (hoverButton(f == 0 ? "##f1off" : "##f2off", ImVec2(left, bTop), ImVec2(right, bTop + block - em() * 0.3f)))
+            text(dl, gMedium, px(13), x + w * 0.5f, (areaA.y + areaB.y) * 0.5f, T::kDim, "off", H::Center, V::Middle);
+            if (hoverButton(f == 0 ? "##f1off" : "##f2off", areaA, areaB))
                 click(f == 0 ? "finger:1" : "finger:2");
         }
     }
@@ -660,30 +708,28 @@ void PerformanceView::drawButtons(const Mapping& m, const LiveState& live, float
     bool any = false;
     for (const auto& t : m.buttons)
         any |= t.isSet();
-    const Panel p = panel(dl, x, y, w, h, "BUTTONS", live.connected && any);
+    const float top = panel(dl, x, y, w, h, "BUTTONS", live.connected && any);
 
     struct Pad {
         Button button;
-        ImU32 color;
-        bool big;
+        ImU32 color;  // face buttons only
     };
     static constexpr Pad kPads[] = {
-        {Button::LeftShoulder, 0, false}, {Button::LeftTrigger, 0, false}, {Button::LeftStick, 0, false},
-        {Button::Back, 0, false},         {Button::South, kPsCross, true}, {Button::East, kPsCircle, true},
-        {Button::West, kPsSquare, true},  {Button::North, kPsTriangle, true}, {Button::Start, 0, false},
-        {Button::Guide, 0, false},        {Button::Touchpad, 0, false},   {Button::Misc1, 0, false},
-        {Button::RightStick, 0, false},   {Button::RightTrigger, 0, false}, {Button::RightShoulder, 0, false},
+        {Button::LeftShoulder, 0}, {Button::LeftTrigger, 0}, {Button::LeftStick, 0},     {Button::Back, 0},
+        {Button::South, kPsCross}, {Button::East, kPsCircle}, {Button::West, kPsSquare},  {Button::North, kPsTriangle},
+        {Button::Start, 0},        {Button::Guide, 0},       {Button::Touchpad, 0},      {Button::Misc1, 0},
+        {Button::RightStick, 0},   {Button::RightTrigger, 0}, {Button::RightShoulder, 0},
     };
-    const float pad = em() * 0.8f;
+    const float pad = px(12);
     const float slot = (w - 2 * pad) / static_cast<float>(std::size(kPads));
-    const float bodyH = y + h - p.bodyTop;
-    const float cy = p.bodyTop + bodyH * 0.40f;
+    const float body = y + h - top;
+    const float cy = top + std::min(px(64), body * 0.30f);
     for (std::size_t i = 0; i < std::size(kPads); ++i) {
         const Pad& pd = kPads[i];
+        const bool face = pd.color != 0;
         const float cx = x + pad + slot * (static_cast<float>(i) + 0.5f);
-        const float r = std::min(slot * (pd.big ? 0.40f : 0.30f), bodyH * (pd.big ? 0.27f : 0.20f));
-        const ImU32 color = pd.color ? pd.color : IM_COL32(200, 200, 205, 255);
-        const int sdl = static_cast<int>(pd.button);
+        const float r = std::min(slot * (face ? 0.42f : 0.33f), px(face ? 30 : 23));
+        const ImU32 color = face ? pd.color : kPadGrey;
         bool down = false;
         if (pd.button == Button::LeftTrigger)
             down = axisPosition01(live, Axis::LeftTrigger) >= Engine::kTriggerPress;
@@ -692,30 +738,32 @@ void PerformanceView::drawButtons(const Mapping& m, const LiveState& live, float
         else
             down = live.isDown(pd.button);
         const bool sounding = live.isSounding(Engine::slotOf(pd.button));
-        const float on = sounding ? 1.0f : down ? 0.7f : 0.0f;
+        const ImVec2 c(cx, cy);
 
-        // Body, glow while sounding, ring, symbol.
-        dl->AddCircleFilled(ImVec2(cx, cy + r * 0.08f), r * 1.05f, IM_COL32(0, 0, 0, 100));
-        if (on > 0)
-            dl->AddCircleFilled(ImVec2(cx, cy), r * 1.45f, alpha(color, 0.22f * on));
-        dl->AddCircleFilled(ImVec2(cx, cy), r, down ? IM_COL32(78, 80, 86, 255) : IM_COL32(52, 54, 58, 255));
-        dl->AddCircle(ImVec2(cx, cy), r, sounding ? color : alpha(color, 0.45f), 0, sounding ? 3.0f : 1.5f);
-        const ImU32 sym = on > 0 ? color : alpha(color, 0.75f);
-        const float s = r * 0.45f;
+        // Body: filled with its color while sounding, tinted otherwise.
+        if (sounding) {
+            dl->AddCircleFilled(c, r * 1.5f, alpha(color, 0.18f));
+            dl->AddCircleFilled(c, r, color);
+        } else {
+            dl->AddCircleFilled(c, r, face ? alpha(color, down ? 0.35f : 0.15f) : (down ? IM_COL32(0x55, 0x5A, 0x63, 255) : IM_COL32(0x3B, 0x40, 0x47, 255)));
+        }
+        dl->AddCircle(c, r, face || sounding ? color : IM_COL32(0x8C, 0x92, 0x9A, 255), 0, px(2.2f));
+        const ImU32 symbol = sounding ? IM_COL32(0x10, 0x12, 0x15, 255) : face ? color : T::kText;
+        const float s = r * 0.42f, th = r * 0.11f;
         switch (pd.button) {
         case Button::South:
-            dl->AddLine(ImVec2(cx - s, cy - s), ImVec2(cx + s, cy + s), sym, r * 0.14f);
-            dl->AddLine(ImVec2(cx - s, cy + s), ImVec2(cx + s, cy - s), sym, r * 0.14f);
+            dl->AddLine(ImVec2(cx - s, cy - s), ImVec2(cx + s, cy + s), symbol, th);
+            dl->AddLine(ImVec2(cx - s, cy + s), ImVec2(cx + s, cy - s), symbol, th);
             break;
         case Button::East:
-            dl->AddCircle(ImVec2(cx, cy), s * 1.05f, sym, 0, r * 0.14f);
+            dl->AddCircle(c, s * 1.05f, symbol, 0, th);
             break;
         case Button::West:
-            dl->AddRect(ImVec2(cx - s, cy - s), ImVec2(cx + s, cy + s), sym, 0.0f, r * 0.14f);
+            dl->AddRect(ImVec2(cx - s, cy - s), ImVec2(cx + s, cy + s), symbol, 0.0f, th);
             break;
         case Button::North:
-            dl->AddTriangle(ImVec2(cx, cy - s * 1.15f), ImVec2(cx + s * 1.1f, cy + s * 0.75f),
-                            ImVec2(cx - s * 1.1f, cy + s * 0.75f), sym, r * 0.14f);
+            dl->AddTriangle(ImVec2(cx, cy - s * 1.15f), ImVec2(cx + s * 1.1f, cy + s * 0.75f), ImVec2(cx - s * 1.1f, cy + s * 0.75f),
+                            symbol, th);
             break;
         default: {
             const char* code = pd.button == Button::Back       ? "CRE"
@@ -724,30 +772,29 @@ void PerformanceView::drawButtons(const Mapping& m, const LiveState& live, float
                                : pd.button == Button::Misc1    ? "MUTE"
                                                                 : nullptr;
             const std::string name = code ? code : label(pd.button);
-            const float size = std::min(em() * 0.85f, r * 0.62f);
-            text(dl, ImVec2(cx, cy - size * 0.55f), sym, name, size, true);
+            text(dl, gBold, std::min(px(name.size() > 3 ? 11 : 13), r * 0.62f), cx, cy, symbol, name, H::Center, V::Middle);
         }
         }
         // Flash on each press.
-        const double since = time_ - lastPress_[static_cast<std::size_t>(sdl)];
+        const double since = time_ - lastPress_[static_cast<std::size_t>(pd.button)];
         if (pd.button != Button::LeftTrigger && pd.button != Button::RightTrigger && since < 0.4) {
             const auto k = static_cast<float>(since / 0.4);
-            dl->AddCircle(ImVec2(cx, cy), r * (1.0f + 0.7f * k), alpha(color, 1.0f - k), 0, 3.0f * (1.0f - k) + 1.0f);
+            dl->AddCircle(c, r * (1.0f + 0.7f * k), alpha(color, 1.0f - k), 0, px(3) * (1.0f - k) + 1.0f);
         }
 
-        // Name and action below.
-        const float small = em() * 0.72f;
-        float ty = cy + std::max(r, slot * 0.40f) * 1.2f + em() * 0.2f;
-        text(dl, ImVec2(cx, ty), T::kDim, fit(label(pd.button), small, slot - 4), small, true);
-        ty += small * 1.3f;
+        // Name, then what it plays, then the toggle mark.
         const auto& binding = m.buttons[static_cast<std::size_t>(pd.button)];
-        text(dl, ImVec2(cx, ty), sounding ? T::kText : mix(T::kDim, T::kText, 0.5f),
-             fit(compact(binding, flats_), small, slot - 4), small, true);
-        if (binding.mode == Mode::Toggle && binding.isSet())
-            toggleMark(dl, ImVec2(cx, ty + small * 2.0f), small * 0.42f, sounding ? color : T::kDim);
+        float ty = cy + r + px(16);
+        text(dl, gMedium, px(12), cx, ty, T::kLabel, fit(gMedium, px(12), label(pd.button), slot - 2), H::Center, V::Middle);
+        ty += px(14);
+        const std::string action = fit(gCondensed, px(14), compact(binding, flats_), slot - px(16));
+        badge(dl, gCondensed, px(14), cx, ty, px(22), action, binding.isSet() ? T::kText : T::kDim,
+              sounding ? alpha(color, 0.45f) : IM_COL32(0x40, 0x45, 0x4D, 255), 0, H::Center, 6);
+        if (binding.isSet() && binding.mode == Mode::Toggle)
+            toggleMark(dl, ImVec2(cx, ty + px(36)), px(5.5f), sounding ? color : T::kLabel);
 
-        if (hoverButton(("##pad" + std::to_string(i)).c_str(), ImVec2(cx - slot * 0.5f + 2, p.bodyTop + 2),
-                        ImVec2(cx + slot * 0.5f - 2, y + h - 2)))
+        if (hoverButton(("##pad" + std::to_string(i)).c_str(), ImVec2(cx - slot * 0.5f + 2, top + px(4)),
+                        ImVec2(cx + slot * 0.5f - 2, y + h - px(4))))
             click("button:" + std::string(toString(pd.button)));
     }
 }

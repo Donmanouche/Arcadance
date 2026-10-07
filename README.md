@@ -158,6 +158,7 @@ src/core/      bibliothèque sans dépendance système (testée)
   Preset*      modèle de mapping, lecture/écriture JSON, import des anciens presets
   Chords/Notes théorie musicale
   PresetLibrary, AppSettings, Labels   dossier de presets, réglages, libellés
+assets/fonts/  Roboto Bold et Roboto Condensed Bold (licence Apache 2.0), embarquées
 tools/         midipad-import
 tests/         tests unitaires (doctest), dont GamepadInput face à une
                manette virtuelle SDL

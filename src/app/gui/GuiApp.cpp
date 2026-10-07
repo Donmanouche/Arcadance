@@ -40,6 +40,10 @@
 
 extern const unsigned char kRobotoMedium[];
 extern const std::size_t kRobotoMedium_size;
+extern const unsigned char kRobotoBold[];
+extern const std::size_t kRobotoBold_size;
+extern const unsigned char kRobotoCondensedBold[];
+extern const std::size_t kRobotoCondensedBold_size;
 
 namespace fs = std::filesystem;
 using namespace midipad;
@@ -258,6 +262,7 @@ private:
 
     MappingEditor editor_;
     PerformanceView performance_;
+    PerformanceView::Fonts uiFonts_;
     std::optional<std::string> overlaySpec_;  // control edited over the animated view
     bool overlayAppearing_ = false;
     int editChannel_ = -1;  // -1: base mapping
@@ -378,8 +383,14 @@ bool GuiApp::init() {
 
     ImFontConfig font;
     font.FontDataOwnedByAtlas = false;
-    io.Fonts->AddFontFromMemoryTTF(const_cast<unsigned char*>(kRobotoMedium), static_cast<int>(kRobotoMedium_size),
-                                   kFontSize, &font);
+    // The first font added is the default one.
+    uiFonts_.medium = io.Fonts->AddFontFromMemoryTTF(const_cast<unsigned char*>(kRobotoMedium),
+                                                     static_cast<int>(kRobotoMedium_size), kFontSize, &font);
+    uiFonts_.bold = io.Fonts->AddFontFromMemoryTTF(const_cast<unsigned char*>(kRobotoBold),
+                                                   static_cast<int>(kRobotoBold_size), kFontSize, &font);
+    uiFonts_.condensed = io.Fonts->AddFontFromMemoryTTF(const_cast<unsigned char*>(kRobotoCondensedBold),
+                                                        static_cast<int>(kRobotoCondensedBold_size), kFontSize, &font);
+    performance_.setFonts(uiFonts_);
 
     ImGui_ImplSDL3_InitForSDLRenderer(window_, renderer_);
     ImGui_ImplSDLRenderer3_Init(renderer_);
@@ -1016,34 +1027,51 @@ void GuiApp::toggleFullscreen() {
 
 void GuiApp::drawPerformance(const LiveState& live) {
     using Theme = PerformanceView::Theme;
-    auto color = [](unsigned c) { return ImGui::ColorConvertU32ToFloat4(c); };
-    const ImVec4 hover = color(0xFF4A4642), active = color(0xFF57524D);
+    auto color = [](ImU32 c) { return ImGui::ColorConvertU32ToFloat4(c); };
+    const float em = ImGui::GetFontSize();
+    auto px = [em](float v) { return v * em / 16.0f; };
+    ImFont* bold = uiFonts_.bold ? uiFonts_.bold : ImGui::GetFont();
+    ImFont* medium = uiFonts_.medium ? uiFonts_.medium : ImGui::GetFont();
+
     ImGui::PushStyleColor(ImGuiCol_Text, color(Theme::kText));
-    ImGui::PushStyleColor(ImGuiCol_FrameBg, color(Theme::kPanelHeader));
-    ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, hover);
-    ImGui::PushStyleColor(ImGuiCol_Button, color(Theme::kPanel));
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, hover);
-    ImGui::PushStyleColor(ImGuiCol_ButtonActive, active);
-    ImGui::PushStyleColor(ImGuiCol_Header, color(0xFF5E5853));
-    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, hover);
-    ImGui::PushStyleColor(ImGuiCol_HeaderActive, active);
+    ImGui::PushStyleColor(ImGuiCol_FrameBg, color(Theme::kControl));
+    ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, color(IM_COL32(0x47, 0x4C, 0x54, 255)));
+    ImGui::PushStyleColor(ImGuiCol_Button, color(Theme::kControl));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, color(IM_COL32(0x47, 0x4C, 0x54, 255)));
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, color(IM_COL32(0x52, 0x58, 0x62, 255)));
+    ImGui::PushStyleColor(ImGuiCol_Header, color(IM_COL32(0x3F, 0x46, 0x52, 255)));
+    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, color(IM_COL32(0x38, 0x3D, 0x45, 255)));
+    ImGui::PushStyleColor(ImGuiCol_HeaderActive, color(IM_COL32(0x45, 0x4C, 0x58, 255)));
     ImGui::PushStyleColor(ImGuiCol_PopupBg, color(Theme::kPanel));
     ImGui::PushStyleColor(ImGuiCol_ChildBg, color(Theme::kPanel));
-    ImGui::PushStyleColor(ImGuiCol_Border, color(Theme::kBorder));
+    ImGui::PushStyleColor(ImGuiCol_Border, color(Theme::kControlBorder));
     ImGui::PushStyleColor(ImGuiCol_CheckMark, color(Theme::kBlue));
     constexpr int kColors = 13;
-    const float em = ImGui::GetFontSize();
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, px(5));
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(px(12), px(8)));
+    ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, px(6));
+    constexpr int kVars = 4;
     ImDrawList* dl = ImGui::GetWindowDrawList();
 
     // Top bar: everything needed on stage, one click away.
-    const ImVec2 barMin = ImGui::GetCursorScreenPos();
-    const float barH = ImGui::GetFrameHeight() + em * 0.6f;
-    dl->AddRectFilled(ImVec2(barMin.x - 8, barMin.y - 8), ImVec2(barMin.x + ImGui::GetContentRegionAvail().x + 8, barMin.y + barH),
-                      Theme::kPanelHeader);
-    ImGui::SetCursorScreenPos(ImVec2(barMin.x, barMin.y + em * 0.3f));
-    if (ImGui::Button(" = "))
-        ImGui::OpenPopup("menu");
+    const ImVec2 winPos = ImGui::GetWindowPos();
+    const float winW = ImGui::GetWindowWidth();
+    const float barH = px(50);
+    dl->AddRectFilled(winPos, ImVec2(winPos.x + winW, winPos.y + barH), Theme::kTopBar);
+    ImGui::SetCursorScreenPos(ImVec2(winPos.x + px(8), winPos.y + px(9)));
+    ImGui::PushFont(bold, 13.0f);
+
+    {  // Menu button with a hamburger icon.
+        const ImVec2 p = ImGui::GetCursorScreenPos();
+        if (ImGui::Button("##menu", ImVec2(px(32), px(32))))
+            ImGui::OpenPopup("menu");
+        for (int i = 0; i < 3; ++i)
+            dl->AddLine(ImVec2(p.x + px(8), p.y + px(9.0f + 7.0f * static_cast<float>(i))),
+                        ImVec2(p.x + px(24), p.y + px(9.0f + 7.0f * static_cast<float>(i))), Theme::kText, px(2));
+    }
     if (ImGui::BeginPopup("menu")) {
+        ImGui::PushFont(medium, 14.0f);
         if (ImGui::MenuItem("Editor", "F2"))
             setView(false);
         if (ImGui::MenuItem("Fullscreen", "F11", (SDL_GetWindowFlags(window_) & SDL_WINDOW_FULLSCREEN) != 0))
@@ -1058,64 +1086,95 @@ void GuiApp::drawPerformance(const LiveState& live) {
             browseFolder(FolderTarget::Presets, settings_.presetsDir);
         if (ImGui::MenuItem("Refresh MIDI ports"))
             refreshPorts();
+        ImGui::PopFont();
         ImGui::EndPopup();
     }
-    ImGui::SameLine();
+    ImGui::SameLine(0, px(12));
     {
         const ImVec2 p = ImGui::GetCursorScreenPos();
-        const float size = em * 1.35f;
-        dl->AddText(ImGui::GetFont(), size, ImVec2(p.x + 1, p.y - em * 0.1f), Theme::kText, "MIDIPAD");
-        dl->AddText(ImGui::GetFont(), size, ImVec2(p.x, p.y - em * 0.1f), Theme::kText, "MIDIPAD");
-        ImGui::Dummy(ImVec2(ImGui::GetFont()->CalcTextSizeA(size, FLT_MAX, 0, "MIDIPAD").x + em, ImGui::GetFrameHeight()));
+        const float size = px(22);
+        const ImVec2 sz = bold->CalcTextSizeA(size, FLT_MAX, 0, "MIDIPAD");
+        dl->AddText(bold, size, ImVec2(p.x, p.y + (px(32) - sz.y) * 0.5f), Theme::kText, "MIDIPAD");
+        ImGui::Dummy(ImVec2(sz.x + px(14), px(32)));
     }
     ImGui::SameLine();
     if (ImGui::Button("EDITOR"))
         setView(false);
     ImGui::SetItemTooltip("F2");
-    ImGui::SameLine();
+    ImGui::SameLine(0, px(8));
+    ImGui::PushStyleColor(ImGuiCol_Text, color(Theme::kRed));
+    ImGui::PushStyleColor(ImGuiCol_Border, color(Theme::kRed));
     if (ImGui::Button("PANIC"))
         runtime_->panic();
+    ImGui::PopStyleColor(2);
     ImGui::SetItemTooltip("Turns off every note and CC still on");
-    ImGui::SameLine(0, em * 1.2f);
-    if (ImGui::ArrowButton("##pchdown", ImGuiDir_Left))
-        runtime_->setChannel((live.channel + 15) % 16);
-    ImGui::SameLine(0, em * 0.4f);
-    ImGui::AlignTextToFramePadding();
-    ImGui::Text("CHANNEL %d", live.channel + 1);
-    ImGui::SameLine(0, em * 0.4f);
-    if (ImGui::ArrowButton("##pchup", ImGuiDir_Right))
-        runtime_->setChannel((live.channel + 1) % 16);
-    ImGui::SameLine(0, em * 1.2f);
-    ImGui::AlignTextToFramePadding();
-    ImGui::TextColored(color(Theme::kDim), "KEY");
-    ImGui::SameLine();
-    if (drawKeyCombos())
-        persistSettings();
-    ImGui::SameLine(0, em * 1.2f);
-    ImGui::AlignTextToFramePadding();
-    ImGui::TextColored(color(Theme::kDim), "OUTPUT");
-    ImGui::SameLine();
-    drawOutputCombo(em * 12);
-    ImGui::SameLine(0, em * 1.2f);
+
+    // Channel: one framed control with arrows on both sides.
+    ImGui::SameLine(0, px(16));
     {
         const ImVec2 p = ImGui::GetCursorScreenPos();
-        const float r = em * 0.32f;
-        const ImVec2 c(p.x + r, p.y + ImGui::GetFrameHeight() * 0.5f);
-        if (live.connected)
-            dl->AddCircleFilled(c, r * 2.2f, (Theme::kGreen & 0x00FFFFFF) | 0x40000000);
-        dl->AddCircleFilled(c, r, live.connected ? Theme::kGreen : 0xFF55504B);
-        ImGui::Dummy(ImVec2(r * 2 + em * 0.4f, ImGui::GetFrameHeight()));
-        ImGui::SameLine(0, 0);
-        ImGui::AlignTextToFramePadding();
-        ImGui::TextColored(color(live.connected ? Theme::kText : Theme::kDim), "%s",
-                           live.connected ? live.gamepadName.c_str() : "No gamepad");
+        const float w = px(150), h = px(32);
+        dl->AddRectFilled(p, ImVec2(p.x + w, p.y + h), Theme::kControl, px(5));
+        dl->AddRect(p, ImVec2(p.x + w, p.y + h), Theme::kControlBorder, px(5));
+        auto arrow = [&](const char* id, float x0, bool left) {
+            ImGui::SetCursorScreenPos(ImVec2(x0, p.y));
+            const bool clicked = ImGui::InvisibleButton(id, ImVec2(px(30), h));
+            const ImU32 col = ImGui::IsItemHovered() ? Theme::kText : Theme::kLabel;
+            const float cx = x0 + px(15), cy = p.y + h * 0.5f, s = px(4.5f);
+            if (left)
+                dl->AddTriangleFilled(ImVec2(cx + s, cy - s * 1.2f), ImVec2(cx + s, cy + s * 1.2f), ImVec2(cx - s, cy), col);
+            else
+                dl->AddTriangleFilled(ImVec2(cx - s, cy - s * 1.2f), ImVec2(cx - s, cy + s * 1.2f), ImVec2(cx + s, cy), col);
+            return clicked;
+        };
+        if (arrow("##chdown", p.x, true))
+            runtime_->setChannel((live.channel + 15) % 16);
+        if (arrow("##chup", p.x + w - px(30), false))
+            runtime_->setChannel((live.channel + 1) % 16);
+        const std::string channel = "CHANNEL " + std::to_string(live.channel + 1);
+        const ImVec2 sz = bold->CalcTextSizeA(px(15), FLT_MAX, 0, channel.c_str());
+        dl->AddText(bold, px(15), ImVec2(p.x + (w - sz.x) * 0.5f, p.y + (h - sz.y) * 0.5f), Theme::kText, channel.c_str());
+        ImGui::SetCursorScreenPos(p);
+        ImGui::Dummy(ImVec2(w, h));
     }
-    ImGui::SetCursorScreenPos(ImVec2(barMin.x, barMin.y + barH + em * 0.5f));
+    auto caption = [&](const char* s) {
+        ImGui::SameLine(0, px(16));
+        ImGui::PushFont(medium, 12.0f);
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextColored(color(Theme::kLabel), "%s", s);
+        ImGui::PopFont();
+        ImGui::SameLine(0, px(8));
+    };
+    caption("KEY");
+    if (drawKeyCombos())
+        persistSettings();
+    caption("OUTPUT");
+    drawOutputCombo(px(168));
+
+    // Gamepad status, right-aligned.
+    {
+        const std::string name = live.connected ? live.gamepadName : "No gamepad";
+        const char* extra = live.connected && live.hasTouchpad ? "+ touchpad" : "";
+        const float wName = bold->CalcTextSizeA(px(14), FLT_MAX, 0, name.c_str()).x;
+        const float wExtra = medium->CalcTextSizeA(px(12), FLT_MAX, 0, extra).x;
+        const float total = px(26) + wName + px(10) + wExtra;
+        const float x0 = winPos.x + winW - px(12) - total, cy = winPos.y + barH * 0.5f;
+        if (live.connected)
+            dl->AddCircleFilled(ImVec2(x0 + px(8), cy), px(11), (Theme::kGreen & ~IM_COL32_A_MASK) | IM_COL32(0, 0, 0, 60));
+        dl->AddCircleFilled(ImVec2(x0 + px(8), cy), px(6), live.connected ? Theme::kGreen : Theme::kDim);
+        dl->AddText(bold, px(14), ImVec2(x0 + px(22), cy - px(9)), live.connected ? Theme::kText : Theme::kDim, name.c_str());
+        dl->AddText(medium, px(12), ImVec2(x0 + px(22) + wName + px(10), cy - px(7.5f)), Theme::kLabel, extra);
+    }
+    ImGui::PopFont();
+    ImGui::SetCursorScreenPos(ImVec2(winPos.x + px(8), winPos.y + barH + px(8)));
 
     // Left: the presets, like a plugin's preset browser.
-    const float sideW = em * 14;
-    ImGui::BeginChild("presets", ImVec2(sideW, 0), ImGuiChildFlags_Borders);
+    const float sideW = px(196);
+    ImGui::PushStyleColor(ImGuiCol_Border, color(Theme::kBorder));
+    ImGui::BeginChild("presets", ImVec2(sideW, 0), ImGuiChildFlags_Borders, ImGuiWindowFlags_NoScrollbar);
+    ImGui::PopStyleColor();
     {
+        ImDrawList* side = ImGui::GetWindowDrawList();
         int index = -1;
         for (std::size_t i = 0; i < presetNames_.size(); ++i)
             if (hasFile_ && presetNames_[i] == preset_.name)
@@ -1127,45 +1186,72 @@ void GuiApp::drawPerformance(const LiveState& live) {
             const std::string name = presetNames_[static_cast<std::size_t>((i % count + count) % count)];
             guard([this, name] { openPreset(name); });
         };
-        ImGui::AlignTextToFramePadding();
-        ImGui::TextColored(color(Theme::kDim), "PRESET");
-        ImGui::SameLine(sideW - em * 4.2f);
-        if (ImGui::ArrowButton("##prev", ImGuiDir_Left))
+        const ImVec2 p0 = ImGui::GetCursorScreenPos();
+        side->AddText(bold, px(13), ImVec2(p0.x + px(4), p0.y + px(4)), Theme::kLabel, "PRESETS");
+        auto arrow = [&](const char* id, float x0, bool left) {
+            ImGui::SetCursorScreenPos(ImVec2(x0, p0.y));
+            const bool clicked = ImGui::InvisibleButton(id, ImVec2(px(20), px(22)));
+            const ImU32 col = ImGui::IsItemHovered() ? Theme::kBlue : Theme::kText;
+            const float cx = x0 + px(10), cy = p0.y + px(11), s = px(4.5f);
+            if (left)
+                side->AddTriangleFilled(ImVec2(cx + s, cy - s * 1.2f), ImVec2(cx + s, cy + s * 1.2f), ImVec2(cx - s, cy), col);
+            else
+                side->AddTriangleFilled(ImVec2(cx - s, cy - s * 1.2f), ImVec2(cx - s, cy + s * 1.2f), ImVec2(cx + s, cy), col);
+            return clicked;
+        };
+        const float right = p0.x + ImGui::GetContentRegionAvail().x;
+        if (arrow("##prev", right - px(44), true))
             openAt(index < 0 ? 0 : index - 1);
-        ImGui::SameLine(0, em * 0.3f);
-        if (ImGui::ArrowButton("##next", ImGuiDir_Right))
+        if (arrow("##next", right - px(22), false))
             openAt(index + 1);
-        const std::string current = (hasFile_ ? preset_.name : std::string("Untitled")) + (dirty_ ? " *" : "");
-        ImGui::TextUnformatted(current.c_str());
-        if (dirty_) {
-            if (ImGui::SmallButton("Save"))
-                saveCurrent();
-            ImGui::SameLine();
-            if (hasFile_ && ImGui::SmallButton("Revert"))
-                openPreset(preset_.name);
-        }
-        ImGui::Separator();
-        const float logoH = em * 3.2f;
-        ImGui::BeginChild("list", ImVec2(0, -logoH));
+        ImGui::SetCursorScreenPos(ImVec2(p0.x, p0.y + px(32)));
+
+        const float footer = dirty_ ? px(80) : 0;
+        ImGui::BeginChild("list", ImVec2(0, -footer), ImGuiChildFlags_None);
+        ImDrawList* list = ImGui::GetWindowDrawList();
         for (const auto& name : presetNames_) {
             const bool selected = hasFile_ && name == preset_.name;
-            if (ImGui::Selectable(name.c_str(), selected) && !selected)
+            const ImVec2 a = ImGui::GetCursorScreenPos();
+            const float w = ImGui::GetContentRegionAvail().x, h = px(30);
+            if (ImGui::InvisibleButton(("##p" + name).c_str(), ImVec2(w, h)) && !selected)
                 guard([this, name] { openPreset(name); });
+            const bool hovered = ImGui::IsItemHovered();
+            if (selected) {
+                list->AddRectFilled(a, ImVec2(a.x + w, a.y + h), IM_COL32(0x3F, 0x46, 0x52, 255), px(4));
+                list->AddRectFilled(a, ImVec2(a.x + px(4), a.y + h), Theme::kBlue);
+            } else if (hovered) {
+                list->AddRectFilled(a, ImVec2(a.x + w, a.y + h), IM_COL32(0x36, 0x3A, 0x41, 255), px(4));
+            }
+            const ImVec2 sz = medium->CalcTextSizeA(px(15), FLT_MAX, 0, name.c_str());
+            list->AddText(medium, px(15), ImVec2(a.x + px(14), a.y + (h - sz.y) * 0.5f), selected ? Theme::kText : Theme::kLabel,
+                          name.c_str());
+            ImGui::SetCursorScreenPos(ImVec2(a.x, a.y + h + px(4)));
         }
-        if (presetNames_.empty())
-            ImGui::TextColored(color(Theme::kDim), "No preset.\nMenu = > Import…");
+        if (presetNames_.empty()) {
+            ImGui::PushFont(medium, 13.0f);
+            ImGui::TextColored(color(Theme::kLabel), "No preset yet.\nMenu > Import…");
+            ImGui::PopFont();
+        }
+        ImGui::Dummy(ImVec2(0, 0));
         ImGui::EndChild();
-        // Outlined logo, as on hardware-style plugins.
-        const ImVec2 p = ImGui::GetCursorScreenPos();
-        const float size = em * 2.1f;
-        const ImVec2 at(p.x + em * 0.3f, p.y + em * 0.3f);
-        ImDrawList* side = ImGui::GetWindowDrawList();
-        for (int dx = -1; dx <= 1; ++dx)
-            for (int dy = -1; dy <= 1; ++dy)
-                if (dx || dy)
-                    side->AddText(ImGui::GetFont(), size, ImVec2(at.x + static_cast<float>(dx), at.y + static_cast<float>(dy)),
-                                  Theme::kDim, "MIDIPAD");
-        side->AddText(ImGui::GetFont(), size, at, Theme::kPanel, "MIDIPAD");
+
+        if (dirty_) {
+            ImGui::PushFont(medium, 12.0f);
+            ImGui::TextColored(color(Theme::kOrange), "unsaved changes");
+            ImGui::PopFont();
+            ImGui::PushFont(bold, 13.0f);
+            ImGui::PushStyleColor(ImGuiCol_Text, color(Theme::kOrange));
+            ImGui::PushStyleColor(ImGuiCol_Border, color(Theme::kOrange));
+            if (ImGui::Button("SAVE"))
+                saveCurrent();
+            ImGui::PopStyleColor(2);
+            if (hasFile_) {
+                ImGui::SameLine();
+                if (ImGui::Button("REVERT"))
+                    openPreset(preset_.name);
+            }
+            ImGui::PopFont();
+        }
     }
     ImGui::EndChild();
 
@@ -1185,6 +1271,7 @@ void GuiApp::drawPerformance(const LiveState& live) {
     if (overlaySpec_)
         drawMappingOverlay(live);
 
+    ImGui::PopStyleVar(kVars);
     ImGui::PopStyleColor(kColors);
 }
 
