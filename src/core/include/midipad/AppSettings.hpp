@@ -22,6 +22,8 @@ struct AppSettings {
     // Narrows the notes and chords offered by the editor; none: every note.
     std::optional<Key> key;
 
+    bool performanceView = false;  // the animated view rather than the editor
+
     bool monitorMidi = false;
     bool showButtons = false;
     std::filesystem::path legacyImportDir;

@@ -24,6 +24,7 @@ TEST_CASE("settings round-trip and fall back to defaults") {
     s.outputChosen = true;
     s.monitorMidi = true;
     s.key = Key{9, *findScale("harmonic_minor")};
+    s.performanceView = true;
     saveSettings(s, file);
 
     const AppSettings loaded = loadSettings(file, defaults);
@@ -33,6 +34,7 @@ TEST_CASE("settings round-trip and fall back to defaults") {
     CHECK(loaded.existingPortName == "OXI ONE");
     CHECK(loaded.outputChosen);
     CHECK(loaded.monitorMidi);
+    CHECK(loaded.performanceView);
     REQUIRE(loaded.key);
     CHECK(loaded.key->root == 9);
     CHECK(loaded.key->type().id == "harmonic_minor");

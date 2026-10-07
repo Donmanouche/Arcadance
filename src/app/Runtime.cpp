@@ -139,6 +139,7 @@ LiveState Runtime::live() const {
                         fingerY_[f].load(std::memory_order_relaxed)};
     s.channel = channel_.load(std::memory_order_relaxed);
     s.frozenAxes = frozen_.load(std::memory_order_relaxed);
+    s.sounding = sounding_.load(std::memory_order_relaxed);
     std::lock_guard lock(nameMutex_);
     s.gamepadName = gamepadName_;
     return s;
@@ -182,6 +183,7 @@ void Runtime::publish(const GamepadInput& gamepad, const Engine& engine) {
         if (engine.isFrozen(static_cast<Axis>(a)))
             frozen = static_cast<std::uint8_t>(frozen | (1u << a));
     frozen_.store(frozen, std::memory_order_relaxed);
+    sounding_.store(engine.soundingSlots(), std::memory_order_relaxed);
 }
 
 void Runtime::run(std::stop_token stop, Options options, std::shared_ptr<const Preset> preset) {

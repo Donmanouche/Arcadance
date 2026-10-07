@@ -64,6 +64,9 @@ AppSettings loadSettings(const std::filesystem::path& file, AppSettings s) {
         s.key = Key{keyRoot, *scale};
     else
         s.key.reset();
+    std::string view = s.performanceView ? "performance" : "editor";
+    read(j, "view", view);
+    s.performanceView = view == "performance";
     read(j, "monitor_midi", s.monitorMidi);
     read(j, "show_buttons", s.showButtons);
     readPath(j, "legacy_import_dir", s.legacyImportDir);
@@ -82,6 +85,7 @@ void saveSettings(const AppSettings& s, const std::filesystem::path& file) {
     j["output_chosen"] = s.outputChosen;
     j["key_root"] = s.key ? s.key->root : -1;
     j["key_scale"] = s.key ? std::string(s.key->type().id) : std::string();
+    j["view"] = s.performanceView ? "performance" : "editor";
     j["monitor_midi"] = s.monitorMidi;
     j["show_buttons"] = s.showButtons;
     j["legacy_import_dir"] = s.legacyImportDir.string();

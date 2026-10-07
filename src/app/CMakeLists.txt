@@ -19,6 +19,7 @@ add_executable(midipad
     Headless.cpp
     gui/GuiApp.cpp
     gui/MappingEditor.cpp
+    gui/PerformanceView.cpp
     ${MIDIPAD_FONT_SOURCE}
 )
 target_link_libraries(midipad PRIVATE midipad_platform imgui midipad_warnings)

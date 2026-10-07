@@ -86,6 +86,23 @@ apparaîtra directement dans Bitwig ; sous Windows, il faudra loopMIDI.
 
 La manette reste lue quand la fenêtre MidiPad est en arrière-plan.
 
+### La vue animée
+
+**F2** (ou le bouton « Vue animée » / « ÉDITEUR ») bascule entre l'éditeur et
+une vue animée pensée pour la scène ; **F11** passe en plein écran. La vue
+choisie est retrouvée au démarrage (`--view performance|editor` pour forcer).
+
+- un module par partie de la manette : sticks gauche et droit, gâchettes,
+  croix directionnelle, touchpad ; chacun a un écran animé qui suit la
+  manette et des potentiomètres affichant les CC envoyés ;
+- un bandeau de pads pour les boutons (✕ ○ □ △ aux couleurs PlayStation) :
+  éclair à chaque appui, éclairage tant que la note ou l'accord sonne (les
+  bascules verrouillées restent allumées) ;
+- en haut : canal, Tout couper, tonalité, sortie MIDI, état de la manette, et
+  un menu (importer, dossier des presets, plein écran) ; à gauche, la liste
+  des presets avec précédent / suivant ;
+- un clic sur un contrôle ouvre l'éditeur sur ce contrôle.
+
 ## Jouer sans fenêtre
 
 ```bash

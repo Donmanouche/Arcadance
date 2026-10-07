@@ -34,6 +34,13 @@ public:
 // or the preset changed in between.
 class Engine {
 public:
+    // Discrete controls share one index space: buttons, then D-pad directions,
+    // then touchpad zones per finger.
+    static constexpr int kHatSlotBase = kButtonCount;
+    static constexpr int kZoneSlotBase = kHatSlotBase + kHatDirCount;
+    static constexpr int kSlotCount = kZoneSlotBase + kFingerCount * kZoneCount;
+    static_assert(kSlotCount <= 64, "soundingSlots() packs the slots in 64 bits");
+
     explicit Engine(MidiSink& sink);
 
     void setPreset(std::shared_ptr<const Preset> preset);
@@ -58,16 +65,19 @@ public:
 
     bool isFrozen(Axis axis) const;
 
+    // Discrete controls share one index space (see slotOf). Bit `slot` is set
+    // while that control has a note, chord or CC on: held, or latched on the
+    // active channel. For display.
+    std::uint64_t soundingSlots() const;
+    static constexpr int slotOf(Button b) { return static_cast<int>(b); }
+    static constexpr int slotOf(HatDir d) { return kHatSlotBase + static_cast<int>(d); }
+    static constexpr int slotOf(int finger, Zone z) { return kZoneSlotBase + finger * kZoneCount + static_cast<int>(z); }
+
     // Digital trigger thresholds on the [0, 1] trigger travel (with hysteresis).
     static constexpr float kTriggerPress = 0.25f;
     static constexpr float kTriggerRelease = 0.15f;
 
 private:
-    // Discrete controls share one index space: buttons, then D-pad directions,
-    // then touchpad zones per finger.
-    static constexpr int kHatSlotBase = kButtonCount;
-    static constexpr int kZoneSlotBase = kHatSlotBase + kHatDirCount;
-    static constexpr int kSlotCount = kZoneSlotBase + kFingerCount * kZoneCount;
 
     struct Sounding {
         ActionType type = ActionType::None;  // Note, Chord or ControlChange

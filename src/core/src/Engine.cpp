@@ -144,6 +144,15 @@ void Engine::releaseAll() {
     }
 }
 
+std::uint64_t Engine::soundingSlots() const {
+    std::uint64_t bits = 0;
+    const auto& latched = latched_[static_cast<std::size_t>(channel_)];
+    for (int s = 0; s < kSlotCount; ++s)
+        if (held_[static_cast<std::size_t>(s)].active() || latched[static_cast<std::size_t>(s)].active())
+            bits |= std::uint64_t{1} << s;
+    return bits;
+}
+
 void Engine::reset() {
     releaseAll();
     pressed_.reset();

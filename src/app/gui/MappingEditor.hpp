@@ -16,7 +16,8 @@ public:
     enum class Tab { Buttons, Dpad, Axes, Touchpad };
 
     void showTab(Tab tab) { requestedTab_ = tab; }
-    // Preselects a control, e.g. "button:south", "dpad:up", "zone:1:top_left".
+    // Preselects a control, e.g. "button:south", "dpad:up", "zone:1:top_left",
+    // or just a tab: "tab:axes".
     // For screenshots; returns false if `spec` names no control.
     bool select(const std::string& spec);
 

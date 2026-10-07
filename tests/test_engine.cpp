@@ -357,3 +357,26 @@ TEST_CASE_FIXTURE(Fixture, "reset forgets held controls so a reconnected control
     engine.buttonChanged(Button::DpadUp, true);
     CHECK(sink.take() == Messages{on(0, 48, 100), on(0, 60, 100)});
 }
+
+TEST_CASE_FIXTURE(Fixture, "sounding slots show held and latched controls of the active channel") {
+    Preset p;
+    button(p, Button::South) = note(48, Mode::Toggle);
+    button(p, Button::East) = note(50);
+    dpad(p, HatDir::Up) = chord("Cm");
+    button(p, Button::Start) = channelStep(+1);
+    load(p);
+    auto bit = [](int slot) { return std::uint64_t{1} << slot; };
+
+    tap(Button::South);  // latched
+    engine.buttonChanged(Button::East, true);
+    engine.buttonChanged(Button::DpadUp, true);
+    CHECK(engine.soundingSlots() ==
+          (bit(Engine::slotOf(Button::South)) | bit(Engine::slotOf(Button::East)) | bit(Engine::slotOf(HatDir::Up))));
+
+    engine.buttonChanged(Button::East, false);
+    engine.buttonChanged(Button::DpadUp, false);
+    CHECK(engine.soundingSlots() == bit(Engine::slotOf(Button::South)));
+
+    tap(Button::Start);  // channel 2: the latch belongs to channel 1
+    CHECK(engine.soundingSlots() == 0);
+}

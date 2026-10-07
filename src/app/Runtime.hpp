@@ -41,8 +41,10 @@ struct LiveState {
     std::array<Finger, midipad::kFingerCount> fingers{};
     int channel = 0;
     std::uint8_t frozenAxes = 0;  // on the active channel
+    std::uint64_t sounding = 0;   // Engine::soundingSlots()
 
     bool isDown(midipad::Button b) const { return (buttons >> static_cast<int>(b)) & 1u; }
+    bool isSounding(int slot) const { return (sounding >> slot) & 1u; }
 };
 
 struct RuntimeStats {
@@ -119,6 +121,7 @@ private:
     std::array<std::atomic<float>, midipad::kFingerCount> fingerX_{}, fingerY_{};
     std::atomic<int> channel_{0};
     std::atomic<std::uint8_t> frozen_{0};
+    std::atomic<std::uint64_t> sounding_{0};
     mutable std::mutex nameMutex_;
     std::string gamepadName_;
 

@@ -9,6 +9,7 @@
 #include "MidiOutput.hpp"
 #include "Runtime.hpp"
 #include "gui/MappingEditor.hpp"
+#include "gui/PerformanceView.hpp"
 
 #include "midipad/AppSettings.hpp"
 #include "midipad/Labels.hpp"
@@ -26,6 +27,7 @@
 
 #include <cctype>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <deque>
 #include <filesystem>
@@ -69,6 +71,8 @@ struct GuiOptions {
     std::optional<MappingEditor::Tab> tab;
     std::optional<std::string> select;
     std::vector<std::pair<float, float>> clicks;  // simulated mouse clicks, for screenshots
+    std::optional<bool> performanceView;           // --view
+    bool demo = false;                             // fake controller state, for screenshots
     bool help = false;
     std::string error;
 };
@@ -99,6 +103,14 @@ GuiOptions parseGuiArgs(const std::vector<std::string>& args) {
                 o.clicks.emplace_back(x, y);
             else
                 o.error = "--click attend X,Y";
+        } else if (a == "--view" && i + 1 < args.size()) {
+            const std::string v = args[++i];
+            if (v == "performance" || v == "editor")
+                o.performanceView = v == "performance";
+            else
+                o.error = "--view attend performance ou editor";
+        } else if (a == "--demo") {
+            o.demo = true;
         } else if (a == "--select" && i + 1 < args.size()) {
             o.select = args[++i];
         } else if (!a.empty() && a[0] == '-') {
@@ -124,11 +136,39 @@ std::string bitwigName(const std::string& port) {
     return device == 0 ? "Virtual Raw MIDI" : "Virtual Raw MIDI " + std::to_string(device + 1);
 }
 
+// A moving controller state, so screenshots show the animated view at work.
+LiveState demoLive(double t) {
+    LiveState s;
+    s.connected = true;
+    s.hasTouchpad = true;
+    s.gamepadName = "DualSense (démo)";
+    auto axis = [](double v) { return static_cast<std::int16_t>(std::clamp(v, -1.0, 1.0) * 32767); };
+    s.axes[static_cast<std::size_t>(Axis::LeftX)] = axis(0.7 * std::cos(t * 1.3));
+    s.axes[static_cast<std::size_t>(Axis::LeftY)] = axis(-0.6 * std::sin(t * 1.3));
+    s.axes[static_cast<std::size_t>(Axis::RightX)] = axis(0.35);
+    s.axes[static_cast<std::size_t>(Axis::RightY)] = axis(-0.8);
+    s.axes[static_cast<std::size_t>(Axis::LeftTrigger)] = axis(0.65);
+    s.axes[static_cast<std::size_t>(Axis::RightTrigger)] = axis(0.12);
+    for (Button b : {Button::South, Button::DpadUp})
+        s.buttons |= 1u << static_cast<int>(b);
+    for (int slot : {Engine::slotOf(Button::South), Engine::slotOf(HatDir::Up), Engine::slotOf(Button::LeftShoulder),
+                     Engine::slotOf(Button::LeftTrigger)})
+        s.sounding |= std::uint64_t{1} << slot;
+    s.fingers[0] = {true, static_cast<float>(0.3 + 0.15 * std::sin(t * 2.0)), 0.45f};
+    s.frozenAxes = static_cast<std::uint8_t>((1u << static_cast<int>(Axis::RightX)) | (1u << static_cast<int>(Axis::RightY)));
+    return s;
+}
+
 constexpr const char* kUsage = R"(Usage : midipad [preset.json]
         midipad --headless [options] <preset.json>   (sans fenêtre, voir --headless --help)
 
-Ouvre l'éditeur MidiPad. Avec un fichier de preset, son dossier devient le
+Ouvre la fenêtre MidiPad. Avec un fichier de preset, son dossier devient le
 dossier des presets et le preset est ouvert.
+
+  --view performance|editor   vue au démarrage (sinon la dernière utilisée)
+
+Dans la fenêtre : F2 bascule entre l'éditeur et la vue animée, F11 passe en
+plein écran.
 )";
 
 class GuiApp {
@@ -152,6 +192,12 @@ private:
     void drawPresetBar();
     void drawOutputBar(const LiveState& live);
     void drawKeyBar();
+    bool drawKeyCombos();
+    void drawChannelAndStatus(const LiveState& live);
+    void drawOutputCombo(float width);
+    void drawPerformance(const LiveState& live);
+    void setView(bool performance);
+    void toggleFullscreen();
     void drawMappingArea(const LiveState& live);
     void drawLog();
     void drawStatusBar(const LiveState& live);
@@ -210,6 +256,7 @@ private:
     std::unique_ptr<Runtime> runtime_;
 
     MappingEditor editor_;
+    PerformanceView performance_;
     int editChannel_ = -1;  // -1: base mapping
     bool followChannel_ = true;
     int lastLiveChannel_ = -1;
@@ -336,6 +383,8 @@ bool GuiApp::init() {
     // The gamepad plays music; it must not drive the interface.
     ImGui_ImplSDL3_SetGamepadMode(ImGui_ImplSDL3_GamepadMode_Manual, nullptr, 0);
 
+    if (options_.performanceView)
+        settings_.performanceView = *options_.performanceView;
     if (options_.tab)
         editor_.showTab(*options_.tab);
     if (options_.select && !editor_.select(*options_.select))
@@ -723,17 +772,32 @@ void SDLCALL GuiApp::onFolderChosen(void* self, const char* const* files, int) {
 // --- Drawing ----------------------------------------------------------------
 
 void GuiApp::draw() {
-    const LiveState live = runtime_->live();
+    const LiveState live = options_.demo ? demoLive(ImGui::GetTime() + 2.0) : runtime_->live();
 
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(viewport->WorkPos);
     ImGui::SetNextWindowSize(viewport->WorkSize);
+    if (settings_.performanceView)
+        ImGui::PushStyleColor(ImGuiCol_WindowBg, ImGui::ColorConvertU32ToFloat4(PerformanceView::Theme::kBackground));
     ImGui::Begin("MidiPad", nullptr,
                  ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
-                     ImGuiWindowFlags_NoBringToFrontOnFocus);
+                     ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoScrollbar);
+    if (settings_.performanceView)
+        ImGui::PopStyleColor();
 
     if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_S, ImGuiInputFlags_RouteGlobal))
         saveCurrent();
+    if (ImGui::Shortcut(ImGuiKey_F2, ImGuiInputFlags_RouteGlobal))
+        setView(!settings_.performanceView);
+    if (ImGui::Shortcut(ImGuiKey_F11, ImGuiInputFlags_RouteGlobal))
+        toggleFullscreen();
+
+    if (settings_.performanceView) {
+        drawPerformance(live);
+        drawDialogs();
+        ImGui::End();
+        return;
+    }
 
     drawPresetBar();
     drawOutputBar(live);
@@ -812,13 +876,26 @@ void GuiApp::drawPresetBar() {
     if (ImGui::Button("Dossier…"))
         browseFolder(FolderTarget::Presets, settings_.presetsDir);
     ImGui::SetItemTooltip("Dossier des presets :\n%s", settings_.presetsDir.string().c_str());
+
+    ImGui::SameLine(0, ImGui::GetFontSize() * 2);
+    if (ImGui::Button("Vue animée"))
+        setView(true);
+    ImGui::SetItemTooltip("F2 ; F11 pour le plein écran");
 }
 
 void GuiApp::drawOutputBar(const LiveState& live) {
     ImGui::AlignTextToFramePadding();
     ImGui::TextUnformatted("Sortie MIDI");
     ImGui::SameLine();
-    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 18);
+    drawOutputCombo(ImGui::GetFontSize() * 18);
+    ImGui::SameLine();
+    if (ImGui::Button("Actualiser"))
+        refreshPorts();
+    drawChannelAndStatus(live);
+}
+
+void GuiApp::drawOutputCombo(float width) {
+    ImGui::SetNextItemWidth(width);
     if (ImGui::BeginCombo("##output", outputLabel_.c_str())) {
         const std::string virtualLabel = "Port virtuel « " + settings_.virtualPortName + " »";
         if (ImGui::Selectable(virtualLabel.c_str(), settings_.output == AppSettings::Output::VirtualPort))
@@ -835,10 +912,9 @@ void GuiApp::drawOutputBar(const LiveState& live) {
     }
     if (const auto name = bitwigName(outputLabel_); !name.empty())
         ImGui::SetItemTooltip("Dans Bitwig, cette sortie s'appelle %s/…", name.c_str());
-    ImGui::SameLine();
-    if (ImGui::Button("Actualiser"))
-        refreshPorts();
+}
 
+void GuiApp::drawChannelAndStatus(const LiveState& live) {
     ImGui::SameLine(0, ImGui::GetFontSize() * 2);
     ImGui::AlignTextToFramePadding();
     ImGui::TextUnformatted("Canal actif");
@@ -869,6 +945,24 @@ void GuiApp::drawKeyBar() {
     ImGui::AlignTextToFramePadding();
     ImGui::TextUnformatted("Tonalité");
     ImGui::SameLine();
+    const bool changed = drawKeyCombos();
+    const bool flats = settings_.key && prefersFlats(*settings_.key);
+    ImGui::SameLine();
+    ImGui::PushStyleColor(ImGuiCol_Text, kHintColor);
+    if (settings_.key) {
+        std::string notes;
+        for (int pc : scalePitchClasses(*settings_.key))
+            notes += pitchName(pc, flats) + " ";
+        ImGui::Text("Notes : %s  - l'éditeur ne propose que ces notes et les accords qu'elles forment", notes.c_str());
+    } else {
+        ImGui::TextUnformatted("Aucune : toutes les notes et tous les accords sont proposés");
+    }
+    ImGui::PopStyleColor();
+    if (changed)
+        persistSettings();
+}
+
+bool GuiApp::drawKeyCombos() {
     const bool flats = settings_.key && prefersFlats(*settings_.key);
     const std::string rootPreview = settings_.key ? pitchName(settings_.key->root, flats) : std::string("Aucune");
     bool changed = false;
@@ -904,19 +998,188 @@ void GuiApp::drawKeyBar() {
         ImGui::EndCombo();
     }
     ImGui::EndDisabled();
-    ImGui::SameLine();
-    ImGui::PushStyleColor(ImGuiCol_Text, kHintColor);
-    if (settings_.key) {
-        std::string notes;
-        for (int pc : scalePitchClasses(*settings_.key))
-            notes += pitchName(pc, flats) + " ";
-        ImGui::Text("Notes : %s  - l'éditeur ne propose que ces notes et les accords qu'elles forment", notes.c_str());
-    } else {
-        ImGui::TextUnformatted("Aucune : toutes les notes et tous les accords sont proposés");
+    return changed;
+}
+
+void GuiApp::setView(bool performance) {
+    settings_.performanceView = performance;
+    persistSettings();
+}
+
+void GuiApp::toggleFullscreen() {
+    const bool fullscreen = SDL_GetWindowFlags(window_) & SDL_WINDOW_FULLSCREEN;
+    SDL_SetWindowFullscreen(window_, !fullscreen);
+}
+
+void GuiApp::drawPerformance(const LiveState& live) {
+    using Theme = PerformanceView::Theme;
+    auto color = [](unsigned c) { return ImGui::ColorConvertU32ToFloat4(c); };
+    const ImVec4 hover = color(0xFF4A4642), active = color(0xFF57524D);
+    ImGui::PushStyleColor(ImGuiCol_Text, color(Theme::kText));
+    ImGui::PushStyleColor(ImGuiCol_FrameBg, color(Theme::kPanelHeader));
+    ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, hover);
+    ImGui::PushStyleColor(ImGuiCol_Button, color(Theme::kPanel));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, hover);
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, active);
+    ImGui::PushStyleColor(ImGuiCol_Header, color(0xFF5E5853));
+    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, hover);
+    ImGui::PushStyleColor(ImGuiCol_HeaderActive, active);
+    ImGui::PushStyleColor(ImGuiCol_PopupBg, color(Theme::kPanel));
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, color(Theme::kPanel));
+    ImGui::PushStyleColor(ImGuiCol_Border, color(Theme::kBorder));
+    ImGui::PushStyleColor(ImGuiCol_CheckMark, color(Theme::kBlue));
+    constexpr int kColors = 13;
+    const float em = ImGui::GetFontSize();
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+
+    // Top bar: everything needed on stage, one click away.
+    const ImVec2 barMin = ImGui::GetCursorScreenPos();
+    const float barH = ImGui::GetFrameHeight() + em * 0.6f;
+    dl->AddRectFilled(ImVec2(barMin.x - 8, barMin.y - 8), ImVec2(barMin.x + ImGui::GetContentRegionAvail().x + 8, barMin.y + barH),
+                      Theme::kPanelHeader);
+    ImGui::SetCursorScreenPos(ImVec2(barMin.x, barMin.y + em * 0.3f));
+    if (ImGui::Button(" = "))
+        ImGui::OpenPopup("menu");
+    if (ImGui::BeginPopup("menu")) {
+        if (ImGui::MenuItem("Éditeur", "F2"))
+            setView(false);
+        if (ImGui::MenuItem("Plein écran", "F11", (SDL_GetWindowFlags(window_) & SDL_WINDOW_FULLSCREEN) != 0))
+            toggleFullscreen();
+        ImGui::Separator();
+        if (ImGui::MenuItem("Importer des presets de la version Python…")) {
+            importDir_ = settings_.legacyImportDir.string();
+            importReport_.clear();
+            openImportDialog_ = true;
+        }
+        if (ImGui::MenuItem("Dossier des presets…"))
+            browseFolder(FolderTarget::Presets, settings_.presetsDir);
+        if (ImGui::MenuItem("Actualiser les ports MIDI"))
+            refreshPorts();
+        ImGui::EndPopup();
     }
-    ImGui::PopStyleColor();
-    if (changed)
+    ImGui::SameLine();
+    {
+        const ImVec2 p = ImGui::GetCursorScreenPos();
+        const float size = em * 1.35f;
+        dl->AddText(ImGui::GetFont(), size, ImVec2(p.x + 1, p.y - em * 0.1f), Theme::kText, "MIDIPAD");
+        dl->AddText(ImGui::GetFont(), size, ImVec2(p.x, p.y - em * 0.1f), Theme::kText, "MIDIPAD");
+        ImGui::Dummy(ImVec2(ImGui::GetFont()->CalcTextSizeA(size, FLT_MAX, 0, "MIDIPAD").x + em, ImGui::GetFrameHeight()));
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("ÉDITEUR"))
+        setView(false);
+    ImGui::SetItemTooltip("F2");
+    ImGui::SameLine();
+    if (ImGui::Button("TOUT COUPER"))
+        runtime_->panic();
+    ImGui::SetItemTooltip("Coupe toutes les notes et CC encore actifs");
+    ImGui::SameLine(0, em * 1.2f);
+    if (ImGui::ArrowButton("##pchdown", ImGuiDir_Left))
+        runtime_->setChannel((live.channel + 15) % 16);
+    ImGui::SameLine(0, em * 0.4f);
+    ImGui::AlignTextToFramePadding();
+    ImGui::Text("CANAL %d", live.channel + 1);
+    ImGui::SameLine(0, em * 0.4f);
+    if (ImGui::ArrowButton("##pchup", ImGuiDir_Right))
+        runtime_->setChannel((live.channel + 1) % 16);
+    ImGui::SameLine(0, em * 1.2f);
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextColored(color(Theme::kDim), "TONALITÉ");
+    ImGui::SameLine();
+    if (drawKeyCombos())
         persistSettings();
+    ImGui::SameLine(0, em * 1.2f);
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextColored(color(Theme::kDim), "SORTIE");
+    ImGui::SameLine();
+    drawOutputCombo(em * 12);
+    ImGui::SameLine(0, em * 1.2f);
+    {
+        const ImVec2 p = ImGui::GetCursorScreenPos();
+        const float r = em * 0.32f;
+        const ImVec2 c(p.x + r, p.y + ImGui::GetFrameHeight() * 0.5f);
+        if (live.connected)
+            dl->AddCircleFilled(c, r * 2.2f, (Theme::kGreen & 0x00FFFFFF) | 0x40000000);
+        dl->AddCircleFilled(c, r, live.connected ? Theme::kGreen : 0xFF55504B);
+        ImGui::Dummy(ImVec2(r * 2 + em * 0.4f, ImGui::GetFrameHeight()));
+        ImGui::SameLine(0, 0);
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextColored(color(live.connected ? Theme::kText : Theme::kDim), "%s",
+                           live.connected ? live.gamepadName.c_str() : "Aucune manette");
+    }
+    ImGui::SetCursorScreenPos(ImVec2(barMin.x, barMin.y + barH + em * 0.5f));
+
+    // Left: the presets, like a plugin's preset browser.
+    const float sideW = em * 14;
+    ImGui::BeginChild("presets", ImVec2(sideW, 0), ImGuiChildFlags_Borders);
+    {
+        int index = -1;
+        for (std::size_t i = 0; i < presetNames_.size(); ++i)
+            if (hasFile_ && presetNames_[i] == preset_.name)
+                index = static_cast<int>(i);
+        const int count = static_cast<int>(presetNames_.size());
+        auto openAt = [&](int i) {
+            if (count == 0)
+                return;
+            const std::string name = presetNames_[static_cast<std::size_t>((i % count + count) % count)];
+            guard([this, name] { openPreset(name); });
+        };
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextColored(color(Theme::kDim), "PRESET");
+        ImGui::SameLine(sideW - em * 4.2f);
+        if (ImGui::ArrowButton("##prev", ImGuiDir_Left))
+            openAt(index < 0 ? 0 : index - 1);
+        ImGui::SameLine(0, em * 0.3f);
+        if (ImGui::ArrowButton("##next", ImGuiDir_Right))
+            openAt(index + 1);
+        const std::string current = (hasFile_ ? preset_.name : std::string("Sans titre")) + (dirty_ ? " *" : "");
+        ImGui::TextUnformatted(current.c_str());
+        if (dirty_) {
+            if (ImGui::SmallButton("Enregistrer"))
+                saveCurrent();
+            ImGui::SameLine();
+            if (hasFile_ && ImGui::SmallButton("Annuler"))
+                openPreset(preset_.name);
+        }
+        ImGui::Separator();
+        const float logoH = em * 3.2f;
+        ImGui::BeginChild("list", ImVec2(0, -logoH));
+        for (const auto& name : presetNames_) {
+            const bool selected = hasFile_ && name == preset_.name;
+            if (ImGui::Selectable(name.c_str(), selected) && !selected)
+                guard([this, name] { openPreset(name); });
+        }
+        if (presetNames_.empty())
+            ImGui::TextColored(color(Theme::kDim), "Aucun preset.\nMenu = > Importer…");
+        ImGui::EndChild();
+        // Outlined logo, as on hardware-style plugins.
+        const ImVec2 p = ImGui::GetCursorScreenPos();
+        const float size = em * 2.1f;
+        const ImVec2 at(p.x + em * 0.3f, p.y + em * 0.3f);
+        ImDrawList* side = ImGui::GetWindowDrawList();
+        for (int dx = -1; dx <= 1; ++dx)
+            for (int dy = -1; dy <= 1; ++dy)
+                if (dx || dy)
+                    side->AddText(ImGui::GetFont(), size, ImVec2(at.x + static_cast<float>(dx), at.y + static_cast<float>(dy)),
+                                  Theme::kDim, "MIDIPAD");
+        side->AddText(ImGui::GetFont(), size, at, Theme::kPanel, "MIDIPAD");
+    }
+    ImGui::EndChild();
+
+    // Right: the animated modules.
+    ImGui::SameLine();
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, color(Theme::kBackground));
+    ImGui::BeginChild("modules", ImVec2(0, 0), ImGuiChildFlags_None, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+    const auto clicked = performance_.draw(preset_.forChannel(live.channel), live, settings_.key);
+    ImGui::EndChild();
+    ImGui::PopStyleColor();
+
+    ImGui::PopStyleColor(kColors);
+
+    if (clicked) {  // open the editor on what was clicked
+        editor_.select(*clicked);
+        setView(false);
+    }
 }
 
 void GuiApp::drawMappingArea(const LiveState& live) {

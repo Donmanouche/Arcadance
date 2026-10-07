@@ -172,6 +172,18 @@ bool MappingEditor::select(const std::string& spec) {
             showTab(Tab::Dpad);
             return true;
         }
+    } else if (kind == "tab") {
+        if (rest == "buttons")
+            showTab(Tab::Buttons);
+        else if (rest == "dpad")
+            showTab(Tab::Dpad);
+        else if (rest == "axes")
+            showTab(Tab::Axes);
+        else if (rest == "touchpad")
+            showTab(Tab::Touchpad);
+        else
+            return false;
+        return true;
     } else if (kind == "zone" && rest.size() > 2 && (rest[0] == '1' || rest[0] == '2') && rest[1] == ':') {
         if (auto z = parseZone(rest.substr(2))) {
             selection_ = {Selection::Kind::Zone, static_cast<int>(*z), rest[0] - '1'};
@@ -564,7 +576,7 @@ bool MappingEditor::drawNoteField(std::uint8_t& note) {
     if (ImGui::ArrowButton("##notedown", ImGuiDir_Left))
         step(-1);
     ImGui::SameLine(0, ImGui::GetStyle().ItemInnerSpacing.x);
-    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 9);
+    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 12);
     if (ImGui::BeginCombo("##note", label(note).c_str(), ImGuiComboFlags_HeightLarge)) {
         if (!inKey(key, note)) {
             ImGui::Selectable(label(note).c_str(), true);
