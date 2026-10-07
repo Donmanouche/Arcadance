@@ -25,8 +25,13 @@ public:
 
     void openVirtual(const std::string& name);  // throws std::runtime_error
     // Opens the first port whose name contains `fragment` (case-insensitive)
-    // and returns its full name. Throws std::runtime_error.
+    // and returns its full name. If none does, accepts the same port under
+    // another ALSA card number (see stablePortName). Throws std::runtime_error.
     std::string connect(const std::string& fragment);
+
+    // A port name without the ALSA "client:port" numbers that change from one
+    // session to the next: "VirMIDI 3-0:VirMIDI 3-0 28:0" -> "VirMIDI 3-0:VirMIDI 3-0".
+    static std::string stablePortName(const std::string& name);
 
     // Called from the real-time thread.
     void send(const midipad::MidiMessage& message) override;

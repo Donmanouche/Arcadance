@@ -38,5 +38,23 @@ if(MIDIPAD_BUILD_APP)
         GIT_SHALLOW TRUE
         SYSTEM)
 
-    FetchContent_MakeAvailable(SDL3 rtmidi)
+    FetchContent_Declare(imgui
+        GIT_REPOSITORY https://github.com/ocornut/imgui.git
+        GIT_TAG v1.92.9b
+        GIT_SHALLOW TRUE)
+
+    FetchContent_MakeAvailable(SDL3 rtmidi imgui)
+
+    # Dear ImGui has no CMake project: build it with its SDL3 backends.
+    add_library(imgui STATIC
+        ${imgui_SOURCE_DIR}/imgui.cpp
+        ${imgui_SOURCE_DIR}/imgui_draw.cpp
+        ${imgui_SOURCE_DIR}/imgui_tables.cpp
+        ${imgui_SOURCE_DIR}/imgui_widgets.cpp
+        ${imgui_SOURCE_DIR}/backends/imgui_impl_sdl3.cpp
+        ${imgui_SOURCE_DIR}/backends/imgui_impl_sdlrenderer3.cpp
+        ${imgui_SOURCE_DIR}/misc/cpp/imgui_stdlib.cpp)
+    target_include_directories(imgui SYSTEM PUBLIC ${imgui_SOURCE_DIR} ${imgui_SOURCE_DIR}/backends)
+    target_compile_definitions(imgui PUBLIC IMGUI_DISABLE_OBSOLETE_FUNCTIONS)
+    target_link_libraries(imgui PUBLIC SDL3::SDL3)
 endif()

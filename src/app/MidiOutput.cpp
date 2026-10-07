@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <regex>
 #include <stdexcept>
 
 namespace {
@@ -65,11 +66,29 @@ void MidiOutput::openVirtual(const std::string& name) {
     watchSendErrors();
 }
 
+std::string MidiOutput::stablePortName(const std::string& name) {
+    static const std::regex kClientPort(R"( [0-9]+:[0-9]+$)");
+    return std::regex_replace(name, kClientPort, "");
+}
+
+namespace {
+
+// Card numbers move with the plugging order ("Virtual Raw MIDI 3-0" becomes
+// "4-0" when another card comes first); the device number after the dash stays.
+std::string withoutCardNumbers(const std::string& name) {
+    static const std::regex kCardDevice(R"([0-9]+-([0-9]+))");
+    return std::regex_replace(lower(MidiOutput::stablePortName(name)), kCardDevice, "#-$1");
+}
+
+}  // namespace
+
 std::string MidiOutput::connect(const std::string& fragment) {
     const auto names = portNames();
     const std::string wanted = lower(fragment);
+    auto matches = [&](const std::string& name) { return lower(name).find(wanted) != std::string::npos; };
+    const bool any = std::any_of(names.begin(), names.end(), matches);
     for (unsigned i = 0; i < names.size(); ++i) {
-        if (lower(names[i]).find(wanted) == std::string::npos)
+        if (any ? !matches(names[i]) : withoutCardNumbers(names[i]) != withoutCardNumbers(fragment))
             continue;
         try {
             out_->openPort(i, kClientName);

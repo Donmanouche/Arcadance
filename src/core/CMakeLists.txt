@@ -1,10 +1,13 @@
 add_library(midipad_core STATIC
+    src/AppSettings.cpp
     src/Chords.cpp
     src/Controls.cpp
     src/Engine.cpp
+    src/Labels.cpp
     src/LegacyImport.cpp
     src/Notes.cpp
     src/PresetIO.cpp
+    src/PresetLibrary.cpp
 )
 add_library(midipad::core ALIAS midipad_core)
 

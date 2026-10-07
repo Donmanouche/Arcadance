@@ -78,6 +78,11 @@ void GamepadInput::poll(std::uint64_t nowNs) {
     }
 }
 
+std::string GamepadInput::name() const {
+    const char* n = pad_ ? SDL_GetGamepadName(pad_) : nullptr;
+    return n ? n : (pad_ ? "Manette sans nom" : "");
+}
+
 void GamepadInput::tryOpen() {
     int count = 0;
     SDL_JoystickID* ids = SDL_GetGamepads(&count);

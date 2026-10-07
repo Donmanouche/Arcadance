@@ -35,11 +35,20 @@ public:
     // gamepad stays connected.
     void poll(std::uint64_t nowNs);
 
-private:
     struct Finger {
         bool down = false;
         float x = 0, y = 0;
     };
+
+    // State as of the last poll(), for display.
+    bool connected() const { return pad_ != nullptr; }
+    bool hasTouchpad() const { return hasTouchpad_; }
+    std::string name() const;  // empty when no gamepad is open
+    const std::bitset<SDL_GAMEPAD_BUTTON_COUNT>& buttons() const { return buttons_; }
+    const std::array<Sint16, SDL_GAMEPAD_AXIS_COUNT>& axes() const { return axes_; }
+    const std::array<Finger, midipad::kFingerCount>& fingers() const { return fingers_; }
+
+private:
 
     void tryOpen();
     void close();

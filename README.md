@@ -10,14 +10,14 @@ La version Python de référence se trouve dans
 |---|---|---|
 | 1 | Moteur (logique pure), accords, format de preset, import des anciens presets, tests | fait |
 | 2 | Thread temps réel SDL3 (manette + touchpad) et RtMidi, exécutable sans interface | fait, validé sur DualSense |
-| 3 | Éditeur de mapping et gestion des presets (Dear ImGui) | à faire |
+| 3 | Éditeur de mapping et gestion des presets (Dear ImGui) | fait, à tester |
 | 4 | Écran performance animé | à faire |
 | 5 | Paquets Windows et macOS | à faire |
 
 ## Compiler
 
 Prérequis : CMake ≥ 3.25, Ninja, un compilateur C++20 (GCC 13 testé). Les
-dépendances (nlohmann/json, doctest, SDL3, RtMidi) sont téléchargées par CMake.
+dépendances (nlohmann/json, doctest, SDL3, RtMidi, Dear ImGui) sont téléchargées par CMake.
 Sous Linux, il faut les en-têtes ALSA (`libasound2-dev`) ; JACK est optionnel.
 
 ```bash
@@ -35,10 +35,36 @@ build/release/tools/midipad-import "<chemin>/Midipad-dev/configs" presets
 Chaque `<nom>.json` et ses fichiers `<nom>-<canal>.json` deviennent un seul
 preset ; les entrées non convertibles sont signalées.
 
-## Jouer
+## L'éditeur
 
 ```bash
-build/release/src/app/midipad presets/PS5_Test.json
+build/release/src/app/midipad
+```
+
+Ouvre la fenêtre MidiPad, qui joue en même temps qu'elle édite :
+
+- **Preset** : ouvrir, créer, enregistrer (Ctrl+S), enregistrer sous, annuler
+  les modifications, mettre à la corbeille (le fichier est déplacé dans le
+  sous-dossier `corbeille`, jamais supprimé), importer les presets de la
+  version Python, changer de dossier de presets.
+- **Sortie MIDI** : port virtuel « MidiPad » ou un port existant ; canal actif ;
+  « Tout couper » pour les notes collées.
+- **Mapping** : la base ou le mapping spécifique d'un canal. « Suivre le canal
+  actif » affiche ce qui joue sur le canal en cours, y compris quand il change
+  depuis la manette. Quatre onglets : boutons, croix directionnelle, sticks et
+  gâchettes, touchpad. Les contrôles touchés sur la manette s'allument en vert.
+- **Journal** : connexions, moniteur MIDI, boutons appuyés.
+
+Chaque modification s'entend tout de suite ; elle n'est écrite sur le disque
+qu'à l'enregistrement. Les réglages (dossier des presets, dernier preset,
+sortie) sont gardés dans `~/.local/share/MidiPad/MidiPad/settings.json`.
+Le dossier des presets par défaut est `~/.local/share/MidiPad/MidiPad/presets`
+(`midipad chemin/vers/un/preset.json` ouvre plutôt le dossier de ce preset).
+
+## Jouer sans fenêtre
+
+```bash
+build/release/src/app/midipad --headless presets/PS5_Test.json
 ```
 
 Crée un port MIDI virtuel « MidiPad » (ALSA) à relier au DAW, et lit la
@@ -72,18 +98,21 @@ jusqu'à ~15 ms (sommeil de 5 ms + attente de 10 ms) avant de traiter un
 événement.
 
 Les événements manette de SDL sont volontairement désactivés : la boucle
-d'événements du thread principal servira à l'interface (étape 3), et
-l'animation ne doit pas retarder le MIDI.
+d'événements du thread principal dessine l'interface, et l'affichage ne doit
+pas retarder le MIDI. Pour la même raison, la manette ne pilote pas
+l'interface (clavier et souris uniquement).
 
 ## Architecture
 
 ```
 src/app/       midipad : lecture SDL3 (GamepadInput), sortie RtMidi (MidiOutput),
-               thread temps réel, rechargement du preset
+               thread temps réel (Runtime), mode console (Headless)
+  gui/         fenêtre ImGui (GuiApp) et éditeur de mapping (MappingEditor)
 src/core/      bibliothèque sans dépendance système (testée)
   Engine       événements manette → messages MIDI ; aucune allocation à l'exécution
   Preset*      modèle de mapping, lecture/écriture JSON, import des anciens presets
   Chords/Notes théorie musicale
+  PresetLibrary, AppSettings, Labels   dossier de presets, réglages, libellés
 tools/         midipad-import
 tests/         tests unitaires (doctest), dont GamepadInput face à une
                manette virtuelle SDL
