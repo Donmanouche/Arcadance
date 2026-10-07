@@ -44,8 +44,8 @@ TEST_CASE("keys are spelled with the right accidentals") {
     CHECK(prefersFlats(key("D", "minor")));          // Bb
     CHECK(prefersFlats(key("F", "major")));
     CHECK(prefersFlats(key("C", "dorian")));         // relative major Bb
-    CHECK(keyName(key("A", "minor")) == "A mineur naturel");
-    CHECK(keyName(key("Bb", "major")) == "Bb majeur");
+    CHECK(keyName(key("A", "minor")) == "A natural minor");
+    CHECK(keyName(key("Bb", "major")) == "Bb major");
     CHECK(noteName(70, true) == "Bb4");
     CHECK(pitchName(6) == "F#");
 }

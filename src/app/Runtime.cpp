@@ -27,21 +27,21 @@ std::string describe(const MidiMessage& m) {
     const int channel = (m.bytes[0] & 0x0F) + 1;
     switch (m.bytes[0] & 0xF0) {
     case 0x90:
-        std::snprintf(line, sizeof line, "canal %2d  note on   %-4s (%3d)  vél. %d", channel, noteName(m.bytes[1]).c_str(),
+        std::snprintf(line, sizeof line, "ch %2d  note on   %-4s (%3d)  vel %d", channel, noteName(m.bytes[1]).c_str(),
                       m.bytes[1], m.bytes[2]);
         break;
     case 0x80:
-        std::snprintf(line, sizeof line, "canal %2d  note off  %-4s (%3d)", channel, noteName(m.bytes[1]).c_str(),
+        std::snprintf(line, sizeof line, "ch %2d  note off  %-4s (%3d)", channel, noteName(m.bytes[1]).c_str(),
                       m.bytes[1]);
         break;
     case 0xB0:
-        std::snprintf(line, sizeof line, "canal %2d  CC %3d = %d", channel, m.bytes[1], m.bytes[2]);
+        std::snprintf(line, sizeof line, "ch %2d  CC %3d = %d", channel, m.bytes[1], m.bytes[2]);
         break;
     default:
-        std::snprintf(line, sizeof line, "%s", m.bytes[0] == 0xFA   ? "transport : lecture"
-                                               : m.bytes[0] == 0xFB ? "transport : reprise"
-                                               : m.bytes[0] == 0xFC ? "transport : arrêt"
-                                                                    : "message MIDI");
+        std::snprintf(line, sizeof line, "%s", m.bytes[0] == 0xFA   ? "transport: start"
+                                               : m.bytes[0] == 0xFB ? "transport: continue"
+                                               : m.bytes[0] == 0xFC ? "transport: stop"
+                                                                    : "MIDI message");
     }
     return line;
 }
@@ -53,15 +53,15 @@ std::string describe(const Report& r) {
     case Report::Kind::Midi:
         return describe(r.message);
     case Report::Kind::Channel:
-        return "-> canal " + std::to_string(r.channel + 1);
+        return "-> channel " + std::to_string(r.channel + 1);
     case Report::Kind::Button:
-        return "[" + label(r.button) + (r.pressed ? " appuyé]" : " relâché]");
+        return "[" + label(r.button) + (r.pressed ? " pressed]" : " released]");
     case Report::Kind::Freeze: {
         std::string axes;
         for (int a = 0; a < kAxisCount; ++a)
             if (r.frozenAxes & (1u << a))
                 axes += (axes.empty() ? "" : ", ") + label(static_cast<Axis>(a));
-        return "[freeze canal " + std::to_string(r.channel + 1) + " : " + (axes.empty() ? "aucun axe" : axes) + "]";
+        return "[freeze channel " + std::to_string(r.channel + 1) + ": " + (axes.empty() ? "no axis" : axes) + "]";
     }
     }
     return {};
@@ -191,8 +191,8 @@ void Runtime::run(std::stop_token stop, Options options, std::shared_ptr<const P
     sched_param param{};
     param.sched_priority = 10;
     const bool realtime = pthread_setschedparam(pthread_self(), SCHED_FIFO, &param) == 0;
-    log_(realtime ? "Thread manette en priorité temps réel."
-                  : "Priorité temps réel refusée (normal sans droits rtprio) : priorité normale.");
+    log_(realtime ? "Gamepad thread running at real-time priority."
+                  : "Real-time priority refused (normal without rtprio rights): normal priority.");
 #endif
 
     std::shared_ptr<MidiOutput> output;

@@ -2,7 +2,7 @@
 //
 // The main thread only draws and edits; the Runtime's input thread plays.
 // Every edit is pushed to the engine at once, so changes are heard live, and
-// written to disk only on "Enregistrer".
+// written to disk only on "Save".
 
 #include "gui/GuiApp.hpp"
 
@@ -96,25 +96,25 @@ GuiOptions parseGuiArgs(const std::vector<std::string>& args) {
             else if (t == "touchpad")
                 o.tab = MappingEditor::Tab::Touchpad;
             else
-                o.error = "--tab attend buttons, dpad, axes ou touchpad";
+                o.error = "--tab expects buttons, dpad, axes or touchpad";
         } else if (a == "--click" && i + 1 < args.size()) {
             float x = 0, y = 0;
             if (std::sscanf(args[++i].c_str(), "%f,%f", &x, &y) == 2)
                 o.clicks.emplace_back(x, y);
             else
-                o.error = "--click attend X,Y";
+                o.error = "--click expects X,Y";
         } else if (a == "--view" && i + 1 < args.size()) {
             const std::string v = args[++i];
             if (v == "performance" || v == "editor")
                 o.performanceView = v == "performance";
             else
-                o.error = "--view attend performance ou editor";
+                o.error = "--view expects performance or editor";
         } else if (a == "--demo") {
             o.demo = true;
         } else if (a == "--select" && i + 1 < args.size()) {
             o.select = args[++i];
         } else if (!a.empty() && a[0] == '-') {
-            o.error = "option inconnue " + a;
+            o.error = "unknown option " + a;
         } else {
             o.preset = a;
         }
@@ -141,7 +141,7 @@ LiveState demoLive(double t) {
     LiveState s;
     s.connected = true;
     s.hasTouchpad = true;
-    s.gamepadName = "DualSense (démo)";
+    s.gamepadName = "DualSense (demo)";
     auto axis = [](double v) { return static_cast<std::int16_t>(std::clamp(v, -1.0, 1.0) * 32767); };
     s.axes[static_cast<std::size_t>(Axis::LeftX)] = axis(0.7 * std::cos(t * 1.3));
     s.axes[static_cast<std::size_t>(Axis::LeftY)] = axis(-0.6 * std::sin(t * 1.3));
@@ -159,16 +159,16 @@ LiveState demoLive(double t) {
     return s;
 }
 
-constexpr const char* kUsage = R"(Usage : midipad [preset.json]
-        midipad --headless [options] <preset.json>   (sans fenêtre, voir --headless --help)
+constexpr const char* kUsage = R"(Usage: midipad [preset.json]
+       midipad --headless [options] <preset.json>   (no window, see --headless --help)
 
-Ouvre la fenêtre MidiPad. Avec un fichier de preset, son dossier devient le
-dossier des presets et le preset est ouvert.
+Opens the MidiPad window. With a preset file, its folder becomes the presets
+folder and the preset is opened.
 
-  --view performance|editor   vue au démarrage (sinon la dernière utilisée)
+  --view performance|editor   view at startup (otherwise the last one used)
 
-Dans la fenêtre : F2 bascule entre l'éditeur et la vue animée, F11 passe en
-plein écran.
+In the window: F2 switches between the editor and the animated view, F11
+toggles fullscreen.
 )";
 
 class GuiApp {
@@ -196,6 +196,7 @@ private:
     void drawChannelAndStatus(const LiveState& live);
     void drawOutputCombo(float width);
     void drawPerformance(const LiveState& live);
+    void drawMappingOverlay(const LiveState& live);
     void setView(bool performance);
     void toggleFullscreen();
     void drawMappingArea(const LiveState& live);
@@ -245,7 +246,7 @@ private:
     std::vector<std::string> presetNames_;
 
     Preset preset_;
-    bool hasFile_ = false;  // false: "Sans titre", never saved
+    bool hasFile_ = false;  // false: "Untitled", never saved
     bool dirty_ = false;
     std::optional<fs::file_time_type> presetTime_;
     std::chrono::steady_clock::time_point nextFileCheck_{};
@@ -257,6 +258,8 @@ private:
 
     MappingEditor editor_;
     PerformanceView performance_;
+    std::optional<std::string> overlaySpec_;  // control edited over the animated view
+    bool overlayAppearing_ = false;
     int editChannel_ = -1;  // -1: base mapping
     bool followChannel_ = true;
     int lastLiveChannel_ = -1;
@@ -295,7 +298,7 @@ bool GuiApp::init() {
     // ignores controllers while none of its windows is focused.
     SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
-        std::cerr << "midipad : SDL_Init a échoué : " << SDL_GetError() << '\n';
+        std::cerr << "midipad: SDL_Init failed: " << SDL_GetError() << '\n';
         return false;
     }
     SDL_SetGamepadEventsEnabled(false);  // the runtime polls the gamepad itself
@@ -326,19 +329,19 @@ bool GuiApp::init() {
     if (settings_.outputChosen) {
         output_ = openOutput(settings_.output, settings_.existingPortName, error);
         if (output_) {
-            log("Sortie MIDI : " + outputLabel_);
+            log("MIDI output: " + outputLabel_);
         } else {
-            outputDialogReason_ = "Le dernier port utilisé, « " + settings_.existingPortName + " », est introuvable.";
+            outputDialogReason_ = "The last port used, \"" + settings_.existingPortName + "\", was not found.";
             openOutputDialog_ = true;
         }
     } else {
-        outputDialogReason_ = "Choisissez où MidiPad envoie son MIDI.";
+        outputDialogReason_ = "Choose where MidiPad sends its MIDI.";
         openOutputDialog_ = true;
     }
     if (!output_) {
         output_ = openOutput(AppSettings::Output::VirtualPort, {}, error);
         if (!output_)
-            log("Aucune sortie MIDI : " + error);
+            log("No MIDI output: " + error);
     }
 
     Runtime::Options runtimeOptions;
@@ -352,7 +355,7 @@ bool GuiApp::init() {
 
     if (!SDL_CreateWindowAndRenderer("MidiPad", 1280, 820, SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY,
                                      &window_, &renderer_)) {
-        std::cerr << "midipad : impossible d'ouvrir la fenêtre : " << SDL_GetError() << '\n';
+        std::cerr << "midipad: cannot open the window: " << SDL_GetError() << '\n';
         return false;
     }
     SDL_SetRenderVSync(renderer_, 1);
@@ -388,8 +391,8 @@ bool GuiApp::init() {
     if (options_.tab)
         editor_.showTab(*options_.tab);
     if (options_.select && !editor_.select(*options_.select))
-        log("--select : contrôle inconnu " + *options_.select);
-    log("Presets : " + settings_.presetsDir.string());
+        log("--select: unknown control " + *options_.select);
+    log("Presets: " + settings_.presetsDir.string());
     return true;
 }
 
@@ -434,7 +437,7 @@ int GuiApp::run() {
             const int screenshotFrame = 4 + 2 * static_cast<int>(options_.clicks.size());
             if (options_.screenshot && ++frameCount_ == screenshotFrame) {
                 if (!saveScreenshot(*options_.screenshot))
-                    std::cerr << "midipad : capture impossible : " << SDL_GetError() << '\n';
+                    std::cerr << "midipad: screenshot failed: " << SDL_GetError() << '\n';
                 quit_ = true;
             }
         }
@@ -516,20 +519,20 @@ void GuiApp::update() {
         if (time && time != presetTime_) {
             presetTime_ = time;
             if (dirty_) {
-                log("Le fichier du preset a changé sur le disque ; vos modifications non enregistrées sont conservées.");
+                log("The preset file changed on disk; your unsaved changes are kept.");
             } else {
                 try {
                     preset_ = library_->load(preset_.name);
                     pushToEngine();
-                    log("Preset rechargé (modifié sur le disque).");
+                    log("Preset reloaded (changed on disk).");
                 } catch (const PresetError& e) {
-                    log(std::string("Preset modifié sur le disque mais invalide : ") + e.what());
+                    log(std::string("Preset changed on disk but invalid: ") + e.what());
                 }
             }
         }
     }
 
-    std::string title = "MidiPad - " + (hasFile_ ? preset_.name : std::string("Sans titre")) + (dirty_ ? " *" : "");
+    std::string title = "MidiPad - " + (hasFile_ ? preset_.name : std::string("Untitled")) + (dirty_ ? " *" : "");
     if (title != SDL_GetWindowTitle(window_))
         SDL_SetWindowTitle(window_, title.c_str());
 }
@@ -542,7 +545,7 @@ void GuiApp::openPreset(const std::string& name) {
     try {
         preset_ = library_->load(name);
     } catch (const PresetError& e) {
-        showError(std::string("Impossible d'ouvrir le preset :\n") + e.what());
+        showError(std::string("Cannot open the preset:\n") + e.what());
         return;
     }
     hasFile_ = true;
@@ -573,7 +576,7 @@ void GuiApp::startUntitled() {
 bool GuiApp::saveCurrent() {
     if (!hasFile_) {
         nameDialog_ = NameDialog::SaveAs;
-        nameInput_ = library_->uniqueName("Nouveau preset");
+        nameInput_ = library_->uniqueName("New preset");
         nameError_.clear();
         openNameDialog_ = true;
         return false;
@@ -581,12 +584,12 @@ bool GuiApp::saveCurrent() {
     try {
         library_->save(preset_);
     } catch (const std::exception& e) {
-        showError(std::string("Enregistrement impossible :\n") + e.what());
+        showError(std::string("Cannot save:\n") + e.what());
         return false;
     }
     dirty_ = false;
     presetTime_ = modificationTime(library_->pathFor(preset_.name));
-    log("Preset « " + preset_.name + " » enregistré.");
+    log("Preset \"" + preset_.name + "\" saved.");
     return true;
 }
 
@@ -631,14 +634,14 @@ void GuiApp::setPresetsDir(const fs::path& dir) {
     refreshPresetList();
     openFirstOrUntitled();
     persistSettings();
-    log("Presets : " + dir.string());
+    log("Presets: " + dir.string());
 }
 
 void GuiApp::runImport() {
     importReport_.clear();
     const fs::path source = importDir_;
     if (!fs::is_directory(source)) {
-        importReport_.push_back("Dossier introuvable : " + source.string());
+        importReport_.push_back("Folder not found: " + source.string());
         return;
     }
     settings_.legacyImportDir = source;
@@ -646,27 +649,27 @@ void GuiApp::runImport() {
 
     const auto imported = importLegacyDirectory(source);
     for (const auto& error : imported.errors)
-        importReport_.push_back("ERREUR " + error);
+        importReport_.push_back("ERROR " + error);
     int count = 0;
     for (const auto& result : imported.presets) {
         if (library_->contains(result.preset.name)) {
-            importReport_.push_back("Ignoré : « " + result.preset.name + " » existe déjà.");
+            importReport_.push_back("Skipped: \"" + result.preset.name + "\" already exists.");
             continue;
         }
         try {
             library_->save(result.preset);
-            importReport_.push_back("Importé : « " + result.preset.name + " »");
+            importReport_.push_back("Imported: \"" + result.preset.name + "\"");
             ++count;
         } catch (const std::exception& e) {
-            importReport_.push_back("ERREUR « " + result.preset.name + " » : " + e.what());
+            importReport_.push_back("ERROR \"" + result.preset.name + "\": " + e.what());
         }
         for (const auto& warning : result.warnings)
             importReport_.push_back("    ! " + warning);
     }
     if (imported.presets.empty() && imported.errors.empty())
-        importReport_.push_back("Aucun preset trouvé dans ce dossier.");
+        importReport_.push_back("No preset found in this folder.");
     refreshPresetList();
-    log(std::to_string(count) + " preset(s) importé(s) depuis " + source.string());
+    log(std::to_string(count) + " preset(s) imported from " + source.string());
     if (!hasFile_ && !dirty_ && count > 0)
         openFirstOrUntitled();
 }
@@ -687,7 +690,7 @@ void GuiApp::refreshPorts() {
             ports_.push_back(std::move(name));
         }
     } catch (const std::exception& e) {
-        log(std::string("Liste des ports MIDI indisponible : ") + e.what());
+        log(std::string("MIDI port list unavailable: ") + e.what());
     }
 }
 
@@ -698,7 +701,7 @@ std::shared_ptr<MidiOutput> GuiApp::openOutput(AppSettings::Output kind, const s
             outputLabel_ = out->connect(port);
         } else {
             out->openVirtual(settings_.virtualPortName);
-            outputLabel_ = "Port virtuel « " + settings_.virtualPortName + " »";
+            outputLabel_ = "Virtual port \"" + settings_.virtualPortName + "\"";
         }
         return out;
     } catch (const std::exception& e) {
@@ -713,7 +716,7 @@ bool GuiApp::useOutput(AppSettings::Output kind, const std::string& port) {
     auto out = openOutput(kind, port, error);
     if (!out) {
         outputLabel_ = previousLabel;
-        showError("Sortie MIDI indisponible :\n" + error);
+        showError("MIDI output unavailable:\n" + error);
         return false;
     }
     output_ = out;
@@ -723,7 +726,7 @@ bool GuiApp::useOutput(AppSettings::Output kind, const std::string& port) {
     if (kind == AppSettings::Output::ExistingPort)
         settings_.existingPortName = MidiOutput::stablePortName(port);
     persistSettings();
-    log("Sortie MIDI : " + outputLabel_);
+    log("MIDI output: " + outputLabel_);
     return true;
 }
 
@@ -746,7 +749,7 @@ void GuiApp::persistSettings() {
     try {
         saveSettings(settings_, settingsFile_);
     } catch (const std::exception& e) {
-        log(std::string("Réglages non enregistrés : ") + e.what());
+        log(std::string("Settings not saved: ") + e.what());
     }
 }
 
@@ -821,10 +824,10 @@ void GuiApp::drawPresetBar() {
     ImGui::TextUnformatted("Preset");
     ImGui::SameLine();
     ImGui::SetNextItemWidth(ImGui::GetFontSize() * 16);
-    const std::string current = (hasFile_ ? preset_.name : std::string("Sans titre")) + (dirty_ ? " *" : "");
+    const std::string current = (hasFile_ ? preset_.name : std::string("Untitled")) + (dirty_ ? " *" : "");
     if (ImGui::BeginCombo("##preset", current.c_str())) {
         if (presetNames_.empty())
-            ImGui::TextDisabled("Aucun preset dans ce dossier");
+            ImGui::TextDisabled("No preset in this folder");
         for (const auto& name : presetNames_) {
             if (ImGui::Selectable(name.c_str(), hasFile_ && name == preset_.name) && !(hasFile_ && name == preset_.name))
                 guard([this, name] { openPreset(name); });
@@ -833,63 +836,63 @@ void GuiApp::drawPresetBar() {
     }
 
     ImGui::SameLine();
-    if (ImGui::Button("Nouveau"))
+    if (ImGui::Button("New"))
         guard([this] {
             nameDialog_ = NameDialog::New;
-            nameInput_ = library_->uniqueName("Nouveau preset");
+            nameInput_ = library_->uniqueName("New preset");
             nameError_.clear();
             openNameDialog_ = true;
         });
     ImGui::SameLine();
     ImGui::BeginDisabled(hasFile_ && !dirty_);
-    if (ImGui::Button("Enregistrer"))
+    if (ImGui::Button("Save"))
         saveCurrent();
     ImGui::EndDisabled();
     ImGui::SetItemTooltip("Ctrl+S");
     ImGui::SameLine();
-    if (ImGui::Button("Enregistrer sous…")) {
+    if (ImGui::Button("Save as…")) {
         nameDialog_ = NameDialog::SaveAs;
-        nameInput_ = library_->uniqueName(hasFile_ ? preset_.name : "Nouveau preset");
+        nameInput_ = library_->uniqueName(hasFile_ ? preset_.name : "New preset");
         nameError_.clear();
         openNameDialog_ = true;
     }
     ImGui::SameLine();
     ImGui::BeginDisabled(!hasFile_ || !dirty_);
-    if (ImGui::Button("Annuler les modifications"))
+    if (ImGui::Button("Revert"))
         openPreset(preset_.name);
     ImGui::EndDisabled();
     ImGui::SameLine();
     ImGui::BeginDisabled(!hasFile_);
-    if (ImGui::Button("Corbeille"))
+    if (ImGui::Button("Trash"))
         openTrashDialog_ = true;
     ImGui::EndDisabled();
-    ImGui::SetItemTooltip("Déplace le preset dans le sous-dossier « corbeille »");
+    ImGui::SetItemTooltip("Moves the preset to the \"trash\" subfolder");
 
     ImGui::SameLine(0, ImGui::GetFontSize() * 2);
-    if (ImGui::Button("Importer…")) {
+    if (ImGui::Button("Import…")) {
         importDir_ = settings_.legacyImportDir.string();
         importReport_.clear();
         openImportDialog_ = true;
     }
-    ImGui::SetItemTooltip("Importer les presets de la version Python (dossier configs)");
+    ImGui::SetItemTooltip("Import the presets of the Python version (configs folder)");
     ImGui::SameLine();
-    if (ImGui::Button("Dossier…"))
+    if (ImGui::Button("Folder…"))
         browseFolder(FolderTarget::Presets, settings_.presetsDir);
-    ImGui::SetItemTooltip("Dossier des presets :\n%s", settings_.presetsDir.string().c_str());
+    ImGui::SetItemTooltip("Presets folder:\n%s", settings_.presetsDir.string().c_str());
 
     ImGui::SameLine(0, ImGui::GetFontSize() * 2);
-    if (ImGui::Button("Vue animée"))
+    if (ImGui::Button("Animated view"))
         setView(true);
-    ImGui::SetItemTooltip("F2 ; F11 pour le plein écran");
+    ImGui::SetItemTooltip("F2; F11 for fullscreen");
 }
 
 void GuiApp::drawOutputBar(const LiveState& live) {
     ImGui::AlignTextToFramePadding();
-    ImGui::TextUnformatted("Sortie MIDI");
+    ImGui::TextUnformatted("MIDI output");
     ImGui::SameLine();
     drawOutputCombo(ImGui::GetFontSize() * 18);
     ImGui::SameLine();
-    if (ImGui::Button("Actualiser"))
+    if (ImGui::Button("Refresh"))
         refreshPorts();
     drawChannelAndStatus(live);
 }
@@ -897,27 +900,27 @@ void GuiApp::drawOutputBar(const LiveState& live) {
 void GuiApp::drawOutputCombo(float width) {
     ImGui::SetNextItemWidth(width);
     if (ImGui::BeginCombo("##output", outputLabel_.c_str())) {
-        const std::string virtualLabel = "Port virtuel « " + settings_.virtualPortName + " »";
+        const std::string virtualLabel = "Virtual port \"" + settings_.virtualPortName + "\"";
         if (ImGui::Selectable(virtualLabel.c_str(), settings_.output == AppSettings::Output::VirtualPort))
             useOutput(AppSettings::Output::VirtualPort, {});
         ImGui::Separator();
         if (ports_.empty())
-            ImGui::TextDisabled("Aucun port MIDI");
+            ImGui::TextDisabled("No MIDI port");
         for (const auto& port : ports_)
             if (ImGui::Selectable(port.c_str(), outputLabel_ == port))
                 useOutput(AppSettings::Output::ExistingPort, port);
             else if (const auto name = bitwigName(port); !name.empty())
-                ImGui::SetItemTooltip("Dans Bitwig : %s/…", name.c_str());
+                ImGui::SetItemTooltip("In Bitwig: %s/…", name.c_str());
         ImGui::EndCombo();
     }
     if (const auto name = bitwigName(outputLabel_); !name.empty())
-        ImGui::SetItemTooltip("Dans Bitwig, cette sortie s'appelle %s/…", name.c_str());
+        ImGui::SetItemTooltip("In Bitwig, this output is called %s/…", name.c_str());
 }
 
 void GuiApp::drawChannelAndStatus(const LiveState& live) {
     ImGui::SameLine(0, ImGui::GetFontSize() * 2);
     ImGui::AlignTextToFramePadding();
-    ImGui::TextUnformatted("Canal actif");
+    ImGui::TextUnformatted("Active channel");
     ImGui::SameLine();
     if (ImGui::ArrowButton("##chdown", ImGuiDir_Left))
         runtime_->setChannel((live.channel + 15) % 16);
@@ -928,22 +931,22 @@ void GuiApp::drawChannelAndStatus(const LiveState& live) {
         runtime_->setChannel((live.channel + 1) % 16);
 
     ImGui::SameLine(0, ImGui::GetFontSize() * 2);
-    if (ImGui::Button("Tout couper"))
+    if (ImGui::Button("Panic"))
         runtime_->panic();
-    ImGui::SetItemTooltip("Coupe toutes les notes et CC encore actifs (notes collées, toggles)");
+    ImGui::SetItemTooltip("Turns off every note and CC still on (stuck notes, toggles)");
 
     ImGui::SameLine(0, ImGui::GetFontSize() * 2);
     ImGui::AlignTextToFramePadding();
     if (live.connected)
-        ImGui::TextColored(kOkColor, "Manette : %s%s", live.gamepadName.c_str(),
-                           live.hasTouchpad ? "" : " (sans touchpad)");
+        ImGui::TextColored(kOkColor, "Gamepad: %s%s", live.gamepadName.c_str(),
+                           live.hasTouchpad ? "" : " (no touchpad)");
     else
-        ImGui::TextColored(kHintColor, "Aucune manette : branchez-la, elle sera détectée");
+        ImGui::TextColored(kHintColor, "No gamepad: plug one in, it will be detected");
 }
 
 void GuiApp::drawKeyBar() {
     ImGui::AlignTextToFramePadding();
-    ImGui::TextUnformatted("Tonalité");
+    ImGui::TextUnformatted("Key");
     ImGui::SameLine();
     const bool changed = drawKeyCombos();
     const bool flats = settings_.key && prefersFlats(*settings_.key);
@@ -953,9 +956,9 @@ void GuiApp::drawKeyBar() {
         std::string notes;
         for (int pc : scalePitchClasses(*settings_.key))
             notes += pitchName(pc, flats) + " ";
-        ImGui::Text("Notes : %s  - l'éditeur ne propose que ces notes et les accords qu'elles forment", notes.c_str());
+        ImGui::Text("Notes: %s  - the editor only offers these notes and the chords they form", notes.c_str());
     } else {
-        ImGui::TextUnformatted("Aucune : toutes les notes et tous les accords sont proposés");
+        ImGui::TextUnformatted("None: every note and chord is offered");
     }
     ImGui::PopStyleColor();
     if (changed)
@@ -964,11 +967,11 @@ void GuiApp::drawKeyBar() {
 
 bool GuiApp::drawKeyCombos() {
     const bool flats = settings_.key && prefersFlats(*settings_.key);
-    const std::string rootPreview = settings_.key ? pitchName(settings_.key->root, flats) : std::string("Aucune");
+    const std::string rootPreview = settings_.key ? pitchName(settings_.key->root, flats) : std::string("None");
     bool changed = false;
     ImGui::SetNextItemWidth(ImGui::GetFontSize() * 6);
     if (ImGui::BeginCombo("##keyroot", rootPreview.c_str())) {
-        if (ImGui::Selectable("Aucune", !settings_.key)) {
+        if (ImGui::Selectable("None", !settings_.key)) {
             settings_.key.reset();
             changed = true;
         }
@@ -1041,19 +1044,19 @@ void GuiApp::drawPerformance(const LiveState& live) {
     if (ImGui::Button(" = "))
         ImGui::OpenPopup("menu");
     if (ImGui::BeginPopup("menu")) {
-        if (ImGui::MenuItem("Éditeur", "F2"))
+        if (ImGui::MenuItem("Editor", "F2"))
             setView(false);
-        if (ImGui::MenuItem("Plein écran", "F11", (SDL_GetWindowFlags(window_) & SDL_WINDOW_FULLSCREEN) != 0))
+        if (ImGui::MenuItem("Fullscreen", "F11", (SDL_GetWindowFlags(window_) & SDL_WINDOW_FULLSCREEN) != 0))
             toggleFullscreen();
         ImGui::Separator();
-        if (ImGui::MenuItem("Importer des presets de la version Python…")) {
+        if (ImGui::MenuItem("Import presets of the Python version…")) {
             importDir_ = settings_.legacyImportDir.string();
             importReport_.clear();
             openImportDialog_ = true;
         }
-        if (ImGui::MenuItem("Dossier des presets…"))
+        if (ImGui::MenuItem("Presets folder…"))
             browseFolder(FolderTarget::Presets, settings_.presetsDir);
-        if (ImGui::MenuItem("Actualiser les ports MIDI"))
+        if (ImGui::MenuItem("Refresh MIDI ports"))
             refreshPorts();
         ImGui::EndPopup();
     }
@@ -1066,31 +1069,31 @@ void GuiApp::drawPerformance(const LiveState& live) {
         ImGui::Dummy(ImVec2(ImGui::GetFont()->CalcTextSizeA(size, FLT_MAX, 0, "MIDIPAD").x + em, ImGui::GetFrameHeight()));
     }
     ImGui::SameLine();
-    if (ImGui::Button("ÉDITEUR"))
+    if (ImGui::Button("EDITOR"))
         setView(false);
     ImGui::SetItemTooltip("F2");
     ImGui::SameLine();
-    if (ImGui::Button("TOUT COUPER"))
+    if (ImGui::Button("PANIC"))
         runtime_->panic();
-    ImGui::SetItemTooltip("Coupe toutes les notes et CC encore actifs");
+    ImGui::SetItemTooltip("Turns off every note and CC still on");
     ImGui::SameLine(0, em * 1.2f);
     if (ImGui::ArrowButton("##pchdown", ImGuiDir_Left))
         runtime_->setChannel((live.channel + 15) % 16);
     ImGui::SameLine(0, em * 0.4f);
     ImGui::AlignTextToFramePadding();
-    ImGui::Text("CANAL %d", live.channel + 1);
+    ImGui::Text("CHANNEL %d", live.channel + 1);
     ImGui::SameLine(0, em * 0.4f);
     if (ImGui::ArrowButton("##pchup", ImGuiDir_Right))
         runtime_->setChannel((live.channel + 1) % 16);
     ImGui::SameLine(0, em * 1.2f);
     ImGui::AlignTextToFramePadding();
-    ImGui::TextColored(color(Theme::kDim), "TONALITÉ");
+    ImGui::TextColored(color(Theme::kDim), "KEY");
     ImGui::SameLine();
     if (drawKeyCombos())
         persistSettings();
     ImGui::SameLine(0, em * 1.2f);
     ImGui::AlignTextToFramePadding();
-    ImGui::TextColored(color(Theme::kDim), "SORTIE");
+    ImGui::TextColored(color(Theme::kDim), "OUTPUT");
     ImGui::SameLine();
     drawOutputCombo(em * 12);
     ImGui::SameLine(0, em * 1.2f);
@@ -1105,7 +1108,7 @@ void GuiApp::drawPerformance(const LiveState& live) {
         ImGui::SameLine(0, 0);
         ImGui::AlignTextToFramePadding();
         ImGui::TextColored(color(live.connected ? Theme::kText : Theme::kDim), "%s",
-                           live.connected ? live.gamepadName.c_str() : "Aucune manette");
+                           live.connected ? live.gamepadName.c_str() : "No gamepad");
     }
     ImGui::SetCursorScreenPos(ImVec2(barMin.x, barMin.y + barH + em * 0.5f));
 
@@ -1132,13 +1135,13 @@ void GuiApp::drawPerformance(const LiveState& live) {
         ImGui::SameLine(0, em * 0.3f);
         if (ImGui::ArrowButton("##next", ImGuiDir_Right))
             openAt(index + 1);
-        const std::string current = (hasFile_ ? preset_.name : std::string("Sans titre")) + (dirty_ ? " *" : "");
+        const std::string current = (hasFile_ ? preset_.name : std::string("Untitled")) + (dirty_ ? " *" : "");
         ImGui::TextUnformatted(current.c_str());
         if (dirty_) {
-            if (ImGui::SmallButton("Enregistrer"))
+            if (ImGui::SmallButton("Save"))
                 saveCurrent();
             ImGui::SameLine();
-            if (hasFile_ && ImGui::SmallButton("Annuler"))
+            if (hasFile_ && ImGui::SmallButton("Revert"))
                 openPreset(preset_.name);
         }
         ImGui::Separator();
@@ -1150,7 +1153,7 @@ void GuiApp::drawPerformance(const LiveState& live) {
                 guard([this, name] { openPreset(name); });
         }
         if (presetNames_.empty())
-            ImGui::TextColored(color(Theme::kDim), "Aucun preset.\nMenu = > Importer…");
+            ImGui::TextColored(color(Theme::kDim), "No preset.\nMenu = > Import…");
         ImGui::EndChild();
         // Outlined logo, as on hardware-style plugins.
         const ImVec2 p = ImGui::GetCursorScreenPos();
@@ -1174,12 +1177,86 @@ void GuiApp::drawPerformance(const LiveState& live) {
     ImGui::EndChild();
     ImGui::PopStyleColor();
 
-    ImGui::PopStyleColor(kColors);
-
-    if (clicked) {  // open the editor on what was clicked
-        editor_.select(*clicked);
-        setView(false);
+    // Clicking a control edits it in a panel over the view.
+    if (clicked) {
+        overlayAppearing_ = overlaySpec_ != clicked;
+        overlaySpec_ = clicked;
     }
+    if (overlaySpec_)
+        drawMappingOverlay(live);
+
+    ImGui::PopStyleColor(kColors);
+}
+
+void GuiApp::drawMappingOverlay(const LiveState& live) {
+    using Theme = PerformanceView::Theme;
+    const std::string spec = *overlaySpec_;
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    if (overlayAppearing_) {
+        ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + viewport->WorkSize.x * 0.5f,
+                                       viewport->WorkPos.y + viewport->WorkSize.y * 0.45f),
+                                ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+        ImGui::SetNextWindowFocus();
+        overlayAppearing_ = false;
+    }
+    ImGui::SetNextWindowBgAlpha(0.88f);
+    ImGui::SetNextWindowSizeConstraints(ImVec2(ImGui::GetFontSize() * 26, 0),
+                                        ImVec2(ImGui::GetFontSize() * 40, viewport->WorkSize.y * 0.85f));
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImGui::ColorConvertU32ToFloat4(Theme::kPanelHeader));
+    ImGui::PushStyleColor(ImGuiCol_TitleBg, ImGui::ColorConvertU32ToFloat4(Theme::kBorder));
+    ImGui::PushStyleColor(ImGuiCol_TitleBgActive, ImGui::ColorConvertU32ToFloat4(Theme::kBorder));
+    ImGui::PushStyleColor(ImGuiCol_FrameBg, ImGui::ColorConvertU32ToFloat4(0xFF4A4642));
+    ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, ImGui::ColorConvertU32ToFloat4(0xFF57524D));
+    ImGui::PushStyleColor(ImGuiCol_PlotHistogram, ImGui::ColorConvertU32ToFloat4(Theme::kBlue));
+    ImGui::PushStyleColor(ImGuiCol_SliderGrab, ImGui::ColorConvertU32ToFloat4(Theme::kBlue));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 6.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(ImGui::GetFontSize() * 0.9f, ImGui::GetFontSize() * 0.7f));
+    bool open = true;
+    const std::string title = MappingEditor::controlTitle(spec) + "###mappingoverlay";
+    if (ImGui::Begin(title.c_str(), &open,
+                     ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings |
+                         ImGuiWindowFlags_NoScrollbar)) {
+        // Edit what plays now: the active channel's own mapping, or the base.
+        auto& own = preset_.channels[static_cast<std::size_t>(live.channel)];
+        Mapping& target = own ? *own : preset_.base;
+        ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(Theme::kDim), "%s",
+                           own ? ("Editing the mapping of channel " + std::to_string(live.channel + 1)).c_str()
+                               : "Editing the base mapping (all channels)");
+        ImGui::Spacing();
+        if (editor_.drawControl(spec, target, live, settings_.key))
+            edited();
+
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::BeginDisabled(hasFile_ && !dirty_);
+        if (ImGui::Button("Save preset"))
+            saveCurrent();
+        ImGui::EndDisabled();
+        ImGui::SetItemTooltip("Ctrl+S");
+        ImGui::SameLine();
+        ImGui::BeginDisabled(!hasFile_ || !dirty_);
+        if (ImGui::Button("Revert"))
+            openPreset(preset_.name);
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        if (ImGui::Button("Open in editor")) {
+            const std::string kind = spec.substr(0, spec.find(':'));
+            editor_.select(kind == "axis" || kind == "axes" ? "tab:axes"
+                           : kind == "finger" || kind == "fingers" ? "tab:touchpad"
+                                                                   : spec);
+            open = false;
+            setView(false);
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Close") ||
+            (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) && ImGui::IsKeyPressed(ImGuiKey_Escape)))
+            open = false;
+    }
+    ImGui::End();
+    ImGui::PopStyleVar(2);
+    ImGui::PopStyleColor(7);
+    if (!open)
+        overlaySpec_.reset();
 }
 
 void GuiApp::drawMappingArea(const LiveState& live) {
@@ -1198,9 +1275,9 @@ void GuiApp::drawMappingArea(const LiveState& live) {
     ImGui::SameLine();
     auto channelLabel = [this](int c) {
         if (c < 0)
-            return std::string("Base (tous les canaux)");
-        return "Canal " + std::to_string(c + 1) +
-               (preset_.channels[static_cast<std::size_t>(c)] ? "  (spécifique)" : "  (utilise la base)");
+            return std::string("Base (all channels)");
+        return "Channel " + std::to_string(c + 1) +
+               (preset_.channels[static_cast<std::size_t>(c)] ? "  (own mapping)" : "  (uses base)");
     };
     ImGui::SetNextItemWidth(ImGui::GetFontSize() * 16);
     if (ImGui::BeginCombo("##editchannel", channelLabel(editChannel_).c_str())) {
@@ -1220,8 +1297,8 @@ void GuiApp::drawMappingArea(const LiveState& live) {
         ImGui::EndCombo();
     }
     ImGui::SameLine();
-    ImGui::Checkbox("Suivre le canal actif", &followChannel_);
-    ImGui::SetItemTooltip("Affiche le mapping du canal actif, y compris quand il change depuis la manette");
+    ImGui::Checkbox("Follow active channel", &followChannel_);
+    ImGui::SetItemTooltip("Shows the mapping of the active channel, also when the gamepad changes it");
 
     Mapping* target = &preset_.base;
     bool readOnly = false;
@@ -1230,16 +1307,16 @@ void GuiApp::drawMappingArea(const LiveState& live) {
         ImGui::SameLine();
         if (slot) {
             target = &*slot;
-            if (ImGui::Button("Revenir à la base pour ce canal")) {
+            if (ImGui::Button("Use the base for this channel")) {
                 slot.reset();
                 edited();
                 target = &preset_.base;
                 readOnly = true;
             }
-            ImGui::SetItemTooltip("Supprime le mapping spécifique de ce canal");
+            ImGui::SetItemTooltip("Removes this channel's own mapping");
         } else {
             readOnly = true;
-            if (ImGui::Button("Créer un mapping spécifique (copie de la base)")) {
+            if (ImGui::Button("Create an own mapping (copy of the base)")) {
                 slot = preset_.base;
                 edited();
                 target = &*slot;
@@ -1249,7 +1326,7 @@ void GuiApp::drawMappingArea(const LiveState& live) {
     }
     if (readOnly) {
         ImGui::PushStyleColor(ImGuiCol_Text, kHintColor);
-        ImGui::TextUnformatted("Ce canal joue le mapping de base, affiché ci-dessous en lecture seule.");
+        ImGui::TextUnformatted("This channel plays the base mapping, shown read-only below.");
         ImGui::PopStyleColor();
     }
 
@@ -1259,17 +1336,17 @@ void GuiApp::drawMappingArea(const LiveState& live) {
 
 void GuiApp::drawLog() {
     ImGui::BeginChild("log", ImVec2(0, -ImGui::GetFrameHeightWithSpacing()), ImGuiChildFlags_Borders);
-    if (ImGui::Checkbox("Moniteur MIDI", &settings_.monitorMidi)) {
+    if (ImGui::Checkbox("MIDI monitor", &settings_.monitorMidi)) {
         runtime_->setReportMidi(settings_.monitorMidi);
         persistSettings();
     }
     ImGui::SameLine();
-    if (ImGui::Checkbox("Boutons", &settings_.showButtons)) {
+    if (ImGui::Checkbox("Buttons", &settings_.showButtons)) {
         runtime_->setReportButtons(settings_.showButtons);
         persistSettings();
     }
     ImGui::SameLine();
-    if (ImGui::SmallButton("Effacer"))
+    if (ImGui::SmallButton("Clear"))
         log_.clear();
     ImGui::Separator();
     ImGui::BeginChild("lines");
@@ -1292,9 +1369,9 @@ void GuiApp::drawStatusBar(const LiveState& live) {
         if (live.frozenAxes & (1u << a))
             frozen += (frozen.empty() ? "" : ", ") + label(static_cast<Axis>(a));
     ImGui::AlignTextToFramePadding();
-    ImGui::TextColored(kHintColor, "Freeze : %s    |    Traitement : %.0f µs en moyenne, %.0f µs max    |    "
-                                   "Erreurs MIDI : %llu",
-                       frozen.empty() ? "aucun" : frozen.c_str(), stats.averageWorkUs, stats.maxWorkUs,
+    ImGui::TextColored(kHintColor, "Freeze: %s    |    Processing: %.0f µs average, %.0f µs max    |    "
+                                   "MIDI errors: %llu",
+                       frozen.empty() ? "none" : frozen.c_str(), stats.averageWorkUs, stats.maxWorkUs,
                        static_cast<unsigned long long>(stats.sendErrors));
 }
 
@@ -1310,14 +1387,14 @@ void GuiApp::drawDialogs() {
 }
 
 void GuiApp::drawNameDialog() {
-    const char* title = nameDialog_ == NameDialog::New ? "Nouveau preset" : "Enregistrer sous";
+    const char* title = nameDialog_ == NameDialog::New ? "New preset" : "Save as";
     if (openNameDialog_) {
         ImGui::OpenPopup(title);
         openNameDialog_ = false;
     }
     if (!ImGui::BeginPopupModal(title, nullptr, ImGuiWindowFlags_AlwaysAutoResize))
         return;
-    ImGui::TextUnformatted("Nom du preset");
+    ImGui::TextUnformatted("Preset name");
     if (ImGui::IsWindowAppearing())
         ImGui::SetKeyboardFocusHere();
     ImGui::SetNextItemWidth(ImGui::GetFontSize() * 20);
@@ -1329,7 +1406,7 @@ void GuiApp::drawNameDialog() {
         if (auto error = PresetLibrary::nameError(nameInput_)) {
             nameError_ = *error;
         } else if (library_->contains(nameInput_)) {
-            nameError_ = "Un preset porte déjà ce nom.";
+            nameError_ = "A preset already has this name.";
         } else if (nameDialog_ == NameDialog::New) {
             preset_ = Preset{};
             preset_.name = nameInput_;
@@ -1349,7 +1426,7 @@ void GuiApp::drawNameDialog() {
         }
     }
     ImGui::SameLine();
-    if (ImGui::Button("Annuler") || ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+    if (ImGui::Button("Cancel") || ImGui::IsKeyPressed(ImGuiKey_Escape)) {
         afterSave_ = nullptr;
         ImGui::CloseCurrentPopup();
     }
@@ -1357,16 +1434,16 @@ void GuiApp::drawNameDialog() {
 }
 
 void GuiApp::drawUnsavedDialog() {
-    constexpr const char* kTitle = "Modifications non enregistrées";
+    constexpr const char* kTitle = "Unsaved changes";
     if (openUnsavedDialog_) {
         ImGui::OpenPopup(kTitle);
         openUnsavedDialog_ = false;
     }
     if (!ImGui::BeginPopupModal(kTitle, nullptr, ImGuiWindowFlags_AlwaysAutoResize))
         return;
-    ImGui::Text("Le preset « %s » a été modifié.", hasFile_ ? preset_.name.c_str() : "Sans titre");
+    ImGui::Text("The preset \"%s\" was changed.", hasFile_ ? preset_.name.c_str() : "Untitled");
     ImGui::Spacing();
-    if (ImGui::Button("Enregistrer")) {
+    if (ImGui::Button("Save")) {
         ImGui::CloseCurrentPopup();
         if (hasFile_) {
             if (saveCurrent() && pendingAction_)
@@ -1377,14 +1454,14 @@ void GuiApp::drawUnsavedDialog() {
         }
     }
     ImGui::SameLine();
-    if (ImGui::Button("Ne pas enregistrer")) {
+    if (ImGui::Button("Don't save")) {
         ImGui::CloseCurrentPopup();
         dirty_ = false;
         if (pendingAction_)
             std::exchange(pendingAction_, nullptr)();
     }
     ImGui::SameLine();
-    if (ImGui::Button("Annuler") || ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+    if (ImGui::Button("Cancel") || ImGui::IsKeyPressed(ImGuiKey_Escape)) {
         pendingAction_ = nullptr;
         ImGui::CloseCurrentPopup();
     }
@@ -1392,34 +1469,34 @@ void GuiApp::drawUnsavedDialog() {
 }
 
 void GuiApp::drawTrashDialog() {
-    constexpr const char* kTitle = "Mettre à la corbeille";
+    constexpr const char* kTitle = "Move to trash";
     if (openTrashDialog_) {
         ImGui::OpenPopup(kTitle);
         openTrashDialog_ = false;
     }
     if (!ImGui::BeginPopupModal(kTitle, nullptr, ImGuiWindowFlags_AlwaysAutoResize))
         return;
-    ImGui::Text("Déplacer « %s » dans le dossier « corbeille » ?", preset_.name.c_str());
-    ImGui::TextColored(kHintColor, "Le fichier n'est pas supprimé : il reste récupérable dans ce dossier.");
-    if (ImGui::Button("Déplacer")) {
+    ImGui::Text("Move \"%s\" to the \"trash\" folder?", preset_.name.c_str());
+    ImGui::TextColored(kHintColor, "The file is not deleted: it can be recovered from that folder.");
+    if (ImGui::Button("Move")) {
         try {
             const fs::path moved = library_->moveToTrash(preset_.name);
-            log("Preset déplacé vers " + moved.string());
+            log("Preset moved to " + moved.string());
             refreshPresetList();
             openFirstOrUntitled();
         } catch (const std::exception& e) {
-            showError(std::string("Déplacement impossible :\n") + e.what());
+            showError(std::string("Cannot move:\n") + e.what());
         }
         ImGui::CloseCurrentPopup();
     }
     ImGui::SameLine();
-    if (ImGui::Button("Annuler") || ImGui::IsKeyPressed(ImGuiKey_Escape))
+    if (ImGui::Button("Cancel") || ImGui::IsKeyPressed(ImGuiKey_Escape))
         ImGui::CloseCurrentPopup();
     ImGui::EndPopup();
 }
 
 void GuiApp::drawImportDialog() {
-    constexpr const char* kTitle = "Importer les presets de la version Python";
+    constexpr const char* kTitle = "Import the presets of the Python version";
     if (openImportDialog_) {
         ImGui::OpenPopup(kTitle);
         openImportDialog_ = false;
@@ -1427,18 +1504,18 @@ void GuiApp::drawImportDialog() {
     ImGui::SetNextWindowSize(ImVec2(ImGui::GetFontSize() * 40, 0), ImGuiCond_Appearing);
     if (!ImGui::BeginPopupModal(kTitle, nullptr))
         return;
-    ImGui::TextWrapped("Choisissez le dossier « configs » de la version Python. Chaque preset et ses variantes "
-                       "par canal (<nom>-<canal>.json) deviennent un preset unique dans votre dossier de presets. "
-                       "Les presets déjà présents ne sont pas écrasés.");
+    ImGui::TextWrapped("Choose the \"configs\" folder of the Python version. Each preset and its per-channel "
+                       "variants (<name>-<channel>.json) become one preset in your presets folder. "
+                       "Presets already there are not overwritten.");
     ImGui::SetNextItemWidth(-ImGui::GetFontSize() * 7);
     ImGui::InputText("##importdir", &importDir_);
     ImGui::SameLine();
-    if (ImGui::Button("Parcourir…"))
+    if (ImGui::Button("Browse…"))
         browseFolder(FolderTarget::Import, importDir_);
-    if (ImGui::Button("Importer"))
+    if (ImGui::Button("Import"))
         runImport();
     ImGui::SameLine();
-    if (ImGui::Button("Fermer") || ImGui::IsKeyPressed(ImGuiKey_Escape))
+    if (ImGui::Button("Close") || ImGui::IsKeyPressed(ImGuiKey_Escape))
         ImGui::CloseCurrentPopup();
     if (!importReport_.empty()) {
         ImGui::Separator();
@@ -1451,7 +1528,7 @@ void GuiApp::drawImportDialog() {
 }
 
 void GuiApp::drawErrorDialog() {
-    constexpr const char* kTitle = "Erreur";
+    constexpr const char* kTitle = "Error";
     if (openErrorDialog_) {
         ImGui::OpenPopup(kTitle);
         openErrorDialog_ = false;
@@ -1465,7 +1542,7 @@ void GuiApp::drawErrorDialog() {
 }
 
 void GuiApp::drawOutputDialog() {
-    constexpr const char* kTitle = "Sortie MIDI";
+    constexpr const char* kTitle = "MIDI output";
     if (openOutputDialog_) {
         refreshPorts();
         ImGui::OpenPopup(kTitle);
@@ -1477,14 +1554,14 @@ void GuiApp::drawOutputDialog() {
     ImGui::TextWrapped("%s", outputDialogReason_.c_str());
     ImGui::Spacing();
     ImGui::PushStyleColor(ImGuiCol_Text, kHintColor);
-    ImGui::TextWrapped("Bitwig sous Linux ne voit pas le port virtuel « %s » : choisissez un port VirMIDI, "
-                       "puis l'entrée indiquée à droite dans Bitwig.",
+    ImGui::TextWrapped("Bitwig on Linux does not see the virtual port \"%s\": choose a VirMIDI port, "
+                       "then the input shown on the right in Bitwig.",
                        settings_.virtualPortName.c_str());
     ImGui::PopStyleColor();
 
     ImGui::BeginChild("ports", ImVec2(0, ImGui::GetTextLineHeightWithSpacing() * 9), ImGuiChildFlags_Borders);
     if (ports_.empty())
-        ImGui::TextDisabled("Aucun port MIDI trouvé. Pour Bitwig, chargez le module snd-virmidi (voir le README).");
+        ImGui::TextDisabled("No MIDI port found. For Bitwig, load the snd-virmidi module (see the README).");
     for (const auto& port : ports_) {
         const std::string name = bitwigName(port);
         const std::string text = name.empty() ? port : port + "      -> Bitwig : " + name + "/…";
@@ -1493,16 +1570,16 @@ void GuiApp::drawOutputDialog() {
     }
     ImGui::EndChild();
 
-    if (ImGui::Button("Actualiser"))
+    if (ImGui::Button("Refresh"))
         refreshPorts();
     ImGui::SameLine();
-    const std::string virtualLabel = "Port virtuel « " + settings_.virtualPortName + " »";
+    const std::string virtualLabel = "Virtual port \"" + settings_.virtualPortName + "\"";
     if (ImGui::Button(virtualLabel.c_str()) && useOutput(AppSettings::Output::VirtualPort, {}))
         ImGui::CloseCurrentPopup();
     ImGui::SameLine();
-    if (ImGui::Button("Plus tard") || ImGui::IsKeyPressed(ImGuiKey_Escape))
+    if (ImGui::Button("Later") || ImGui::IsKeyPressed(ImGuiKey_Escape))
         ImGui::CloseCurrentPopup();
-    ImGui::SetItemTooltip("Garde le port virtuel pour cette fois ; la question reviendra au prochain démarrage");
+    ImGui::SetItemTooltip("Keeps the virtual port for now; the question comes back at the next start");
     ImGui::EndPopup();
 }
 

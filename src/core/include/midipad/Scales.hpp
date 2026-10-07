@@ -12,7 +12,7 @@ namespace midipad {
 
 struct ScaleType {
     std::string_view id;     // stored in settings: "major", "harmonic_minor"...
-    std::string_view label;  // French, for menus
+    std::string_view label;  // for menus
     std::span<const int> intervals;
 };
 
@@ -34,7 +34,7 @@ bool inKey(const Key& key, int midiNote);
 std::vector<int> scalePitchClasses(const Key& key);
 // Whether notes read better with flats in this key (F major, D minor, C dorian...).
 bool prefersFlats(const Key& key);
-// "A mineur naturel", "Bb majeur".
+// "A natural minor", "Bb major".
 std::string keyName(const Key& key);
 
 // A chord whose notes all belong to the key.

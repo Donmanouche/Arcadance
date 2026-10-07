@@ -57,12 +57,12 @@ TEST_CASE("removed presets go to the trash folder, never deleted") {
     PresetLibrary library(dir.path);
     library.save(named("live"));
     const auto first = library.moveToTrash("live");
-    CHECK(first == dir.path / "corbeille" / "live.json");
+    CHECK(first == dir.path / "trash" / "live.json");
     CHECK(fs::exists(first));
     CHECK(library.names().empty());
 
     library.save(named("live"));
-    CHECK(library.moveToTrash("live") == dir.path / "corbeille" / "live (2).json");
+    CHECK(library.moveToTrash("live") == dir.path / "trash" / "live (2).json");
     CHECK(fs::exists(first));
 }
 

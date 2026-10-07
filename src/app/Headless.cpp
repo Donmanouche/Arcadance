@@ -27,25 +27,25 @@ using namespace midipad;
 
 namespace {
 
-constexpr const char* kUsage = R"(Usage : midipad --headless [options] <preset.json>
+constexpr const char* kUsage = R"(Usage: midipad --headless [options] <preset.json>
 
-Joue un preset MidiPad avec la première manette connectée, sans fenêtre.
-Le preset est rechargé automatiquement quand son fichier change.
+Plays a MidiPad preset with the first gamepad connected, without a window.
+The preset is reloaded automatically when its file changes.
 
-Options :
-  -c, --connect NOM    envoie vers un port MIDI existant dont le nom contient NOM,
-                       au lieu de créer un port virtuel
-  -n, --port-name NOM  nom du port virtuel (défaut : MidiPad)
-      --api alsa|jack  API MIDI sous Linux (défaut : alsa)
-      --channel N      canal MIDI de départ, de 1 à 16 (défaut : 1)
-  -m, --monitor        affiche chaque message MIDI envoyé
-  -i, --input          affiche les boutons appuyés
-      --stats          affiche à la sortie les temps de traitement mesurés
-      --poll-hz N      lectures de la manette par seconde (défaut : 1000)
-      --list-ports     liste les ports MIDI de sortie et quitte
-  -h, --help           affiche cette aide
+Options:
+  -c, --connect NAME   send to an existing MIDI port whose name contains NAME,
+                       instead of creating a virtual port
+  -n, --port-name NAME name of the virtual port (default: MidiPad)
+      --api alsa|jack  MIDI API on Linux (default: alsa)
+      --channel N      starting MIDI channel, 1 to 16 (default: 1)
+  -m, --monitor        print every MIDI message sent
+  -i, --input          print the buttons pressed
+      --stats          print the measured processing times on exit
+      --poll-hz N      gamepad reads per second (default: 1000)
+      --list-ports     list the MIDI output ports and exit
+  -h, --help           show this help
 
-Les presets de la version Python se convertissent avec midipad-import.
+Presets of the Python version are converted with midipad-import.
 )";
 
 struct Options {
@@ -76,7 +76,7 @@ std::optional<int> parseInt(const std::string& s) {
 std::variant<Options, int> parseArgs(const std::vector<std::string>& args) {
     Options o;
     auto fail = [](const std::string& message) {
-        std::cerr << "midipad : " << message << "\n\n" << kUsage;
+        std::cerr << "midipad: " << message << "\n\n" << kUsage;
         return 2;
     };
     for (std::size_t i = 0; i < args.size(); ++i) {
@@ -92,11 +92,11 @@ std::variant<Options, int> parseArgs(const std::vector<std::string>& args) {
         } else if (arg == "-c" || arg == "--connect") {
             o.connect = value();
             if (!o.connect)
-                return fail(arg + " attend un nom de port");
+                return fail(arg + " expects a port name");
         } else if (arg == "-n" || arg == "--port-name") {
             auto v = value();
             if (!v || v->empty())
-                return fail(arg + " attend un nom");
+                return fail(arg + " expects a name");
             o.portName = *v;
         } else if (arg == "--api") {
             auto v = value();
@@ -105,18 +105,18 @@ std::variant<Options, int> parseArgs(const std::vector<std::string>& args) {
             else if (v == "jack")
                 o.api = MidiOutput::Api::Jack;
             else
-                return fail("--api attend alsa ou jack");
+                return fail("--api expects alsa or jack");
         } else if (arg == "--channel") {
             auto v = value();
             auto n = v ? parseInt(*v) : std::nullopt;
             if (!n || *n < 1 || *n > 16)
-                return fail("--channel attend un nombre de 1 à 16");
+                return fail("--channel expects a number from 1 to 16");
             o.channel = *n - 1;
         } else if (arg == "--poll-hz") {
             auto v = value();
             auto n = v ? parseInt(*v) : std::nullopt;
             if (!n || *n < 50 || *n > 8000)
-                return fail("--poll-hz attend un nombre de 50 à 8000");
+                return fail("--poll-hz expects a number from 50 to 8000");
             o.pollHz = *n;
         } else if (arg == "-m" || arg == "--monitor") {
             o.monitor = true;
@@ -127,15 +127,15 @@ std::variant<Options, int> parseArgs(const std::vector<std::string>& args) {
         } else if (arg == "--list-ports") {
             o.listPorts = true;
         } else if (!arg.empty() && arg[0] == '-') {
-            return fail("option inconnue " + arg);
+            return fail("unknown option " + arg);
         } else if (o.preset.empty()) {
             o.preset = arg;
         } else {
-            return fail("un seul preset à la fois");
+            return fail("one preset at a time");
         }
     }
     if (o.preset.empty() && !o.listPorts)
-        return fail("indiquez un fichier de preset");
+        return fail("give a preset file");
     return o;
 }
 
@@ -159,15 +159,15 @@ int run(const Options& options) {
     try {
         out = std::make_shared<MidiOutput>(options.api);
     } catch (const std::exception& e) {
-        std::cerr << "midipad : " << e.what() << '\n';
+        std::cerr << "midipad: " << e.what() << '\n';
         return 1;
     }
 
     if (options.listPorts) {
         const auto ports = out->portNames();
-        std::cout << "Ports MIDI de sortie (" << out->apiName() << ") :\n";
+        std::cout << "MIDI output ports (" << out->apiName() << "):\n";
         if (ports.empty())
-            std::cout << "  aucun\n";
+            std::cout << "  none\n";
         for (const auto& name : ports)
             std::cout << "  " << name << '\n';
         return 0;
@@ -177,31 +177,31 @@ int run(const Options& options) {
     try {
         preset = std::make_shared<const Preset>(loadPreset(options.preset));
     } catch (const PresetError& e) {
-        std::cerr << "midipad : " << e.what() << '\n';
+        std::cerr << "midipad: " << e.what() << '\n';
         return 1;
     }
 
     try {
         if (options.connect)
-            say("Sortie MIDI : " + out->connect(*options.connect) + " (" + out->apiName() + ")");
+            say("MIDI output: " + out->connect(*options.connect) + " (" + out->apiName() + ")");
         else {
             out->openVirtual(options.portName);
-            say("Sortie MIDI : port virtuel « " + options.portName + " » (" + out->apiName() + ")");
+            say("MIDI output: virtual port \"" + options.portName + "\" (" + out->apiName() + ")");
         }
     } catch (const std::exception& e) {
-        std::cerr << "midipad : " << e.what() << '\n';
+        std::cerr << "midipad: " << e.what() << '\n';
         return 1;
     }
 
     if (!SDL_Init(SDL_INIT_GAMEPAD)) {
-        std::cerr << "midipad : SDL_Init a échoué : " << SDL_GetError() << '\n';
+        std::cerr << "midipad: SDL_Init failed: " << SDL_GetError() << '\n';
         return 1;
     }
     SDL_SetGamepadEventsEnabled(false);  // the runtime polls the gamepad itself
     SDL_SetJoystickEventsEnabled(false);
 
-    say("Preset : " + (preset->name.empty() ? options.preset.stem().string() : preset->name) + ", canal " +
-        std::to_string(options.channel + 1) + ". En attente d'une manette… (Ctrl+C pour quitter)");
+    say("Preset: " + (preset->name.empty() ? options.preset.stem().string() : preset->name) + ", channel " +
+        std::to_string(options.channel + 1) + ". Waiting for a gamepad... (Ctrl+C to quit)");
 
     RuntimeStats stats;
     {
@@ -219,28 +219,28 @@ int run(const Options& options) {
                     lastModified = modified;
                     try {
                         runtime.setPreset(std::make_shared<const Preset>(loadPreset(options.preset)));
-                        say("Preset rechargé.");
+                        say("Preset reloaded.");
                     } catch (const PresetError& e) {
-                        say(std::string("Preset non rechargé, l'ancien reste actif : ") + e.what());
+                        say(std::string("Preset not reloaded, the previous one stays active: ") + e.what());
                     }
                 }
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(5));
         }
-        say("Arrêt : toutes les notes sont coupées.");
+        say("Stopping: every note is turned off.");
         stats = runtime.stats();
     }  // stops the input thread, which turns every note off first
 
     if (options.stats) {
-        std::printf("Lectures de la manette : %llu\n", static_cast<unsigned long long>(stats.ticks));
-        std::printf("Traitement par lecture : moyenne %.1f µs, max %.1f µs\n", stats.averageWorkUs, stats.maxWorkUs);
-        std::printf("Retard de réveil max : %.1f µs\n", stats.maxLateUs);
+        std::printf("Gamepad reads: %llu\n", static_cast<unsigned long long>(stats.ticks));
+        std::printf("Processing per read: average %.1f µs, max %.1f µs\n", stats.averageWorkUs, stats.maxWorkUs);
+        std::printf("Max wake-up delay: %.1f µs\n", stats.maxLateUs);
     }
     if (stats.droppedReports)
-        std::printf("Messages non affichés (moniteur saturé) : %llu\n",
+        std::printf("Messages not shown (monitor overflow): %llu\n",
                     static_cast<unsigned long long>(stats.droppedReports));
     if (stats.sendErrors)
-        std::printf("Erreurs d'envoi MIDI : %llu\n", static_cast<unsigned long long>(stats.sendErrors));
+        std::printf("MIDI send errors: %llu\n", static_cast<unsigned long long>(stats.sendErrors));
 
     SDL_Quit();
     return 0;

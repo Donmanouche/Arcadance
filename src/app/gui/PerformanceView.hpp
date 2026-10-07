@@ -30,8 +30,8 @@ public:
     };
 
     // Draws into the remaining space of the current window. Returns the
-    // control clicked, as a MappingEditor::select() spec ("button:south",
-    // "dpad:up", "zone:1:top_left", "tab:axes"...), to open the editor on it.
+    // control clicked, as a MappingEditor::drawControl() spec ("button:south",
+    // "dpad:up", "zone:1:top_left", "axis:left_x", "finger:1"...).
     std::optional<std::string> draw(const midipad::Mapping& mapping, const LiveState& live,
                                     const std::optional<midipad::Key>& key);
 

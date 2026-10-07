@@ -23,19 +23,19 @@ constexpr int kBlues[] = {0, 3, 5, 6, 7, 10};
 constexpr int kWholeTone[] = {0, 2, 4, 6, 8, 10};
 
 const ScaleType kScales[] = {
-    {"major", "majeur", kMajor},
-    {"minor", "mineur naturel", kMinor},
-    {"harmonic_minor", "mineur harmonique", kHarmonicMinor},
-    {"melodic_minor", "mineur mélodique", kMelodicMinor},
-    {"dorian", "dorien", kDorian},
-    {"phrygian", "phrygien", kPhrygian},
-    {"lydian", "lydien", kLydian},
-    {"mixolydian", "mixolydien", kMixolydian},
-    {"locrian", "locrien", kLocrian},
-    {"pentatonic_major", "pentatonique majeure", kPentatonicMajor},
-    {"pentatonic_minor", "pentatonique mineure", kPentatonicMinor},
+    {"major", "major", kMajor},
+    {"minor", "natural minor", kMinor},
+    {"harmonic_minor", "harmonic minor", kHarmonicMinor},
+    {"melodic_minor", "melodic minor", kMelodicMinor},
+    {"dorian", "dorian", kDorian},
+    {"phrygian", "phrygian", kPhrygian},
+    {"lydian", "lydian", kLydian},
+    {"mixolydian", "mixolydian", kMixolydian},
+    {"locrian", "locrian", kLocrian},
+    {"pentatonic_major", "major pentatonic", kPentatonicMajor},
+    {"pentatonic_minor", "minor pentatonic", kPentatonicMinor},
     {"blues", "blues", kBlues},
-    {"whole_tone", "par tons", kWholeTone},
+    {"whole_tone", "whole tone", kWholeTone},
 };
 
 // How far above the root of the scale its relative major lies; decides the

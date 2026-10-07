@@ -41,20 +41,21 @@ preset ; les entrées non convertibles sont signalées.
 build/release/src/app/midipad
 ```
 
-Ouvre la fenêtre MidiPad, qui joue en même temps qu'elle édite :
+Ouvre la fenêtre MidiPad (interface en anglais), qui joue en même temps
+qu'elle édite :
 
 - **Preset** : ouvrir, créer, enregistrer (Ctrl+S), enregistrer sous, annuler
-  les modifications, mettre à la corbeille (le fichier est déplacé dans le
-  sous-dossier `corbeille`, jamais supprimé), importer les presets de la
+  les modifications, mettre à la corbeille (bouton « Trash » : le fichier est
+  déplacé dans le sous-dossier `trash`, jamais supprimé), importer les presets de la
   version Python, changer de dossier de presets.
 - **Sortie MIDI** : port virtuel « MidiPad » ou un port existant ; canal actif ;
-  « Tout couper » pour les notes collées.
-- **Tonalité** (facultative) : une fondamentale et une gamme (majeur, mineur
+  « Panic » pour les notes collées.
+- **Key** (tonalité, facultative) : une fondamentale et une gamme (majeur, mineur
   naturel, harmonique, mélodique, modes, pentatoniques, blues, par tons).
   L'éditeur ne propose alors que les notes de la gamme et, pour les accords,
-  un menu « Accord de la gamme » listant par degré tous les accords dont les
+  un menu « Chord of the key » listant par degré tous les accords dont les
   notes appartiennent à la gamme ; la saisie libre reste possible, et une note
-  ou un accord hors gamme est signalé. « Aucune » : tout est proposé.
+  ou un accord hors gamme est signalé. « None » : tout est proposé.
 - **Mapping** : la base ou le mapping spécifique d'un canal. « Suivre le canal
   actif » affiche ce qui joue sur le canal en cours, y compris quand il change
   depuis la manette. Quatre onglets : boutons, croix directionnelle, sticks et
@@ -88,7 +89,7 @@ La manette reste lue quand la fenêtre MidiPad est en arrière-plan.
 
 ### La vue animée
 
-**F2** (ou le bouton « Vue animée » / « ÉDITEUR ») bascule entre l'éditeur et
+**F2** (ou le bouton « Animated view » / « EDITOR ») bascule entre l'éditeur et
 une vue animée pensée pour la scène ; **F11** passe en plein écran. La vue
 choisie est retrouvée au démarrage (`--view performance|editor` pour forcer).
 
@@ -98,10 +99,12 @@ choisie est retrouvée au démarrage (`--view performance|editor` pour forcer).
 - un bandeau de pads pour les boutons (✕ ○ □ △ aux couleurs PlayStation) :
   éclair à chaque appui, éclairage tant que la note ou l'accord sonne (les
   bascules verrouillées restent allumées) ;
-- en haut : canal, Tout couper, tonalité, sortie MIDI, état de la manette, et
+- en haut : canal, Panic, tonalité, sortie MIDI, état de la manette, et
   un menu (importer, dossier des presets, plein écran) ; à gauche, la liste
   des presets avec précédent / suivant ;
-- un clic sur un contrôle ouvre l'éditeur sur ce contrôle.
+- un clic sur un contrôle (pad, direction, zone, potentiomètre d'axe, écran)
+  ouvre ses réglages dans un panneau semi-transparent au-dessus de la vue,
+  sans la quitter ; « Open in editor » ouvre l'éditeur complet dessus.
 
 ## Jouer sans fenêtre
 

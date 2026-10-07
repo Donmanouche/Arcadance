@@ -105,7 +105,7 @@ TEST_CASE("a virtual gamepad drives the engine through GamepadInput") {
     poll();
     REQUIRE(!log.empty());
     CHECK(log.front().find("MidiPad test pad") != std::string::npos);
-    CHECK(log.front().find("touchpad actif") != std::string::npos);
+    CHECK(log.front().find("touchpad active") != std::string::npos);
     CHECK(sink.take().empty());  // connecting sends nothing
 
     SUBCASE("buttons keep their SDL meaning") {
@@ -150,6 +150,6 @@ TEST_CASE("a virtual gamepad drives the engine through GamepadInput") {
         pad.detach();
         poll();
         CHECK(sink.take() == Messages{off(0, 48)});
-        CHECK(log.back().find("déconnectée") != std::string::npos);
+        CHECK(log.back().find("disconnected") != std::string::npos);
     }
 }

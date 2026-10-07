@@ -36,7 +36,7 @@ MidiOutput::MidiOutput(Api api) {
     try {
         out_ = std::make_unique<RtMidiOut>(toRtMidi(api), kClientName);
     } catch (const RtMidiError& e) {
-        throw std::runtime_error("MIDI indisponible : " + e.getMessage());
+        throw std::runtime_error("MIDI unavailable: " + e.getMessage());
     }
 }
 
@@ -56,12 +56,12 @@ bool MidiOutput::supportsVirtualPorts() const { return out_->getCurrentApi() != 
 
 void MidiOutput::openVirtual(const std::string& name) {
     if (!supportsVirtualPorts())
-        throw std::runtime_error("cette plateforme ne permet pas de port virtuel : utilisez --connect "
-                                 "(par exemple avec loopMIDI)");
+        throw std::runtime_error("this platform has no virtual ports: use --connect "
+                                 "(for example with loopMIDI)");
     try {
         out_->openVirtualPort(name);
     } catch (const RtMidiError& e) {
-        throw std::runtime_error("impossible de créer le port virtuel « " + name + " » : " + e.getMessage());
+        throw std::runtime_error("cannot create the virtual port \"" + name + "\": " + e.getMessage());
     }
     watchSendErrors();
 }
@@ -93,12 +93,12 @@ std::string MidiOutput::connect(const std::string& fragment) {
         try {
             out_->openPort(i, kClientName);
         } catch (const RtMidiError& e) {
-            throw std::runtime_error("impossible d'ouvrir « " + names[i] + " » : " + e.getMessage());
+            throw std::runtime_error("cannot open \"" + names[i] + "\": " + e.getMessage());
         }
         watchSendErrors();
         return names[i];
     }
-    throw std::runtime_error("aucun port MIDI ne contient « " + fragment + " » (voir --list-ports)");
+    throw std::runtime_error("no MIDI port name contains \"" + fragment + "\" (see --list-ports)");
 }
 
 void MidiOutput::send(const midipad::MidiMessage& message) { out_->sendMessage(message.bytes.data(), message.size); }

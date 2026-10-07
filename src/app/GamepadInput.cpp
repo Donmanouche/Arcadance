@@ -38,7 +38,7 @@ void GamepadInput::poll(std::uint64_t nowNs) {
         return;
     }
     if (!SDL_GamepadConnected(pad_)) {
-        log_("Manette déconnectée : toutes les notes sont coupées.");
+        log_("Gamepad disconnected: every note was turned off.");
         close();
         engine_.reset();
         return;
@@ -80,7 +80,7 @@ void GamepadInput::poll(std::uint64_t nowNs) {
 
 std::string GamepadInput::name() const {
     const char* n = pad_ ? SDL_GetGamepadName(pad_) : nullptr;
-    return n ? n : (pad_ ? "Manette sans nom" : "");
+    return n ? n : (pad_ ? "Unnamed gamepad" : "");
 }
 
 void GamepadInput::tryOpen() {
@@ -95,11 +95,11 @@ void GamepadInput::tryOpen() {
 
     hasTouchpad_ = SDL_GetNumGamepadTouchpads(pad_) > 0;
     const char* name = SDL_GetGamepadName(pad_);
-    std::string message = std::string("Manette connectée : ") + (name ? name : "sans nom");
-    message += hasTouchpad_ ? " (touchpad actif)" : " (pas de touchpad)";
+    std::string message = std::string("Gamepad connected: ") + (name ? name : "unnamed");
+    message += hasTouchpad_ ? " (touchpad active)" : " (no touchpad)";
     log_(message);
     if (!hasTouchpad_ && SDL_GetGamepadType(pad_) == SDL_GAMEPAD_TYPE_PS5)
-        log_("  Le touchpad de la DualSense demande l'accès à /dev/hidraw* : voir la règle udev du README.");
+        log_("  The DualSense touchpad needs access to /dev/hidraw*: see the udev rule in the README.");
 
     captureBaseline();
 }

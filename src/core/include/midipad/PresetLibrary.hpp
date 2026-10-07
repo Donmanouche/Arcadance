@@ -11,7 +11,7 @@
 namespace midipad {
 
 // The presets of one folder: <folder>/<name>.json. Nothing is ever deleted:
-// removed presets go to <folder>/corbeille/.
+// removed presets go to <folder>/trash/.
 class PresetLibrary {
 public:
     explicit PresetLibrary(std::filesystem::path directory);
@@ -30,7 +30,7 @@ public:
     // "Base", "Base 2", "Base 3"... whichever is free.
     std::string uniqueName(std::string_view base) const;
 
-    // Why `name` cannot be a preset name (a French message), or nullopt if it can.
+    // Why `name` cannot be a preset name, or nullopt if it can.
     static std::optional<std::string> nameError(std::string_view name);
 
 private:

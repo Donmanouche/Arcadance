@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <array>
+#include <vector>
 #include <cmath>
 #include <cstdio>
 
@@ -84,18 +85,18 @@ bool modeRadio(Mode& mode) {
     bool changed = false;
     ImGui::TextUnformatted("Mode");
     ImGui::SameLine();
-    if (ImGui::RadioButton("Momentané", mode == Mode::Momentary)) {
+    if (ImGui::RadioButton("Momentary", mode == Mode::Momentary)) {
         changed = mode != Mode::Momentary;
         mode = Mode::Momentary;
     }
     ImGui::SameLine();
-    if (ImGui::RadioButton("Bascule (toggle)", mode == Mode::Toggle)) {
+    if (ImGui::RadioButton("Toggle", mode == Mode::Toggle)) {
         changed = mode != Mode::Toggle;
         mode = Mode::Toggle;
     }
-    ImGui::SetItemTooltip("Momentané : actif tant que le contrôle est tenu.\n"
-                          "Bascule : un appui active, l'appui suivant désactive.\n"
-                          "Les notes et accords en bascule d'une même famille s'excluent.");
+    ImGui::SetItemTooltip("Momentary: on while the control is held.\n"
+                          "Toggle: one press turns it on, the next turns it off.\n"
+                          "Toggled notes and chords of the same family replace each other.");
     return changed;
 }
 
@@ -134,12 +135,12 @@ bool axisCells(const char* id, AxisBinding& a, float position) {
 
 void setupAxisColumns(const char* first) {
     ImGui::TableSetupColumn(first, ImGuiTableColumnFlags_WidthFixed);
-    ImGui::TableSetupColumn("Actif", ImGuiTableColumnFlags_WidthFixed);
+    ImGui::TableSetupColumn("On", ImGuiTableColumnFlags_WidthFixed);
     ImGui::TableSetupColumn("CC", ImGuiTableColumnFlags_WidthFixed);
     ImGui::TableSetupColumn("Min", ImGuiTableColumnFlags_WidthFixed);
     ImGui::TableSetupColumn("Max", ImGuiTableColumnFlags_WidthFixed);
-    ImGui::TableSetupColumn("Inverser", ImGuiTableColumnFlags_WidthFixed);
-    ImGui::TableSetupColumn("Valeur");
+    ImGui::TableSetupColumn("Invert", ImGuiTableColumnFlags_WidthFixed);
+    ImGui::TableSetupColumn("Value");
     ImGui::TableHeadersRow();
 }
 
@@ -194,6 +195,138 @@ bool MappingEditor::select(const std::string& spec) {
     return false;
 }
 
+namespace {
+
+std::vector<std::string> splitSpec(const std::string& spec) {
+    std::vector<std::string> parts;
+    std::size_t start = 0;
+    for (std::size_t i = 0; i <= spec.size(); ++i) {
+        if (i == spec.size() || spec[i] == ':' || spec[i] == ',') {
+            parts.push_back(spec.substr(start, i - start));
+            start = i + 1;
+        }
+    }
+    return parts;
+}
+
+}  // namespace
+
+std::string MappingEditor::controlTitle(const std::string& spec) {
+    const auto p = splitSpec(spec);
+    if (p.size() == 2 && p[0] == "button")
+        if (auto b = parseButton(p[1]))
+            return label(*b);
+    if (p.size() == 2 && p[0] == "dpad")
+        if (auto d = parseHatDir(p[1]))
+            return "D-pad: " + label(*d);
+    if (p.size() == 3 && p[0] == "zone")
+        if (auto z = parseZone(p[2]))
+            return "Touchpad finger " + p[1] + ": " + label(*z);
+    if (p.size() == 2 && p[0] == "axis")
+        if (auto a = parseAxis(p[1]))
+            return label(*a);
+    if (p.size() == 3 && p[0] == "axes") {
+        if (p[1] == "left_x")
+            return "Left stick";
+        if (p[1] == "right_x")
+            return "Right stick";
+        return "Triggers";
+    }
+    if (p.size() == 2 && p[0] == "finger")
+        return "Touchpad finger " + p[1];
+    if (p.size() == 1 && p[0] == "fingers")
+        return "Touchpad";
+    return spec;
+}
+
+bool MappingEditor::drawAxisForm(const char* id, AxisBinding& a, float position) {
+    bool changed = false;
+    ImGui::PushID(id);
+    changed |= ImGui::Checkbox("Enabled", &a.enabled);
+    ImGui::BeginDisabled(!a.enabled);
+    changed |= inputU7("CC", a.cc);
+    changed |= inputU7("Min", a.min);
+    ImGui::SameLine();
+    changed |= inputU7("Max", a.max);
+    changed |= ImGui::Checkbox("Invert", &a.invert);
+    ImGui::EndDisabled();
+    axisValueBar(a, position, ImGui::GetFontSize() * 14);
+    ImGui::PopID();
+    return changed;
+}
+
+bool MappingEditor::drawFingerForm(int finger, FingerBinding& f, const LiveState& live) {
+    bool changed = false;
+    static const char* kModes[] = {"Off", "X/Y position -> CC", "4 zones -> pads"};
+    ImGui::PushID(finger);
+    int mode = static_cast<int>(f.mode);
+    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 12);
+    if (ImGui::Combo("Mode", &mode, kModes, IM_ARRAYSIZE(kModes))) {
+        f.mode = static_cast<TouchMode>(mode);
+        changed = true;
+    }
+    const auto& live1 = live.fingers[static_cast<std::size_t>(finger)];
+    if (f.mode == TouchMode::Axis) {
+        ImGui::SeparatorText("X (left -> right)");
+        changed |= drawAxisForm("x", f.x, live1.down ? live1.x : 0.0f);
+        ImGui::SeparatorText("Y (bottom -> top)");
+        changed |= drawAxisForm("y", f.y, live1.down ? 1.0f - live1.y : 0.0f);
+    } else if (f.mode == TouchMode::Zones) {
+        ImGui::PushStyleColor(ImGuiCol_Text, kHintColor);
+        ImGui::TextWrapped("Click a zone in the touchpad module to choose what it plays.");
+        ImGui::PopStyleColor();
+    }
+    ImGui::PopID();
+    return changed;
+}
+
+bool MappingEditor::drawControl(const std::string& spec, Mapping& m, const LiveState& live,
+                                const std::optional<Key>& key) {
+    key_ = key;
+    const auto p = splitSpec(spec);
+    ImGui::PushID(spec.c_str());
+    bool changed = false;
+    TriggerBinding* trigger = nullptr;
+    if (p.size() == 2 && p[0] == "button") {
+        if (auto b = parseButton(p[1]); b && !isDpad(*b)) {
+            selection_ = {Selection::Kind::Button, static_cast<int>(*b)};
+            trigger = &m.buttons[static_cast<std::size_t>(*b)];
+        }
+    } else if (p.size() == 2 && p[0] == "dpad") {
+        if (auto d = parseHatDir(p[1])) {
+            selection_ = {Selection::Kind::Dpad, static_cast<int>(*d)};
+            trigger = &m.dpad[static_cast<std::size_t>(*d)];
+        }
+    } else if (p.size() == 3 && p[0] == "zone" && (p[1] == "1" || p[1] == "2")) {
+        if (auto z = parseZone(p[2])) {
+            const int finger = p[1][0] - '1';
+            selection_ = {Selection::Kind::Zone, static_cast<int>(*z), finger};
+            trigger = &m.fingers[static_cast<std::size_t>(finger)].zones[static_cast<std::size_t>(*z)];
+        }
+    } else if ((p.size() == 2 && p[0] == "axis") || (p.size() == 3 && p[0] == "axes")) {
+        for (std::size_t i = 1; i < p.size(); ++i) {
+            const auto a = parseAxis(p[i]);
+            if (!a)
+                continue;
+            if (p.size() == 3)
+                ImGui::SeparatorText(label(*a).c_str());
+            changed |= drawAxisForm(p[i].c_str(), m.axes[static_cast<std::size_t>(*a)], axisPosition(live, *a));
+        }
+    } else if (p.size() == 2 && p[0] == "finger" && (p[1] == "1" || p[1] == "2")) {
+        const int finger = p[1][0] - '1';
+        changed |= drawFingerForm(finger, m.fingers[static_cast<std::size_t>(finger)], live);
+    } else if (p.size() == 1 && p[0] == "fingers") {
+        for (int f = 0; f < kFingerCount; ++f) {
+            ImGui::SeparatorText(f == 0 ? "Finger 1" : "Finger 2");
+            changed |= drawFingerForm(f, m.fingers[static_cast<std::size_t>(f)], live);
+        }
+    }
+    if (trigger)
+        changed |= drawTriggerEditor(*trigger);
+    ImGui::PopID();
+    return changed;
+}
+
 bool MappingEditor::draw(Mapping& mapping, const LiveState& live, bool readOnly, const std::optional<Key>& key) {
     key_ = key;
     bool changed = false;
@@ -209,15 +342,15 @@ bool MappingEditor::draw(Mapping& mapping, const LiveState& live, bool readOnly,
             tab_ = t;
             return true;
         };
-        if (tab("Boutons", Tab::Buttons)) {
+        if (tab("Buttons", Tab::Buttons)) {
             changed |= drawButtons(mapping, live);
             ImGui::EndTabItem();
         }
-        if (tab("Croix directionnelle", Tab::Dpad)) {
+        if (tab("D-pad", Tab::Dpad)) {
             changed |= drawDpad(mapping, live);
             ImGui::EndTabItem();
         }
-        if (tab("Sticks et gâchettes", Tab::Axes)) {
+        if (tab("Sticks and triggers", Tab::Axes)) {
             changed |= drawAxes(mapping, live);
             ImGui::EndTabItem();
         }
@@ -243,7 +376,7 @@ bool MappingEditor::draw(Mapping& mapping, const LiveState& live, bool readOnly,
 bool MappingEditor::drawButtons(Mapping& m, const LiveState& live) {
     if (!ImGui::BeginTable("buttons", 2, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_ScrollY))
         return false;
-    ImGui::TableSetupColumn("Bouton", ImGuiTableColumnFlags_WidthFixed, ImGui::GetFontSize() * 8);
+    ImGui::TableSetupColumn("Button", ImGuiTableColumnFlags_WidthFixed, ImGui::GetFontSize() * 8);
     ImGui::TableSetupColumn("Action");
     ImGui::TableSetupScrollFreeze(0, 1);
     ImGui::TableHeadersRow();
@@ -288,7 +421,7 @@ bool MappingEditor::drawDpad(Mapping& m, const LiveState& live) {
     }
     ImGui::Spacing();
     ImGui::PushStyleColor(ImGuiCol_Text, kHintColor);
-    ImGui::TextWrapped("Les diagonales se déclenchent quand deux directions voisines sont tenues ensemble.");
+    ImGui::TextWrapped("Diagonals play when two neighboring directions are held together.");
     ImGui::PopStyleColor();
     return false;
 }
@@ -296,7 +429,7 @@ bool MappingEditor::drawDpad(Mapping& m, const LiveState& live) {
 bool MappingEditor::drawAxes(Mapping& m, const LiveState& live) {
     bool changed = false;
     if (ImGui::BeginTable("axes", 7, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH)) {
-        setupAxisColumns("Axe");
+        setupAxisColumns("Axis");
         for (int a = 0; a < kAxisCount; ++a) {
             const Axis axis = static_cast<Axis>(a);
             ImGui::TableNextRow();
@@ -308,9 +441,9 @@ bool MappingEditor::drawAxes(Mapping& m, const LiveState& live) {
     }
     ImGui::Spacing();
     ImGui::PushStyleColor(ImGuiCol_Text, kHintColor);
-    ImGui::TextWrapped("Chaque axe envoie un CC, de Min (stick à gauche ou en bas, gâchette relâchée) à Max. "
-                       "Inverser retourne le sens. Les gâchettes servent aussi de boutons L2 et R2 (onglet Boutons), "
-                       "déclenchés à %d %% de la course.",
+    ImGui::TextWrapped("Each axis sends a CC, from Min (stick left or down, trigger released) to Max. "
+                       "Invert reverses it. The triggers also act as the L2 and R2 buttons (Buttons tab), "
+                       "pressed at %d %% of their travel.",
                        static_cast<int>(Engine::kTriggerPress * 100));
     ImGui::PopStyleColor();
     return changed;
@@ -341,15 +474,15 @@ bool MappingEditor::drawTouchpad(Mapping& m, const LiveState& live) {
     ImGui::Dummy(size);
     if (!live.hasTouchpad && live.connected) {
         ImGui::PushStyleColor(ImGuiCol_Text, kErrorColor);
-        ImGui::TextWrapped("Touchpad non détecté : vérifiez la règle udev (voir le README).");
+        ImGui::TextWrapped("Touchpad not detected: check the udev rule (see the README).");
         ImGui::PopStyleColor();
     }
 
-    static const char* kModes[] = {"Désactivé", "Position X/Y -> CC", "4 zones -> pads"};
+    static const char* kModes[] = {"Off", "X/Y position -> CC", "4 zones -> pads"};
     for (int f = 0; f < kFingerCount; ++f) {
         FingerBinding& finger = m.fingers[static_cast<std::size_t>(f)];
         ImGui::PushID(f);
-        ImGui::SeparatorText(f == 0 ? "Doigt 1" : "Doigt 2");
+        ImGui::SeparatorText(f == 0 ? "Finger 1" : "Finger 2");
         int mode = static_cast<int>(finger.mode);
         ImGui::SetNextItemWidth(ImGui::GetFontSize() * 12);
         if (ImGui::Combo("Mode", &mode, kModes, IM_ARRAYSIZE(kModes))) {
@@ -359,14 +492,14 @@ bool MappingEditor::drawTouchpad(Mapping& m, const LiveState& live) {
         const auto& liveFinger = live.fingers[static_cast<std::size_t>(f)];
         if (finger.mode == TouchMode::Axis) {
             if (ImGui::BeginTable("xy", 7, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH)) {
-                setupAxisColumns("Axe");
+                setupAxisColumns("Axis");
                 ImGui::TableNextRow();
                 ImGui::TableNextColumn();
-                ImGui::TextUnformatted("X (gauche -> droite)");
+                ImGui::TextUnformatted("X (left -> right)");
                 changed |= axisCells("x", finger.x, liveFinger.down ? liveFinger.x : 0.0f);
                 ImGui::TableNextRow();
                 ImGui::TableNextColumn();
-                ImGui::TextUnformatted("Y (bas -> haut)");
+                ImGui::TextUnformatted("Y (bottom -> top)");
                 changed |= axisCells("y", finger.y, liveFinger.down ? 1.0f - liveFinger.y : 0.0f);
                 ImGui::EndTable();
             }
@@ -416,9 +549,9 @@ TriggerBinding* MappingEditor::selected(Mapping& m) {
 std::string MappingEditor::selectedTitle() const {
     switch (selection_.kind) {
     case Selection::Kind::Button: return label(static_cast<Button>(selection_.index));
-    case Selection::Kind::Dpad: return "Croix : " + label(static_cast<HatDir>(selection_.index));
+    case Selection::Kind::Dpad: return "D-pad: " + label(static_cast<HatDir>(selection_.index));
     case Selection::Kind::Zone:
-        return std::string("Touchpad, doigt ") + (selection_.finger == 0 ? "1" : "2") + " : " +
+        return std::string("Touchpad, finger ") + (selection_.finger == 0 ? "1" : "2") + ": " +
                label(static_cast<Zone>(selection_.index));
     case Selection::Kind::None: break;
     }
@@ -430,13 +563,13 @@ bool MappingEditor::drawSidePanel(Mapping& m) {
     if (!b) {
         ImGui::PushStyleColor(ImGuiCol_Text, kHintColor);
         if (tab_ == Tab::Axes)
-            ImGui::TextWrapped("Les axes se règlent directement dans le tableau.");
+            ImGui::TextWrapped("Axes are set directly in the table.");
         else if (tab_ == Tab::Touchpad)
-            ImGui::TextWrapped("En mode 4 zones, cliquez sur une zone pour choisir son action. "
-                               "En mode X/Y, réglez les CC directement dans le tableau.");
+            ImGui::TextWrapped("In 4-zone mode, click a zone to choose its action. "
+                               "In X/Y mode, set the CCs directly in the table.");
         else
-            ImGui::TextWrapped("Cliquez sur un contrôle pour choisir son action.\n\n"
-                               "Astuce : les contrôles que vous touchez sur la manette s'allument en vert.");
+            ImGui::TextWrapped("Click a control to choose its action.\n\n"
+                               "Tip: the controls you touch on the gamepad light up in green.");
         ImGui::PopStyleColor();
         return false;
     }
@@ -449,8 +582,7 @@ bool MappingEditor::drawSidePanel(Mapping& m) {
 
 bool MappingEditor::drawTriggerEditor(TriggerBinding& b) {
     bool changed = false;
-    static const char* kTypes[] = {"Aucune action", "Note", "CC", "Accord", "Transport", "Changement de canal",
-                                   "Freeze d'axes"};
+    static const char* kTypes[] = {"No action", "Note", "CC", "Chord", "Transport", "Channel change", "Axis freeze"};
     int type = static_cast<int>(b.type);
     ImGui::SetNextItemWidth(ImGui::GetFontSize() * 14);
     if (ImGui::Combo("Action", &type, kTypes, IM_ARRAYSIZE(kTypes)) && type != static_cast<int>(b.type)) {
@@ -476,25 +608,25 @@ bool MappingEditor::drawTriggerEditor(TriggerBinding& b) {
         break;
     case ActionType::Note:
         changed |= drawNoteField(b.number);
-        changed |= sliderU7("Vélocité", b.velocity, 1, 127);
+        changed |= sliderU7("Velocity", b.velocity, 1, 127);
         changed |= modeRadio(b.mode);
         break;
     case ActionType::ControlChange:
-        changed |= inputU7("Numéro de CC", b.number);
-        changed |= sliderU7("Valeur à l'appui", b.onValue);
-        changed |= sliderU7("Valeur au relâchement", b.offValue);
+        changed |= inputU7("CC number", b.number);
+        changed |= sliderU7("Value on press", b.onValue);
+        changed |= sliderU7("Value on release", b.offValue);
         changed |= modeRadio(b.mode);
         break;
     case ActionType::Chord:
         changed |= drawChordFields(b);
-        changed |= sliderU7("Vélocité", b.velocity, 1, 127);
+        changed |= sliderU7("Velocity", b.velocity, 1, 127);
         changed |= modeRadio(b.mode);
         break;
     case ActionType::Transport: {
         const std::pair<TransportCommand, const char*> commands[] = {
-            {TransportCommand::Start, "Lecture (Start)"},
-            {TransportCommand::Stop, "Arrêt (Stop)"},
-            {TransportCommand::Continue, "Reprise (Continue)"},
+            {TransportCommand::Start, "Start"},
+            {TransportCommand::Stop, "Stop"},
+            {TransportCommand::Continue, "Continue"},
         };
         for (auto [command, text] : commands) {
             if (ImGui::RadioButton(text, b.transport == command) && b.transport != command) {
@@ -505,22 +637,22 @@ bool MappingEditor::drawTriggerEditor(TriggerBinding& b) {
         break;
     }
     case ActionType::ChannelStep: {
-        if (ImGui::RadioButton("Canal précédent (-1)", b.channelStep == -1) && b.channelStep != -1) {
+        if (ImGui::RadioButton("Previous channel (-1)", b.channelStep == -1) && b.channelStep != -1) {
             b.channelStep = -1;
             changed = true;
         }
-        if (ImGui::RadioButton("Canal suivant (+1)", b.channelStep == 1) && b.channelStep != 1) {
+        if (ImGui::RadioButton("Next channel (+1)", b.channelStep == 1) && b.channelStep != 1) {
             b.channelStep = 1;
             changed = true;
         }
         ImGui::PushStyleColor(ImGuiCol_Text, kHintColor);
-        ImGui::TextWrapped("Le canal tourne de 16 à 1. Si le preset définit un mapping pour le nouveau canal, "
-                           "il s'applique aussitôt.");
+        ImGui::TextWrapped("The channel wraps from 16 to 1. If the preset has a mapping for the new channel, "
+                           "it applies at once.");
         ImGui::PopStyleColor();
         break;
     }
     case ActionType::Freeze: {
-        ImGui::TextUnformatted("Axes gelés à leur valeur actuelle :");
+        ImGui::TextUnformatted("Axes held at their current value:");
         for (int a = 0; a < kAxisCount; ++a) {
             bool on = b.freezeAxes & (1u << a);
             if (ImGui::Checkbox(label(static_cast<Axis>(a)).c_str(), &on)) {
@@ -533,7 +665,7 @@ bool MappingEditor::drawTriggerEditor(TriggerBinding& b) {
             }
         }
         ImGui::PushStyleColor(ImGuiCol_Text, kHintColor);
-        ImGui::TextWrapped("Un appui gèle, l'appui suivant dégèle.");
+        ImGui::TextWrapped("One press freezes, the next one releases.");
         ImGui::PopStyleColor();
         break;
     }
@@ -562,7 +694,7 @@ bool MappingEditor::drawNoteField(std::uint8_t& note) {
     bool changed = false;
     const Key& key = *key_;
     auto label = [&](int n) {
-        return noteName(n, flats()) + "  (" + std::to_string(n) + ")" + (inKey(key, n) ? "" : "  hors gamme");
+        return noteName(n, flats()) + "  (" + std::to_string(n) + ")" + (inKey(key, n) ? "" : "  out of key");
     };
     auto step = [&](int direction) {
         for (int n = note + direction; n >= 0 && n <= 127; n += direction) {
@@ -600,7 +732,7 @@ bool MappingEditor::drawNoteField(std::uint8_t& note) {
         step(+1);
     ImGui::SameLine();
     ImGui::TextUnformatted("Note");
-    ImGui::SetItemTooltip("Notes de %s ; les flèches passent à la note voisine de la gamme.", keyName(key).c_str());
+    ImGui::SetItemTooltip("Notes of %s; the arrows step to the neighboring note of the scale.", keyName(key).c_str());
     return changed;
 }
 
@@ -629,7 +761,7 @@ bool MappingEditor::drawChordFields(TriggerBinding& b) {
         const auto scale = scalePitchClasses(*key_);
         ImGui::SetNextItemWidth(ImGui::GetFontSize() * 14);
         const std::string preview = b.chordName.empty() ? std::string("-") : b.chordName;
-        if (ImGui::BeginCombo("Accord de la gamme", preview.c_str(), ImGuiComboFlags_HeightLargest)) {
+        if (ImGui::BeginCombo("Chord of the key", preview.c_str(), ImGuiComboFlags_HeightLargest)) {
             int degree = -1;
             for (const auto& chord : chords) {
                 if (chord.degree != degree) {
@@ -652,12 +784,12 @@ bool MappingEditor::drawChordFields(TriggerBinding& b) {
             }
             ImGui::EndCombo();
         }
-        ImGui::SetItemTooltip("%zu accords dont toutes les notes appartiennent à %s", chords.size(),
+        ImGui::SetItemTooltip("%zu chords whose notes all belong to %s", chords.size(),
                               keyName(*key_).c_str());
     }
 
     ImGui::SetNextItemWidth(ImGui::GetFontSize() * 10);
-    if (ImGui::InputText(key_ ? "Saisie libre" : "Accord", &chordText_)) {
+    if (ImGui::InputText(key_ ? "Free entry" : "Chord", &chordText_)) {
         if (auto chord = parseChord(chordText_)) {
             b.chordName = chordText_;
             b.chord = *chord;
@@ -667,7 +799,7 @@ bool MappingEditor::drawChordFields(TriggerBinding& b) {
 
     const auto typed = parseChord(chordText_);
     if (!typed && !chordText_.empty()) {
-        ImGui::TextColored(kErrorColor, "Accord inconnu (l'accord précédent reste actif)");
+        ImGui::TextColored(kErrorColor, "Unknown chord (the previous one stays active)");
     } else if (b.chord.count) {
         std::string notes;
         bool outside = false;
@@ -675,9 +807,9 @@ bool MappingEditor::drawChordFields(TriggerBinding& b) {
             notes += noteName(n, flats()) + " ";
             outside |= key_ && !inKey(*key_, n);
         }
-        ImGui::Text("Notes : %s", notes.c_str());
+        ImGui::Text("Notes: %s", notes.c_str());
         if (outside)
-            ImGui::TextColored(kErrorColor, "Contient des notes hors de %s", keyName(*key_).c_str());
+            ImGui::TextColored(kErrorColor, "Contains notes outside %s", keyName(*key_).c_str());
     }
 
     // Builder: root + quality, narrowed to the tonality when there is one.
@@ -697,7 +829,7 @@ bool MappingEditor::drawChordFields(TriggerBinding& b) {
     // A root outside the scale keeps the spelling of the chord name.
     const std::string rootPreview = rootInKey || !rootPitch ? rootName(root) : b.chordName.substr(0, rootLength);
     ImGui::SetNextItemWidth(ImGui::GetFontSize() * 5);
-    if (ImGui::BeginCombo("Fondamentale", rootPreview.c_str())) {
+    if (ImGui::BeginCombo("Root", rootPreview.c_str())) {
         for (int pc : roots) {
             if (!ImGui::Selectable(rootName(pc).c_str(), pc == root))
                 continue;
@@ -718,7 +850,7 @@ bool MappingEditor::drawChordFields(TriggerBinding& b) {
     }
     ImGui::SameLine();
     ImGui::SetNextItemWidth(ImGui::GetFontSize() * 7);
-    const std::string preview = quality.empty() ? "majeur" : quality;
+    const std::string preview = quality.empty() ? "major" : quality;
     if (ImGui::BeginCombo("Type", preview.c_str())) {
         for (std::string_view q : chordQualities()) {
             const std::string candidate = rootPreview + std::string(q);
@@ -729,7 +861,7 @@ bool MappingEditor::drawChordFields(TriggerBinding& b) {
                 if (!fits)
                     continue;
             }
-            const std::string name = q.empty() ? "majeur" : std::string(q);
+            const std::string name = q.empty() ? "major" : std::string(q);
             if (ImGui::Selectable(name.c_str(), q == quality))
                 apply(candidate);
         }

@@ -11,7 +11,7 @@ namespace midipad {
 
 namespace {
 
-constexpr const char* kTrashFolder = "corbeille";
+constexpr const char* kTrashFolder = "trash";
 
 std::string lower(std::string s) {
     std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
@@ -75,17 +75,17 @@ std::string PresetLibrary::uniqueName(std::string_view base) const {
 
 std::optional<std::string> PresetLibrary::nameError(std::string_view name) {
     if (name.empty())
-        return "Le nom est vide.";
+        return "The name is empty.";
     if (name.size() > 100)
-        return "Le nom est trop long (100 caractères au plus).";
+        return "The name is too long (100 characters at most).";
     for (char c : name) {
         if (static_cast<unsigned char>(c) < 0x20 || std::string_view("/\\:*?\"<>|").find(c) != std::string_view::npos)
-            return "Le nom ne peut pas contenir / \\ : * ? \" < > |";
+            return "The name cannot contain / \\ : * ? \" < > |";
     }
     if (name.front() == '.')
-        return "Le nom ne peut pas commencer par un point.";
+        return "The name cannot start with a dot.";
     if (name.back() == '.' || name.back() == ' ')
-        return "Le nom ne peut pas finir par un point ou une espace.";
+        return "The name cannot end with a dot or a space.";
     return std::nullopt;
 }
 

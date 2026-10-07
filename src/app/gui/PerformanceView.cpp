@@ -100,8 +100,8 @@ std::string compact(const TriggerBinding& b, bool flats) {
         return notes;
     }
     case ActionType::Transport:
-        return b.transport == TransportCommand::Start ? "Lecture" : b.transport == TransportCommand::Stop ? "Arrêt" : "Reprise";
-    case ActionType::ChannelStep: return std::string("Canal ") + (b.channelStep > 0 ? "+" : "") + std::to_string(b.channelStep);
+        return b.transport == TransportCommand::Start ? "Start" : b.transport == TransportCommand::Stop ? "Stop" : "Continue";
+    case ActionType::ChannelStep: return std::string("Channel ") + (b.channelStep > 0 ? "+" : "") + std::to_string(b.channelStep);
     case ActionType::Freeze: return "Freeze";
     }
     return {};
@@ -317,7 +317,7 @@ void PerformanceView::drawStick(int index, const Mapping& m, const LiveState& li
     const auto axisBits = static_cast<std::uint8_t>((1u << static_cast<unsigned>(ax)) | (1u << static_cast<unsigned>(ay)));
     const bool frozen = live.frozenAxes & axisBits;
 
-    const Panel p = panel(dl, x, y, w, h, index == 0 ? "STICK GAUCHE" : "STICK DROIT",
+    const Panel p = panel(dl, x, y, w, h, index == 0 ? "LEFT STICK" : "RIGHT STICK",
                           live.connected && (bx.enabled || by.enabled));
     const float pad = em() * 0.6f;
     const ImVec2 sa(x + pad, p.bodyTop + pad), sb(x + w - pad, p.bodyTop + pad + std::min(w * 0.78f, h * 0.42f));
@@ -339,21 +339,24 @@ void PerformanceView::drawStick(int index, const Mapping& m, const LiveState& li
             text(dl, ImVec2(c.x, sb.y - em() * 1.3f), kIce, "FREEZE", em() * 0.8f, true);
     });
     if (hoverButton(index == 0 ? "##stickL" : "##stickR", sa, sb))
-        click("tab:axes");
+        click(index == 0 ? "axes:left_x,left_y" : "axes:right_x,right_y");
 
     // Knobs: the CC each axis sends.
     const float kTop = sb.y + em() * 2.2f;
     const float r = std::min(w * 0.135f, em() * 1.8f);
     const float kc = kTop + r + em() * 0.4f;
-    sectionLabel(dl, x, sb.y + em() * 0.8f, kc + r + em() * 1.6f, "VALEURS");
+    sectionLabel(dl, x, sb.y + em() * 0.8f, kc + r + em() * 1.6f, "VALUES");
     auto axisKnob = [&](float cx, const AxisBinding& b, Axis a, const char* name, int smoothId) {
         const float pos = axisPosition01(live, a);
         const int value = ccValue(b, pos);
         const float shown = smooth(smoothId, static_cast<float>(value) / 127.0f, 20.0f);
         char label[32], val[16];
         std::snprintf(label, sizeof label, b.enabled ? "%s  CC %d" : "%s", name, b.cc);
-        std::snprintf(val, sizeof val, b.enabled ? (frozen ? "gelé" : "%d") : "-", value);
+        std::snprintf(val, sizeof val, b.enabled ? (frozen ? "frozen" : "%d") : "-", value);
         knob(dl, ImVec2(cx, kc), r, shown, frozen ? kIce : accent, b.enabled, label, val);
+        const std::string spec = "axis:" + std::string(toString(a));
+        if (hoverButton(("##" + spec).c_str(), ImVec2(cx - r * 1.5f, kc - r * 1.3f - em()), ImVec2(cx + r * 1.5f, kc + r * 1.3f + em())))
+            click(spec);
     };
     const float left = x + em() * 1.4f, right = x + w;
     axisKnob(left + (right - left) * 0.28f, bx, ax, "X", index * 4 + 2);
@@ -365,8 +368,11 @@ void PerformanceView::drawStick(int index, const Mapping& m, const LiveState& li
         sectionLabel(dl, x, fTop, std::min(fTop + em() * 3.0f, y + h - 4), "FREEZE");
         const auto button = freezeButton(m, axisBits);
         led(dl, ImVec2(left + em() * 0.8f, fTop + em() * 1.0f), em() * 0.32f, kIce, frozen);
-        const std::string state = button ? label(*button) + (frozen ? " : gelé" : " : libre") : "aucun bouton";
+        const std::string state = button ? label(*button) + (frozen ? ": frozen" : ": free") : "no button";
         text(dl, ImVec2(left + em() * 1.6f, fTop + em() * 0.5f), frozen ? kIce : T::kDim, state, em() * 0.85f);
+        if (button && hoverButton(index == 0 ? "##freezeL" : "##freezeR", ImVec2(left, fTop),
+                                  ImVec2(x + w - em() * 0.4f, fTop + em() * 2.0f)))
+            click("button:" + std::string(toString(*button)));
     }
 }
 
@@ -376,7 +382,7 @@ void PerformanceView::drawTriggers(const Mapping& m, const LiveState& live, floa
     const auto& br = m.axes[static_cast<std::size_t>(Axis::RightTrigger)];
     const auto& dl2 = m.buttons[static_cast<std::size_t>(Button::LeftTrigger)];
     const auto& dr2 = m.buttons[static_cast<std::size_t>(Button::RightTrigger)];
-    const Panel p = panel(dl, x, y, w, h, "GÂCHETTES",
+    const Panel p = panel(dl, x, y, w, h, "TRIGGERS",
                           live.connected && (bl.enabled || br.enabled || dl2.isSet() || dr2.isSet()));
     const float pad = em() * 0.6f;
     const ImVec2 sa(x + pad, p.bodyTop + pad), sb(x + w - pad, p.bodyTop + pad + std::min(w * 0.78f, h * 0.42f));
@@ -414,7 +420,7 @@ void PerformanceView::drawTriggers(const Mapping& m, const LiveState& live, floa
         envelope(sa.x + W * 0.52f, sa.x + W * 0.96f, vr, soundR, "R2");
     });
     if (hoverButton("##triggers", sa, sb))
-        click("tab:axes");
+        click("axes:left_trigger,right_trigger");
 
     const float r = std::min(w * 0.135f, em() * 1.8f);
     const float kc = sb.y + em() * 2.2f + r + em() * 0.4f;
@@ -427,6 +433,9 @@ void PerformanceView::drawTriggers(const Mapping& m, const LiveState& live, floa
         std::snprintf(val, sizeof val, b.enabled ? "%d" : "-", value);
         knob(dl, ImVec2(cx, kc), r, smooth(id, static_cast<float>(value) / 127.0f, 20.0f), T::kPink, b.enabled, label,
              val);
+        const std::string spec = "axis:" + std::string(toString(a));
+        if (hoverButton(("##" + spec).c_str(), ImVec2(cx - r * 1.5f, kc - r * 1.3f - em()), ImVec2(cx + r * 1.5f, kc + r * 1.3f + em())))
+            click(spec);
     };
     trigKnob(left + (right - left) * 0.28f, bl, Axis::LeftTrigger, "L2", 10);
     trigKnob(left + (right - left) * 0.72f, br, Axis::RightTrigger, "R2", 11);
@@ -434,11 +443,11 @@ void PerformanceView::drawTriggers(const Mapping& m, const LiveState& live, floa
     // The digital L2 / R2 buttons.
     const float bTop = kc + r + em() * 2.2f;
     if (bTop + em() * 3 < y + h) {
-        sectionLabel(dl, x, bTop, std::min(bTop + em() * 3.6f, y + h - 4), "BOUTONS");
+        sectionLabel(dl, x, bTop, std::min(bTop + em() * 3.6f, y + h - 4), "BUTTONS");
         auto row = [&](float ry, Button b, const TriggerBinding& t, bool sounding) {
             led(dl, ImVec2(left + em() * 0.8f, ry + em() * 0.55f), em() * 0.3f, T::kPink, sounding);
             text(dl, ImVec2(left + em() * 1.6f, ry), sounding ? T::kText : T::kDim,
-                 fit(label(b) + "   " + compact(t, flats_) + (t.isSet() && t.mode == Mode::Toggle ? ", bascule" : ""),
+                 fit(label(b) + "   " + compact(t, flats_) + (t.isSet() && t.mode == Mode::Toggle ? ", toggle" : ""),
                      em() * 0.82f, right - left - em() * 2.2f),
                  em() * 0.82f);
             if (hoverButton(b == Button::LeftTrigger ? "##l2" : "##r2", ImVec2(left, ry - 2),
@@ -455,7 +464,7 @@ void PerformanceView::drawDpad(const Mapping& m, const LiveState& live, float x,
     bool any = false;
     for (const auto& t : m.dpad)
         any |= t.isSet();
-    const Panel p = panel(dl, x, y, w, h, "CROIX", live.connected && any);
+    const Panel p = panel(dl, x, y, w, h, "D-PAD", live.connected && any);
     const float pad = em() * 0.6f;
     const ImVec2 sa(x + pad, p.bodyTop + pad), sb(x + w - pad, p.bodyTop + pad + std::min(w * 0.78f, h * 0.42f));
     const auto current = liveHat(live);
@@ -498,11 +507,11 @@ void PerformanceView::drawDpad(const Mapping& m, const LiveState& live, float x,
             const auto& t = m.dpad[static_cast<std::size_t>(*current)];
             dl->AddRectFilled(ImVec2(sa.x, sb.y - em() * 1.5f), sb, IM_COL32(0, 0, 0, 150));
             text(dl, ImVec2((sa.x + sb.x) * 0.5f, sb.y - em() * 1.3f), T::kText,
-                 fit(label(*current) + " : " + compact(t, flats_), em() * 0.8f, W - em()), em() * 0.8f, true);
+                 fit(label(*current) + ": " + compact(t, flats_), em() * 0.8f, W - em()), em() * 0.8f, true);
         }
     });
-    if (hoverButton("##dpadscreen", sa, sb))
-        click(current ? "dpad:" + std::string(toString(*current)) : "tab:dpad");
+    if (hoverButton("##dpadscreen", sa, sb) && current)
+        click("dpad:" + std::string(toString(*current)));
 
     // The eight directions and what they play.
     const float left = x + em() * 1.4f, right = x + w - em() * 0.4f;
@@ -593,10 +602,10 @@ void PerformanceView::drawTouchpad(const Mapping& m, const LiveState& live, floa
             }
         }
         if (!live.hasTouchpad && live.connected)
-            text(dl, ImVec2((sa.x + sb.x) * 0.5f, sa.y + H * 0.42f), T::kDim, "touchpad non détecté", em() * 0.8f, true);
+            text(dl, ImVec2((sa.x + sb.x) * 0.5f, sa.y + H * 0.42f), T::kDim, "touchpad not detected", em() * 0.8f, true);
     });
     if (hoverButton("##touchscreen", sa, sb))
-        click("tab:touchpad");
+        click("fingers");
 
     // Per finger: X/Y knobs or the four zones.
     const float left = x + em() * 1.4f, right = x + w - em() * 0.4f;
@@ -606,7 +615,7 @@ void PerformanceView::drawTouchpad(const Mapping& m, const LiveState& live, floa
         const FingerBinding& fb = m.fingers[static_cast<std::size_t>(f)];
         const auto& finger = live.fingers[static_cast<std::size_t>(f)];
         const float bTop = top + block * static_cast<float>(f);
-        sectionLabel(dl, x, bTop, bTop + block - em() * 0.3f, f == 0 ? "DOIGT 1" : "DOIGT 2");
+        sectionLabel(dl, x, bTop, bTop + block - em() * 0.3f, f == 0 ? "FINGER 1" : "FINGER 2");
         if (fb.mode == TouchMode::Axis) {
             const float r = std::min({w * 0.11f, em() * 1.25f, block * 0.22f});
             const float kc = bTop + block * 0.5f;
@@ -621,7 +630,7 @@ void PerformanceView::drawTouchpad(const Mapping& m, const LiveState& live, floa
             touchKnob(left + (right - left) * 0.28f, fb.x, finger.x, "X", 50 + f * 2);
             touchKnob(left + (right - left) * 0.72f, fb.y, 1.0f - finger.y, "Y", 51 + f * 2);
             if (hoverButton(f == 0 ? "##f1" : "##f2", ImVec2(left, bTop), ImVec2(right, bTop + block - em() * 0.3f)))
-                click("tab:touchpad");
+                click(f == 0 ? "finger:1" : "finger:2");
         } else if (fb.mode == TouchMode::Zones) {
             const float cw = (right - left - em() * 0.4f) / 2.0f, ch = (block - em() * 0.8f) / 2.0f;
             for (int z = 0; z < kZoneCount; ++z) {
@@ -639,9 +648,9 @@ void PerformanceView::drawTouchpad(const Mapping& m, const LiveState& live, floa
                     click(spec);
             }
         } else {
-            text(dl, ImVec2(left + em() * 0.4f, bTop + block * 0.4f), T::kDim, "désactivé", em() * 0.85f);
+            text(dl, ImVec2(left + em() * 0.4f, bTop + block * 0.4f), T::kDim, "off", em() * 0.85f);
             if (hoverButton(f == 0 ? "##f1off" : "##f2off", ImVec2(left, bTop), ImVec2(right, bTop + block - em() * 0.3f)))
-                click("tab:touchpad");
+                click(f == 0 ? "finger:1" : "finger:2");
         }
     }
 }
@@ -651,7 +660,7 @@ void PerformanceView::drawButtons(const Mapping& m, const LiveState& live, float
     bool any = false;
     for (const auto& t : m.buttons)
         any |= t.isSet();
-    const Panel p = panel(dl, x, y, w, h, "BOUTONS", live.connected && any);
+    const Panel p = panel(dl, x, y, w, h, "BUTTONS", live.connected && any);
 
     struct Pad {
         Button button;
@@ -709,10 +718,10 @@ void PerformanceView::drawButtons(const Mapping& m, const LiveState& live, float
                             ImVec2(cx - s * 1.1f, cy + s * 0.75f), sym, r * 0.14f);
             break;
         default: {
-            const char* code = pd.button == Button::Back       ? "CRÉ"
+            const char* code = pd.button == Button::Back       ? "CRE"
                                : pd.button == Button::Start    ? "OPT"
                                : pd.button == Button::Touchpad ? "TP"
-                               : pd.button == Button::Misc1    ? "MIC"
+                               : pd.button == Button::Misc1    ? "MUTE"
                                                                 : nullptr;
             const std::string name = code ? code : label(pd.button);
             const float size = std::min(em() * 0.85f, r * 0.62f);
