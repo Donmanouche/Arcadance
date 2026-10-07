@@ -73,6 +73,33 @@ void Engine::buttonChanged(Button button, bool pressed) {
     const auto bit = static_cast<std::uint8_t>(1u << (static_cast<int>(button) - static_cast<int>(Button::DpadUp)));
     dpadBits_ = pressed ? static_cast<std::uint8_t>(dpadBits_ | bit) : static_cast<std::uint8_t>(dpadBits_ & ~bit);
     const auto dir = hatFromDpad(dpadBits_);
+    pendingHatDir_.reset();
+    if (dir == hatDir_)
+        return;
+    const std::uint64_t settle = pressed ? settlePressNs_ : settleReleaseNs_;
+    if (!dir || settle == 0) {
+        setHatDir(dir);
+        return;
+    }
+    pendingHatDir_ = dir;
+    pendingHatAt_ = now_ + settle;
+}
+
+void Engine::setDpadSettle(int pressMs, int releaseMs) {
+    settlePressNs_ = static_cast<std::uint64_t>(std::max(pressMs, 0)) * 1'000'000u;
+    settleReleaseNs_ = static_cast<std::uint64_t>(std::max(releaseMs, 0)) * 1'000'000u;
+}
+
+void Engine::tick(std::uint64_t nowNs) {
+    now_ = nowNs;
+    if (pendingHatDir_ && now_ >= pendingHatAt_) {
+        const auto dir = pendingHatDir_;
+        pendingHatDir_.reset();
+        setHatDir(dir);
+    }
+}
+
+void Engine::setHatDir(std::optional<HatDir> dir) {
     if (dir == hatDir_)
         return;
     if (hatDir_)
@@ -158,6 +185,7 @@ void Engine::reset() {
     pressed_.reset();
     dpadBits_ = 0;
     hatDir_.reset();
+    pendingHatDir_.reset();
     fingerZone_ = {};
     triggerDown_ = {};
 }

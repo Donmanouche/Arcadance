@@ -67,6 +67,7 @@ public:
         int channel = 0;
         bool reportMidi = false;
         bool reportButtons = false;
+        int dpadSettlePressMs = 15, dpadSettleReleaseMs = 15;  // see Engine::setDpadSettle
     };
     // Called from the input thread, only on rare events (gamepad connected...).
     using Log = std::function<void(const std::string&)>;
@@ -84,6 +85,10 @@ public:
     void panic();
     void setReportMidi(bool on) { reportMidi_.store(on, std::memory_order_relaxed); }
     void setReportButtons(bool on) { reportButtons_.store(on, std::memory_order_relaxed); }
+    void setDpadSettle(int pressMs, int releaseMs) {
+        dpadSettlePress_.store(pressMs, std::memory_order_relaxed);
+        dpadSettleRelease_.store(releaseMs, std::memory_order_relaxed);
+    }
 
     std::optional<Report> popReport() { return reports_.pop(); }
     LiveState live() const;
@@ -102,6 +107,7 @@ private:
 
     Log log_;
     std::atomic<bool> reportMidi_, reportButtons_;
+    std::atomic<int> dpadSettlePress_, dpadSettleRelease_;
     std::shared_ptr<MidiOutput> output_;  // main thread's view, for stats
 
     midipad::SpscRing<Report, 4096> reports_;

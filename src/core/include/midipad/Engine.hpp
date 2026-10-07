@@ -51,6 +51,15 @@ public:
 
     void setObserver(EngineObserver* observer) { observer_ = observer; }
 
+    // A new D-pad direction plays only once it has held for this long: pressing
+    // or releasing two buttons of a diagonal is never simultaneous, and the
+    // direction in between would otherwise sound. `press` applies when a
+    // button went down, `release` when one went up; releasing the whole D-pad
+    // is immediate. 0 (the default) plays every direction at once.
+    void setDpadSettle(int pressMs, int releaseMs);
+    // The time, from any steady clock; call it on every poll, before the events.
+    void tick(std::uint64_t nowNs);
+
     void buttonChanged(Button button, bool pressed);
     // Sticks in [-1, 1] (SDL convention: up is negative), triggers in [0, 1].
     void axisMoved(Axis axis, float value);
@@ -99,6 +108,7 @@ private:
     void sendAxis(const AxisBinding& binding, float position);
     void toggleFreeze(std::uint8_t axes);
     void updateDigitalTrigger(Axis axis, float position);
+    void setHatDir(std::optional<HatDir> dir);
 
     MidiSink& sink_;
     EngineObserver* observer_ = nullptr;
@@ -114,6 +124,10 @@ private:
 
     std::uint8_t dpadBits_ = 0;
     std::optional<HatDir> hatDir_;
+    std::optional<HatDir> pendingHatDir_;  // waiting to settle
+    std::uint64_t pendingHatAt_ = 0;
+    std::uint64_t now_ = 0;
+    std::uint64_t settlePressNs_ = 0, settleReleaseNs_ = 0;
     std::array<std::optional<Zone>, kFingerCount> fingerZone_{};
     std::array<bool, 2> triggerDown_{};
 };

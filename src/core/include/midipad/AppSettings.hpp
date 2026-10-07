@@ -24,6 +24,10 @@ struct AppSettings {
 
     bool performanceView = false;  // the animated view rather than the editor
 
+    // Engine::setDpadSettle, in milliseconds.
+    int dpadSettlePressMs = 15;
+    int dpadSettleReleaseMs = 15;
+
     bool monitorMidi = false;
     bool showButtons = false;
     std::filesystem::path legacyImportDir;

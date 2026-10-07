@@ -357,6 +357,8 @@ bool GuiApp::init() {
     Runtime::Options runtimeOptions;
     runtimeOptions.reportMidi = settings_.monitorMidi;
     runtimeOptions.reportButtons = settings_.showButtons;
+    runtimeOptions.dpadSettlePressMs = settings_.dpadSettlePressMs;
+    runtimeOptions.dpadSettleReleaseMs = settings_.dpadSettleReleaseMs;
     runtime_ = std::make_unique<Runtime>(output_, std::make_shared<const Preset>(preset_), runtimeOptions,
                                          [this](const std::string& line) {
                                              std::lock_guard lock(pendingLogMutex_);
@@ -1447,6 +1449,30 @@ void GuiApp::drawOptionsOverlay() {
         ImGui::PushFont(bold, 13.0f);
         if (ImGui::Button("Refresh"))
             refreshPorts();
+        ImGui::PopFont();
+
+        // D-pad: how long a direction must hold before it plays.
+        ImGui::Spacing();
+        section("D-PAD");
+        ImGui::PushFont(medium, 12.0f);
+        ImGui::TextColored(color(Theme::kLabel),
+                           "A new direction plays once held this long, so the one crossed while\n"
+                           "pressing or releasing a diagonal stays silent. 0: at once.");
+        ImGui::PopFont();
+        ImGui::Spacing();
+        ImGui::PushFont(medium, 13.0f);
+        auto settleSlider = [&](const char* label, const char* id, int& ms) {
+            ImGui::AlignTextToFramePadding();
+            ImGui::TextColored(color(Theme::kLabel), "%s", label);
+            ImGui::SameLine(px(150));
+            ImGui::SetNextItemWidth(-FLT_MIN);
+            if (ImGui::SliderInt(id, &ms, 0, 80, "%d ms", ImGuiSliderFlags_AlwaysClamp))
+                runtime_->setDpadSettle(settings_.dpadSettlePressMs, settings_.dpadSettleReleaseMs);
+            if (ImGui::IsItemDeactivatedAfterEdit())
+                persistSettings();
+        };
+        settleSlider("Delay on press", "##settlepress", settings_.dpadSettlePressMs);
+        settleSlider("Delay on release", "##settlerelease", settings_.dpadSettleReleaseMs);
         ImGui::PopFont();
 
         // Presets: folder and import.

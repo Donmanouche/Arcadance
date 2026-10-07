@@ -99,6 +99,7 @@ private:
 
 Runtime::Runtime(std::shared_ptr<MidiOutput> output, std::shared_ptr<const Preset> preset, Options options, Log log)
     : log_(std::move(log)), reportMidi_(options.reportMidi), reportButtons_(options.reportButtons),
+      dpadSettlePress_(options.dpadSettlePressMs), dpadSettleRelease_(options.dpadSettleReleaseMs),
       output_(output), channel_(options.channel) {
     pendingOutput_ = std::move(output);
     thread_ = std::jthread([this, options, preset](std::stop_token stop) { run(stop, options, preset); });
@@ -243,6 +244,9 @@ void Runtime::run(std::stop_token stop, Options options, std::shared_ptr<const P
                 engine.releaseAll();
         }
 
+        engine.setDpadSettle(dpadSettlePress_.load(std::memory_order_relaxed),
+                             dpadSettleRelease_.load(std::memory_order_relaxed));
+        engine.tick(start);
         gamepad.poll(start);
         publish(gamepad, engine);
 

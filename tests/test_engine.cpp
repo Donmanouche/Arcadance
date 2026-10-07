@@ -269,6 +269,51 @@ TEST_CASE_FIXTURE(Fixture, "the D-pad is read as an 8-way hat") {
                                   off(0, 62)});
 }
 
+TEST_CASE_FIXTURE(Fixture, "releasing a D-pad diagonal does not play the direction in between") {
+    Preset p;
+    dpad(p, HatDir::Left) = note(60);
+    dpad(p, HatDir::DownLeft) = note(61);
+    dpad(p, HatDir::Down) = note(62);
+    load(p);
+    engine.setDpadSettle(15, 15);
+    constexpr std::uint64_t ms = 1'000'000;
+
+    engine.tick(0);
+    engine.buttonChanged(Button::DpadDown, true);
+    engine.tick(5 * ms);
+    engine.buttonChanged(Button::DpadLeft, true);  // Down never settled
+    engine.tick(19 * ms);
+    CHECK(sink.take().empty());
+    engine.tick(20 * ms);
+    CHECK(sink.take() == Messages{on(0, 61, 100)});
+
+    engine.tick(100 * ms);
+    engine.buttonChanged(Button::DpadDown, false);
+    engine.tick(110 * ms);
+    engine.buttonChanged(Button::DpadLeft, false);  // Left never settled: released at once
+    engine.tick(200 * ms);
+    CHECK(sink.take() == Messages{off(0, 61)});
+}
+
+TEST_CASE_FIXTURE(Fixture, "a D-pad direction held past the settle time plays") {
+    Preset p;
+    dpad(p, HatDir::Left) = note(60);
+    dpad(p, HatDir::DownLeft) = note(61);
+    load(p);
+    engine.setDpadSettle(15, 30);
+    constexpr std::uint64_t ms = 1'000'000;
+
+    engine.tick(0);
+    engine.buttonChanged(Button::DpadDown, true);
+    engine.buttonChanged(Button::DpadLeft, true);
+    engine.tick(15 * ms);
+    engine.buttonChanged(Button::DpadDown, false);
+    engine.tick(44 * ms);
+    CHECK(sink.take() == Messages{on(0, 61, 100)});
+    engine.tick(45 * ms);
+    CHECK(sink.take() == Messages{off(0, 61), on(0, 60, 100)});
+}
+
 TEST_CASE_FIXTURE(Fixture, "a toggled D-pad direction stays on when the D-pad is released") {
     Preset p;
     dpad(p, HatDir::Up) = chord("Cm", Mode::Toggle);

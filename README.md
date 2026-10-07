@@ -87,6 +87,12 @@ apparaîtra directement dans Bitwig ; sous Windows, il faudra loopMIDI.
 
 La manette reste lue quand la fenêtre MidiPad est en arrière-plan.
 
+On n'appuie et on ne relâche jamais exactement en même temps les deux boutons
+d'une diagonale de la croix : une nouvelle direction n'est donc jouée qu'après
+être restée stable un court instant (15 ms par défaut, à l'appui comme au
+relâchement, réglable dans Options), pour que la direction traversée entre
+les deux ne sonne pas. Relâcher toute la croix coupe la note immédiatement.
+
 ### La vue animée
 
 **F2** (ou le bouton « Animated view » / l'entrée « Mapping editor » du menu ☰)
@@ -105,7 +111,8 @@ choisie est retrouvée au démarrage (`--view performance|editor` pour forcer).
   est modifié) ;
 - en bas : la sortie MIDI à gauche, l'état de la manette à droite ;
 - le menu ☰ ouvre les **Options** dans un panneau semi-transparent : interface
-  MIDI (avec le nom de chaque port dans Bitwig) et dossier des presets ;
+  MIDI (avec le nom de chaque port dans Bitwig), délai de la croix
+  directionnelle et dossier des presets ;
 - un clic sur un contrôle (pad, direction, zone, potentiomètre d'axe, écran)
   ouvre ses réglages dans un panneau semi-transparent au-dessus de la vue,
   sans la quitter ; « Open in editor » ouvre l'éditeur complet dessus.
