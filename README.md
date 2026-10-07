@@ -89,8 +89,9 @@ La manette reste lue quand la fenêtre MidiPad est en arrière-plan.
 
 ### La vue animée
 
-**F2** (ou le bouton « Animated view » / « EDITOR ») bascule entre l'éditeur et
-une vue animée pensée pour la scène ; **F11** passe en plein écran. La vue
+**F2** (ou le bouton « Animated view » / l'entrée « Mapping editor » du menu ☰)
+bascule entre l'éditeur et une vue animée pensée pour la scène ; **F11** passe
+en plein écran, **Ctrl+Q** quitte. La vue
 choisie est retrouvée au démarrage (`--view performance|editor` pour forcer).
 
 - un module par partie de la manette : sticks gauche et droit, gâchettes,
@@ -99,9 +100,12 @@ choisie est retrouvée au démarrage (`--view performance|editor` pour forcer).
 - un bandeau de pads pour les boutons (✕ ○ □ △ aux couleurs PlayStation) :
   éclair à chaque appui, éclairage tant que la note ou l'accord sonne (les
   bascules verrouillées restent allumées) ;
-- en haut : canal, Panic, tonalité, sortie MIDI, état de la manette, et
-  un menu (importer, dossier des presets, plein écran) ; à gauche, la liste
-  des presets avec précédent / suivant ;
+- en haut : menu ☰, Panic, canal, tonalité (fondamentale et gamme dans un
+  même menu), preset (menu déroulant avec précédent / suivant, SAVE quand il
+  est modifié) ;
+- en bas : la sortie MIDI à gauche, l'état de la manette à droite ;
+- le menu ☰ ouvre les **Options** dans un panneau semi-transparent : interface
+  MIDI (avec le nom de chaque port dans Bitwig) et dossier des presets ;
 - un clic sur un contrôle (pad, direction, zone, potentiomètre d'axe, écran)
   ouvre ses réglages dans un panneau semi-transparent au-dessus de la vue,
   sans la quitter ; « Open in editor » ouvre l'éditeur complet dessus.
