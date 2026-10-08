@@ -187,9 +187,12 @@ std::optional<ChordNotes> parseChord(std::string_view name, int rootOctave) {
 
     const int root = (rootOctave + 1) * 12 + *rootPitch;
     ChordNotes chord;
-    auto add = [&chord](int note) {
-        if (note < 0 || note > 127)
+    bool inRange = true;
+    auto add = [&chord, &inRange](int note) {
+        if (note < 0 || note > 127) {
+            inRange = false;  // a chord missing notes would mislead
             return;
+        }
         for (std::uint8_t i = 0; i < chord.count; ++i)
             if (chord.notes[i] == note)
                 return;
@@ -199,7 +202,7 @@ std::optional<ChordNotes> parseChord(std::string_view name, int rootOctave) {
         add(rootOctave * 12 + *bassPitch);  // the bass pitch, one octave below the root's octave
     for (std::uint8_t i = 0; i < q->count; ++i)
         add(root + q->intervals[i]);
-    if (chord.count == 0)
+    if (!inRange || chord.count == 0)
         return std::nullopt;
     std::sort(chord.notes.begin(), chord.notes.begin() + chord.count);
     return chord;

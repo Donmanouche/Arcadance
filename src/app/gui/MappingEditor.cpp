@@ -746,7 +746,7 @@ bool MappingEditor::drawChordFields(TriggerBinding& b) {
     }
 
     auto apply = [&](const std::string& text) {
-        if (auto chord = parseChord(text)) {
+        if (auto chord = parseChord(text, b.chordOctave)) {
             b.chordName = text;
             b.chord = *chord;
             chordText_ = text;
@@ -790,14 +790,14 @@ bool MappingEditor::drawChordFields(TriggerBinding& b) {
 
     ImGui::SetNextItemWidth(ImGui::GetFontSize() * 10);
     if (ImGui::InputText(key_ ? "Free entry" : "Chord", &chordText_)) {
-        if (auto chord = parseChord(chordText_)) {
+        if (auto chord = parseChord(chordText_, b.chordOctave)) {
             b.chordName = chordText_;
             b.chord = *chord;
             changed = true;
         }
     }
 
-    const auto typed = parseChord(chordText_);
+    const auto typed = parseChord(chordText_, b.chordOctave);
     if (!typed && !chordText_.empty()) {
         ImGui::TextColored(kErrorColor, "Unknown chord (the previous one stays active)");
     } else if (b.chord.count) {
@@ -866,6 +866,23 @@ bool MappingEditor::drawChordFields(TriggerBinding& b) {
                 apply(candidate);
         }
         ImGui::EndCombo();
+    }
+
+    // Octave: the same chord higher or lower.
+    if (rootPitch) {
+        int octave = b.chordOctave;
+        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 6);
+        if (ImGui::InputInt("Octave", &octave)) {
+            octave = std::clamp(octave, kMinChordOctave, kMaxChordOctave);
+            if (auto chord = parseChord(b.chordName, octave)) {
+                b.chordOctave = static_cast<std::int8_t>(octave);
+                b.chord = *chord;
+                changed = true;
+            }
+        }
+        ImGui::SetItemTooltip("Octave of the root note: 4 places C on C4 (MIDI 60)");
+        ImGui::SameLine();
+        ImGui::TextDisabled("root %s", noteName((b.chordOctave + 1) * 12 + *rootPitch, flats()).c_str());
     }
     return changed;
 }

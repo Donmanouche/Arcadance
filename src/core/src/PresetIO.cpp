@@ -92,7 +92,14 @@ TriggerBinding triggerFromJson(const Json& j, const std::string& where) {
         b.velocity = readU7(j, "velocity", 100, where);
         if (j.contains("chord")) {
             b.chordName = readString(j, "chord", nullptr, where);
-            auto chord = parseChord(b.chordName);
+            const Json octave = j.value("octave", Json(kDefaultChordOctave));
+            if (!octave.is_number_integer() || octave.get<int>() < kMinChordOctave || octave.get<int>() > kMaxChordOctave)
+                fail(where + ".octave", "expected an integer from " + std::to_string(kMinChordOctave) + " to " +
+                                            std::to_string(kMaxChordOctave));
+            b.chordOctave = octave.get<std::int8_t>();
+            auto chord = parseChord(b.chordName, b.chordOctave);
+            if (!chord && parseChord(b.chordName))
+                fail(where + ".octave", "\"" + b.chordName + "\" goes beyond the MIDI notes in this octave");
             if (!chord)
                 fail(where + ".chord", "unknown chord \"" + b.chordName + "\"");
             b.chord = *chord;
@@ -159,6 +166,8 @@ Json triggerToJson(const TriggerBinding& b) {
         j["type"] = "chord";
         if (!b.chordName.empty()) {
             j["chord"] = b.chordName;
+            if (b.chordOctave != kDefaultChordOctave)
+                j["octave"] = b.chordOctave;
         } else {
             Json notes = Json::array();
             for (auto n : b.chord.view())

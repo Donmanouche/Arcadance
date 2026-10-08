@@ -73,6 +73,25 @@ TEST_CASE("notes may be written as names") {
     CHECK(p.base.buttons[0].mode == Mode::Momentary);
 }
 
+TEST_CASE("a chord can be placed in another octave") {
+    const Json j = minimal({{"buttons", {{"north", {{"type", "chord"}, {"chord", "Cm"}, {"octave", 2}}},
+                                         {"south", {{"type", "chord"}, {"chord", "Cm"}}}}}});
+    const Preset p = presetFromJson(j);
+    const TriggerBinding& low = p.base.buttons[static_cast<std::size_t>(Button::North)];
+    CHECK(low.chordOctave == 2);
+    CHECK(low.chord.notes[0] == 36);  // C2
+    CHECK(p.base.buttons[static_cast<std::size_t>(Button::South)].chord.notes[0] == 60);
+
+    const Json saved = presetToJson(p);
+    CHECK(saved["base"]["buttons"]["north"]["octave"] == 2);
+    CHECK_FALSE(saved["base"]["buttons"]["south"].contains("octave"));  // the default stays implicit
+
+    CHECK(errorFor(minimal({{"buttons", {{"north", {{"type", "chord"}, {"chord", "Cm"}, {"octave", 9}}}}}})) ==
+          "base.buttons.north.octave: expected an integer from 0 to 8");
+    CHECK(errorFor(minimal({{"buttons", {{"north", {{"type", "chord"}, {"chord", "B13"}, {"octave", 8}}}}}})) ==
+          "base.buttons.north.octave: \"B13\" goes beyond the MIDI notes in this octave");
+}
+
 TEST_CASE("errors name the faulty entry") {
     CHECK(errorFor(minimal({{"buttons", {{"south", {{"type", "notes"}}}}}})) ==
           "base.buttons.south.type: unknown type \"notes\"");

@@ -23,6 +23,7 @@ struct ChordNotes {
 
 // "Cm9", "Bb7sus4", "Abmaj7#11", "CM7", "C6/9", "F/A"... The root is placed
 // in `rootOctave` (4 -> C4 = 60); a slash bass goes one octave below it.
+// None if the name is unknown or a note falls outside 0..127.
 std::optional<ChordNotes> parseChord(std::string_view name, int rootOctave = 4);
 
 // Canonical quality suffixes, in the order a chord picker should show them

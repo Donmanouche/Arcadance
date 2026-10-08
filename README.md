@@ -179,7 +179,9 @@ Les contrôles portent les noms de l'API gamepad de SDL3 (`south`, `left_x`,
 ## Comportements à connaître
 
 - **Accords** : `M` majuscule signifie majeur (`CM7` = Cmaj7, et non Cm7) ;
-  `C6/9` est reconnu.
+  `C6/9` est reconnu. L'octave de la fondamentale se règle dans l'éditeur
+  (champ `octave` du preset, 4 par défaut : C4 = note MIDI 60) ; un accord
+  dont une note sortirait de la plage MIDI est refusé.
 - **Freeze** : gèle l'axe à sa valeur courante.
 - **Inversion d'axe** (`axis_invert`) : inverse le sens du CC envoyé.
 - **Gâchettes L2/R2** : utilisables à la fois comme axe (CC) et comme bouton.

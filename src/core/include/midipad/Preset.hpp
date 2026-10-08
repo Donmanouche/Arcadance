@@ -19,6 +19,11 @@ enum class ActionType : std::uint8_t { None, Note, ControlChange, Chord, Transpo
 
 enum class TransportCommand : std::uint8_t { Start, Stop, Continue };
 
+// Octaves a named chord's root can be placed in (4: C4 = 60, as parseChord).
+inline constexpr int kMinChordOctave = 0;
+inline constexpr int kMaxChordOctave = 8;
+inline constexpr int kDefaultChordOctave = 4;
+
 // What a discrete control (button, D-pad direction, touchpad zone) does.
 struct TriggerBinding {
     ActionType type = ActionType::None;
@@ -29,6 +34,7 @@ struct TriggerBinding {
     std::uint8_t offValue = 0;   // ControlChange
     ChordNotes chord;
     std::string chordName;       // empty when the chord was given as raw notes
+    std::int8_t chordOctave = kDefaultChordOctave;  // octave of a named chord's root
     TransportCommand transport = TransportCommand::Start;
     std::int8_t channelStep = 1;
     std::uint8_t freezeAxes = 0; // one bit per Axis
