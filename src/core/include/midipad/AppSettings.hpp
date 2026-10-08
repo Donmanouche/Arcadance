@@ -30,7 +30,6 @@ struct AppSettings {
 
     bool monitorMidi = false;
     bool showButtons = false;
-    std::filesystem::path legacyImportDir;
 };
 
 // Missing or unreadable values keep the ones of `defaults`.

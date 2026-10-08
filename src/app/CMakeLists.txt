@@ -4,6 +4,7 @@ add_library(midipad_platform STATIC
     GamepadInput.cpp
     MidiOutput.cpp
     Runtime.cpp
+    VirMidi.cpp
 )
 target_include_directories(midipad_platform PUBLIC .)
 target_link_libraries(midipad_platform

@@ -8,12 +8,12 @@
 
 #include "MidiOutput.hpp"
 #include "Runtime.hpp"
+#include "VirMidi.hpp"
 #include "gui/MappingEditor.hpp"
 #include "gui/PerformanceView.hpp"
 
 #include "midipad/AppSettings.hpp"
 #include "midipad/Labels.hpp"
-#include "midipad/LegacyImport.hpp"
 #include "midipad/PresetIO.hpp"
 #include "midipad/PresetLibrary.hpp"
 #include "midipad/Scales.hpp"
@@ -32,6 +32,7 @@
 #include <deque>
 #include <filesystem>
 #include <functional>
+#include <future>
 #include <iostream>
 #include <memory>
 #include <mutex>
@@ -126,10 +127,11 @@ GuiOptions parseGuiArgs(const std::vector<std::string>& args) {
     return o;
 }
 
-// How Bitwig names a snd-virmidi port: it only lists kernel MIDI devices, as
-// "<device name>/<subdevice>", so "VirMIDI 3-0" reads "Virtual Raw MIDI/..." and
-// "VirMIDI 3-1" "Virtual Raw MIDI 2/...". Empty for other ports.
-std::string bitwigName(const std::string& port) {
+// The kernel device name of a snd-virmidi port, which programs reading raw MIDI
+// devices show, as "<device name>/<subdevice>": "VirMIDI 3-0" reads
+// "Virtual Raw MIDI/..." and "VirMIDI 3-1" "Virtual Raw MIDI 2/...". Empty for
+// other ports.
+std::string rawMidiName(const std::string& port) {
     const auto at = port.find(":VirMIDI ");
     if (at == std::string::npos)
         return {};
@@ -182,7 +184,7 @@ public:
 
 private:
     enum class NameDialog { None, New, SaveAs };
-    enum class FolderTarget { None, Presets, Import };
+    enum class FolderTarget { None, Presets };
 
     bool init();
     void shutdown();
@@ -213,7 +215,6 @@ private:
     void drawNameDialog();
     void drawUnsavedDialog();
     void drawTrashDialog();
-    void drawImportDialog();
     void drawErrorDialog();
     void drawOutputDialog();
 
@@ -228,12 +229,15 @@ private:
     void pushToEngine();
     void guard(std::function<void()> action);
     void setPresetsDir(const fs::path& dir);
-    void runImport();
 
     // MIDI output.
     void refreshPorts();
     bool useOutput(AppSettings::Output kind, const std::string& port);
     std::shared_ptr<MidiOutput> openOutput(AppSettings::Output kind, const std::string& port, std::string& error);
+    int virmidiPortCount() const;
+    void startVirMidiJob(bool remove);
+    void finishVirMidiJob();
+    void drawVirMidiSection(bool inOutputDialog);
 
     void log(const std::string& line);
     void showError(const std::string& message);
@@ -262,6 +266,11 @@ private:
     std::string outputLabel_;
     std::vector<std::string> ports_;
     std::unique_ptr<Runtime> runtime_;
+    virmidi::Status virmidiStatus_;
+    int virmidiPorts_ = virmidi::kMaxPorts;  // the choices of the Options panel
+    bool virmidiAtStartup_ = false;
+    std::future<std::string> virmidiJob_;  // pkexec, waiting for the password
+    bool virmidiRemoving_ = false;
 
     MappingEditor editor_;
     PerformanceView performance_;
@@ -288,12 +297,11 @@ private:
     std::function<void()> pendingAction_;
     bool openUnsavedDialog_ = false;
     bool openTrashDialog_ = false;
-    bool openImportDialog_ = false;
-    std::string importDir_;
-    std::vector<std::string> importReport_;
     std::string errorMessage_;
     bool openErrorDialog_ = false;
     bool openOutputDialog_ = false;
+    bool outputDialogOpen_ = false;
+    bool closeOutputDialog_ = false;  // VirMIDI ports created from it: done
     std::string outputDialogReason_;
 
     std::mutex folderMutex_;
@@ -332,7 +340,7 @@ bool GuiApp::init() {
     else
         openFirstOrUntitled();
 
-    // As in the Python version: reconnect to the last port used, otherwise ask
+    // Reconnect to the last port used, otherwise ask
     // which one to use. The virtual port stands in until the user answers.
     refreshPorts();
     std::string error;
@@ -508,6 +516,7 @@ void GuiApp::handleEvent(const SDL_Event& e) {
 }
 
 void GuiApp::update() {
+    finishVirMidiJob();
     while (auto r = runtime_->popReport())
         log(describe(*r));
     {
@@ -527,8 +536,6 @@ void GuiApp::update() {
     if (folder) {
         if (target == FolderTarget::Presets)
             guard([this, dir = *folder] { setPresetsDir(dir); });
-        else if (target == FolderTarget::Import)
-            importDir_ = *folder;
     }
 
     // Follow edits made to the preset file by another program.
@@ -657,43 +664,6 @@ void GuiApp::setPresetsDir(const fs::path& dir) {
     log("Presets: " + dir.string());
 }
 
-void GuiApp::runImport() {
-    importReport_.clear();
-    const fs::path source = importDir_;
-    if (!fs::is_directory(source)) {
-        importReport_.push_back("Folder not found: " + source.string());
-        return;
-    }
-    settings_.legacyImportDir = source;
-    persistSettings();
-
-    const auto imported = importLegacyDirectory(source);
-    for (const auto& error : imported.errors)
-        importReport_.push_back("ERROR " + error);
-    int count = 0;
-    for (const auto& result : imported.presets) {
-        if (library_->contains(result.preset.name)) {
-            importReport_.push_back("Skipped: \"" + result.preset.name + "\" already exists.");
-            continue;
-        }
-        try {
-            library_->save(result.preset);
-            importReport_.push_back("Imported: \"" + result.preset.name + "\"");
-            ++count;
-        } catch (const std::exception& e) {
-            importReport_.push_back("ERROR \"" + result.preset.name + "\": " + e.what());
-        }
-        for (const auto& warning : result.warnings)
-            importReport_.push_back("    ! " + warning);
-    }
-    if (imported.presets.empty() && imported.errors.empty())
-        importReport_.push_back("No preset found in this folder.");
-    refreshPresetList();
-    log(std::to_string(count) + " preset(s) imported from " + source.string());
-    if (!hasFile_ && !dirty_ && count > 0)
-        openFirstOrUntitled();
-}
-
 // --- MIDI output ------------------------------------------------------------
 
 void GuiApp::refreshPorts() {
@@ -701,8 +671,7 @@ void GuiApp::refreshPorts() {
     try {
         MidiOutput probe(MidiOutput::Api::Default);
         for (auto& name : probe.portNames()) {
-            // Skip our own ports and the system ones nobody plays into, as the
-            // Python version did.
+            // Skip our own ports and the system ones nobody plays into.
             if (name.starts_with("MidiPad:") || name.find("Midi Through") != std::string::npos ||
                 name.find("rtpmidid") != std::string::npos || name.find("Announce") != std::string::npos ||
                 (name.starts_with("Client-") && name.find("pipewire") == std::string::npos))
@@ -748,6 +717,65 @@ bool GuiApp::useOutput(AppSettings::Output kind, const std::string& port) {
     persistSettings();
     log("MIDI output: " + outputLabel_);
     return true;
+}
+
+// The snd-virmidi ports among the outputs.
+int GuiApp::virmidiPortCount() const {
+    return static_cast<int>(std::count_if(ports_.begin(), ports_.end(),
+                                          [](const std::string& p) { return !rawMidiName(p).empty(); }));
+}
+
+void GuiApp::startVirMidiJob(bool remove) {
+    // Our own connection keeps the module busy: let go of it first.
+    const bool reload = remove || (virmidiStatus_.loaded && virmidiPorts_ != virmidiPortCount());
+    if (reload && settings_.output == AppSettings::Output::ExistingPort && !rawMidiName(outputLabel_).empty())
+        useOutput(AppSettings::Output::VirtualPort, {});
+    virmidiRemoving_ = remove;
+    const int ports = virmidiPorts_;
+    const bool atStartup = virmidiAtStartup_;
+    virmidiJob_ = std::async(std::launch::async, [remove, ports, atStartup] {
+        return remove ? virmidi::remove() : virmidi::create(ports, atStartup);
+    });
+}
+
+void GuiApp::finishVirMidiJob() {
+    if (!virmidiJob_.valid() || virmidiJob_.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
+        return;
+    const std::string error = virmidiJob_.get();
+    refreshPorts();
+    virmidiStatus_ = virmidi::status();
+    virmidiAtStartup_ = virmidiStatus_.atStartup;
+    if (!error.empty()) {
+        showError(error);
+        return;
+    }
+    if (virmidiRemoving_) {
+        log("VirMIDI ports removed");
+        return;
+    }
+    log("VirMIDI ports created: " + std::to_string(virmidiPortCount()));
+    if (outputDialogOpen_) {
+        // Created from the startup question: back to the last port used if it
+        // was one of them, otherwise the first one.
+        closeOutputDialog_ = true;
+        if (settings_.output == AppSettings::Output::ExistingPort && !rawMidiName(settings_.existingPortName).empty()) {
+            std::string openError;
+            if (auto out = openOutput(AppSettings::Output::ExistingPort, settings_.existingPortName, openError)) {
+                output_ = out;
+                runtime_->setOutput(std::move(out));
+                log("MIDI output: " + outputLabel_);
+                return;
+            }
+        }
+        settings_.output = AppSettings::Output::VirtualPort;
+    }
+    // Play into the first one right away, unless already on a VirMIDI port.
+    if (settings_.output == AppSettings::Output::VirtualPort)
+        for (const auto& port : ports_)
+            if (rawMidiName(port) == "Virtual Raw MIDI") {
+                useOutput(AppSettings::Output::ExistingPort, port);
+                break;
+            }
 }
 
 // --- Helpers ----------------------------------------------------------------
@@ -891,13 +919,6 @@ void GuiApp::drawPresetBar() {
     ImGui::SetItemTooltip("Moves the preset to the \"trash\" subfolder");
 
     ImGui::SameLine(0, ImGui::GetFontSize() * 2);
-    if (ImGui::Button("Import…")) {
-        importDir_ = settings_.legacyImportDir.string();
-        importReport_.clear();
-        openImportDialog_ = true;
-    }
-    ImGui::SetItemTooltip("Import the presets of the Python version (configs folder)");
-    ImGui::SameLine();
     if (ImGui::Button("Folder…"))
         browseFolder(FolderTarget::Presets, settings_.presetsDir);
     ImGui::SetItemTooltip("Presets folder:\n%s", settings_.presetsDir.string().c_str());
@@ -931,12 +952,12 @@ void GuiApp::drawOutputCombo(float width) {
         for (const auto& port : ports_)
             if (ImGui::Selectable(port.c_str(), outputLabel_ == port))
                 useOutput(AppSettings::Output::ExistingPort, port);
-            else if (const auto name = bitwigName(port); !name.empty())
-                ImGui::SetItemTooltip("In Bitwig: %s/…", name.c_str());
+            else if (const auto name = rawMidiName(port); !name.empty())
+                ImGui::SetItemTooltip("Seen as %s/…", name.c_str());
         ImGui::EndCombo();
     }
-    if (const auto name = bitwigName(outputLabel_); !name.empty())
-        ImGui::SetItemTooltip("In Bitwig, this output is called %s/…", name.c_str());
+    if (const auto name = rawMidiName(outputLabel_); !name.empty())
+        ImGui::SetItemTooltip("This output is seen as %s/…", name.c_str());
 }
 
 void GuiApp::drawChannelAndStatus(const LiveState& live) {
@@ -1137,6 +1158,10 @@ void GuiApp::drawPerformance(const LiveState& live) {
         ImGui::PushFont(medium, 15.0f);
         if (ImGui::MenuItem("Options…", nullptr, false)) {
             refreshPorts();
+            virmidiStatus_ = virmidi::status();
+            if (virmidiStatus_.loaded && virmidiPortCount() > 0)
+                virmidiPorts_ = std::min(virmidiPortCount(), virmidi::kMaxPorts);
+            virmidiAtStartup_ = virmidiStatus_.atStartup;
             optionsOpen_ = true;
             optionsAppearing_ = true;
             overlaySpec_.reset();
@@ -1146,11 +1171,6 @@ void GuiApp::drawPerformance(const LiveState& live) {
         if (ImGui::MenuItem("Fullscreen", "F11", (SDL_GetWindowFlags(window_) & SDL_WINDOW_FULLSCREEN) != 0))
             toggleFullscreen();
         ImGui::Separator();
-        if (ImGui::MenuItem("Import presets of the Python version…")) {
-            importDir_ = settings_.legacyImportDir.string();
-            importReport_.clear();
-            openImportDialog_ = true;
-        }
         if (ImGui::MenuItem("Presets folder…"))
             browseFolder(FolderTarget::Presets, settings_.presetsDir);
         ImGui::Separator();
@@ -1335,8 +1355,8 @@ void GuiApp::drawPerformanceStatus(const LiveState& live, float height) {
     // Left: where the MIDI goes.
     const bool virtualPort = settings_.output == AppSettings::Output::VirtualPort;
     std::string out = virtualPort ? "Virtual port \"" + settings_.virtualPortName + "\"" : shortPortName(outputLabel_);
-    if (const auto name = bitwigName(outputLabel_); !name.empty())
-        out += "  (Bitwig: " + name + ")";
+    if (const auto name = rawMidiName(outputLabel_); !name.empty())
+        out += "  (seen as " + name + ")";
     const ImVec2 lsz = medium->CalcTextSizeA(px(12), FLT_MAX, 0, "MIDI out:");
     dl->AddText(medium, px(12), ImVec2(p.x + px(6), cy - lsz.y * 0.5f), Theme::kDim, "MIDI out:");
     dl->AddText(medium, px(12), ImVec2(p.x + px(12) + lsz.x, cy - lsz.y * 0.5f), Theme::kLabel, out.c_str());
@@ -1398,7 +1418,7 @@ void GuiApp::drawOptionsOverlay() {
         // MIDI interface: every output, the current one selected.
         section("MIDI INTERFACE");
         ImGui::PushFont(medium, 12.0f);
-        ImGui::TextColored(color(Theme::kLabel), "Where MidiPad sends its MIDI. Bitwig on Linux only sees the VirMIDI ports.");
+        ImGui::TextColored(color(Theme::kLabel), "Where MidiPad sends its MIDI. Some programs only see the VirMIDI ports.");
         ImGui::PopFont();
         ImGui::Spacing();
         struct Choice {
@@ -1408,12 +1428,12 @@ void GuiApp::drawOptionsOverlay() {
         };
         std::vector<Choice> choices;
         const bool virtualSelected = settings_.output == AppSettings::Output::VirtualPort;
-        choices.push_back({"", "Virtual port \"" + settings_.virtualPortName + "\"", "not visible in Bitwig", virtualSelected});
+        choices.push_back({"", "Virtual port \"" + settings_.virtualPortName + "\"", "software port", virtualSelected});
         for (const auto& port : ports_) {
-            const auto bw = bitwigName(port);
+            const auto bw = rawMidiName(port);
             const bool selected = !virtualSelected && (port == outputLabel_ ||
                                                        MidiOutput::stablePortName(port) == settings_.existingPortName);
-            choices.push_back({port, shortPortName(port), bw.empty() ? "" : "Bitwig: " + bw, selected});
+            choices.push_back({port, shortPortName(port), bw.empty() ? "" : "seen as " + bw, selected});
         }
         for (std::size_t i = 0; i < choices.size(); ++i) {
             const Choice& c = choices[i];
@@ -1443,13 +1463,17 @@ void GuiApp::drawOptionsOverlay() {
         }
         if (ports_.empty()) {
             ImGui::PushFont(medium, 12.0f);
-            ImGui::TextColored(color(Theme::kLabel), "No MIDI port found. For Bitwig, load the snd-virmidi module (see the README).");
+            ImGui::TextColored(color(Theme::kLabel), "No MIDI port found: create VirMIDI ports below.");
             ImGui::PopFont();
         }
         ImGui::PushFont(bold, 13.0f);
-        if (ImGui::Button("Refresh"))
+        if (ImGui::Button("Refresh")) {
             refreshPorts();
+            virmidiStatus_ = virmidi::status();
+        }
         ImGui::PopFont();
+        if (virmidi::supported())
+            drawVirMidiSection(false);
 
         // D-pad: how long a direction must hold before it plays.
         ImGui::Spacing();
@@ -1496,11 +1520,6 @@ void GuiApp::drawOptionsOverlay() {
         ImGui::PushFont(bold, 13.0f);
         if (ImGui::Button("Change…", ImVec2(-FLT_MIN, 0)))
             browseFolder(FolderTarget::Presets, settings_.presetsDir);
-        if (ImGui::Button("Import presets of the Python version…")) {
-            importDir_ = settings_.legacyImportDir.string();
-            importReport_.clear();
-            openImportDialog_ = true;
-        }
         ImGui::Spacing();
         ImGui::Spacing();
         ImGui::SetCursorPosX(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x - px(80));
@@ -1514,6 +1533,84 @@ void GuiApp::drawOptionsOverlay() {
     ImGui::PopStyleColor(3);
     if (!open)
         optionsOpen_ = false;
+}
+
+// Creating the snd-virmidi ports, inside the Options panel.
+void GuiApp::drawVirMidiSection(bool inOutputDialog) {
+    using Theme = PerformanceView::Theme;
+    auto color = [](ImU32 c) { return ImGui::ColorConvertU32ToFloat4(c); };
+    const float em = ImGui::GetFontSize();
+    auto px = [em](float v) { return v * em / 16.0f; };
+    ImFont* bold = uiFonts_.bold ? uiFonts_.bold : ImGui::GetFont();
+    ImFont* medium = uiFonts_.medium ? uiFonts_.medium : ImGui::GetFont();
+
+    ImGui::Spacing();
+    ImGui::Spacing();
+    ImGui::PushFont(bold, 13.0f);
+    ImGui::TextColored(color(Theme::kText), "VirMIDI ports");
+    ImGui::PopFont();
+    ImGui::SameLine();
+    ImGui::PushFont(medium, 12.0f);
+    const int count = virmidiPortCount();
+    std::string state = !virmidiStatus_.loaded ? "not created"
+                        : count > 0            ? std::to_string(count) + (count == 1 ? " port" : " ports")
+                                               : "loaded";
+    if (virmidiStatus_.atStartup)
+        state += ", created at every startup";
+    ImGui::TextColored(color(virmidiStatus_.loaded ? Theme::kGreen : Theme::kDim), "%s", state.c_str());
+    ImGui::TextColored(color(Theme::kLabel), "Kernel MIDI ports, seen by every program. Creating them asks for the administrator password.");
+    ImGui::PopFont();
+    ImGui::Spacing();
+
+    const bool busy = virmidiJob_.valid();
+    ImGui::BeginDisabled(busy);
+    ImGui::PushFont(medium, 13.0f);
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextColored(color(Theme::kLabel), "Ports");
+    ImGui::SameLine();
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(px(4), px(4)));
+    for (int n = 1; n <= virmidi::kMaxPorts; ++n) {
+        const bool selected = virmidiPorts_ == n;
+        ImGui::PushStyleColor(ImGuiCol_Button, color(selected ? (Theme::kBlue & ~IM_COL32_A_MASK) | IM_COL32(0, 0, 0, 150)
+                                                              : Theme::kControl));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, color(selected ? Theme::kBlue : Theme::kControlBorder));
+        ImGui::PushStyleColor(ImGuiCol_Border, color(selected ? Theme::kBlue : Theme::kControlBorder));
+        if (ImGui::Button(std::to_string(n).c_str(), ImVec2(px(34), 0)))
+            virmidiPorts_ = n;
+        ImGui::PopStyleColor(3);
+        ImGui::SameLine();
+    }
+    ImGui::PopStyleVar();
+    ImGui::SameLine(0, px(18));
+    ImGui::Checkbox("Create them at every startup", &virmidiAtStartup_);
+    ImGui::PopFont();
+
+    ImGui::PushFont(bold, 13.0f);
+    const bool changed = !virmidiStatus_.loaded || virmidiPorts_ != count || virmidiAtStartup_ != virmidiStatus_.atStartup;
+    const char* createLabel = inOutputDialog ? "Create the ports" : virmidiStatus_.loaded ? "Apply" : "Create";
+    const float createW = inOutputDialog ? px(130) : px(90);
+    const bool canRemove = !inOutputDialog && (virmidiStatus_.loaded || virmidiStatus_.atStartup);
+    const float buttonsW = createW + (canRemove ? px(98) : 0);
+    ImGui::SameLine();
+    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x - buttonsW);
+    ImGui::BeginDisabled(!changed);
+    if (ImGui::Button(createLabel, ImVec2(createW, 0)))
+        startVirMidiJob(false);
+    ImGui::EndDisabled();
+    if (canRemove) {
+        ImGui::SameLine(0, px(8));
+        if (ImGui::Button("Remove", ImVec2(px(90), 0)))
+            startVirMidiJob(true);
+        ImGui::SetItemTooltip("Removes the ports and stops creating them at startup");
+    }
+    ImGui::PopFont();
+    ImGui::EndDisabled();
+    if (busy) {
+        ImGui::PushFont(medium, 12.0f);
+        ImGui::TextColored(color(Theme::kOrange), "Waiting for the administrator password...");
+        ImGui::PopFont();
+    }
+    ImGui::Spacing();
 }
 
 void GuiApp::drawMappingOverlay(const LiveState& live) {
@@ -1709,7 +1806,6 @@ void GuiApp::drawDialogs() {
     drawNameDialog();
     drawUnsavedDialog();
     drawTrashDialog();
-    drawImportDialog();
     drawErrorDialog();
     drawOutputDialog();
 }
@@ -1823,38 +1919,6 @@ void GuiApp::drawTrashDialog() {
     ImGui::EndPopup();
 }
 
-void GuiApp::drawImportDialog() {
-    constexpr const char* kTitle = "Import the presets of the Python version";
-    if (openImportDialog_) {
-        ImGui::OpenPopup(kTitle);
-        openImportDialog_ = false;
-    }
-    ImGui::SetNextWindowSize(ImVec2(ImGui::GetFontSize() * 40, 0), ImGuiCond_Appearing);
-    if (!ImGui::BeginPopupModal(kTitle, nullptr))
-        return;
-    ImGui::TextWrapped("Choose the \"configs\" folder of the Python version. Each preset and its per-channel "
-                       "variants (<name>-<channel>.json) become one preset in your presets folder. "
-                       "Presets already there are not overwritten.");
-    ImGui::SetNextItemWidth(-ImGui::GetFontSize() * 7);
-    ImGui::InputText("##importdir", &importDir_);
-    ImGui::SameLine();
-    if (ImGui::Button("Browse…"))
-        browseFolder(FolderTarget::Import, importDir_);
-    if (ImGui::Button("Import"))
-        runImport();
-    ImGui::SameLine();
-    if (ImGui::Button("Close") || ImGui::IsKeyPressed(ImGuiKey_Escape))
-        ImGui::CloseCurrentPopup();
-    if (!importReport_.empty()) {
-        ImGui::Separator();
-        ImGui::BeginChild("report", ImVec2(0, ImGui::GetTextLineHeightWithSpacing() * 12), ImGuiChildFlags_Borders);
-        for (const auto& line : importReport_)
-            ImGui::TextUnformatted(line.c_str());
-        ImGui::EndChild();
-    }
-    ImGui::EndPopup();
-}
-
 void GuiApp::drawErrorDialog() {
     constexpr const char* kTitle = "Error";
     if (openErrorDialog_) {
@@ -1877,22 +1941,39 @@ void GuiApp::drawOutputDialog() {
         openOutputDialog_ = false;
     }
     ImGui::SetNextWindowSize(ImVec2(ImGui::GetFontSize() * 40, 0), ImGuiCond_Appearing);
-    if (!ImGui::BeginPopupModal(kTitle, nullptr))
+    if (!ImGui::BeginPopupModal(kTitle, nullptr)) {
+        outputDialogOpen_ = false;
         return;
+    }
+    if (!outputDialogOpen_) {
+        outputDialogOpen_ = true;
+        virmidiStatus_ = virmidi::status();
+        virmidiAtStartup_ = true;  // they were lost at the last restart, most likely
+    }
+    if (closeOutputDialog_) {
+        closeOutputDialog_ = false;
+        ImGui::CloseCurrentPopup();
+    }
     ImGui::TextWrapped("%s", outputDialogReason_.c_str());
     ImGui::Spacing();
+    // No VirMIDI port: offer to create them first, some programs see nothing else.
+    if (virmidi::supported() && virmidiPortCount() == 0) {
+        drawVirMidiSection(true);
+        ImGui::Separator();
+        ImGui::Spacing();
+    }
     ImGui::PushStyleColor(ImGuiCol_Text, kHintColor);
-    ImGui::TextWrapped("Bitwig on Linux does not see the virtual port \"%s\": choose a VirMIDI port, "
-                       "then the input shown on the right in Bitwig.",
+    ImGui::TextWrapped("Some programs do not see the virtual port \"%s\": choose a VirMIDI port, "
+                       "then in your program the input shown on the right.",
                        settings_.virtualPortName.c_str());
     ImGui::PopStyleColor();
 
     ImGui::BeginChild("ports", ImVec2(0, ImGui::GetTextLineHeightWithSpacing() * 9), ImGuiChildFlags_Borders);
     if (ports_.empty())
-        ImGui::TextDisabled("No MIDI port found. For Bitwig, load the snd-virmidi module (see the README).");
+        ImGui::TextDisabled("No MIDI port found: create VirMIDI ports above.");
     for (const auto& port : ports_) {
-        const std::string name = bitwigName(port);
-        const std::string text = name.empty() ? port : port + "      -> Bitwig : " + name + "/…";
+        const std::string name = rawMidiName(port);
+        const std::string text = name.empty() ? port : port + "      -> seen as " + name + "/…";
         if (ImGui::Selectable(text.c_str()) && useOutput(AppSettings::Output::ExistingPort, port))
             ImGui::CloseCurrentPopup();
     }

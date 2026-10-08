@@ -7,7 +7,6 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 option(MIDIPAD_BUILD_TESTS "Build the unit tests" ON)
-option(MIDIPAD_BUILD_TOOLS "Build the command-line tools" ON)
 option(MIDIPAD_BUILD_APP "Build the midipad application (needs SDL3 and RtMidi)" ON)
 
 include(cmake/Dependencies.cmake)
@@ -23,10 +22,6 @@ add_subdirectory(src/core)
 
 if(MIDIPAD_BUILD_APP)
     add_subdirectory(src/app)
-endif()
-
-if(MIDIPAD_BUILD_TOOLS)
-    add_subdirectory(tools)
 endif()
 
 if(MIDIPAD_BUILD_TESTS)

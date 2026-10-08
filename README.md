@@ -1,14 +1,12 @@
 # MidiPad 2
 
-Réécriture en C++20 de Midipad, un convertisseur manette (DualSense) → MIDI.
-La version Python de référence se trouve dans
-`~/Desktop/Dropbox/Documents/Live coding project/Midipad-dev/`.
+Convertisseur manette (DualSense) → MIDI, écrit en C++20.
 
 ## État
 
 | Étape | Contenu | État |
 |---|---|---|
-| 1 | Moteur (logique pure), accords, format de preset, import des anciens presets, tests | fait |
+| 1 | Moteur (logique pure), accords, format de preset, tests | fait |
 | 2 | Thread temps réel SDL3 (manette + touchpad) et RtMidi, exécutable sans interface | fait, validé sur DualSense |
 | 3 | Éditeur de mapping et gestion des presets (Dear ImGui) | fait, à tester |
 | 4 | Écran performance animé | à faire |
@@ -26,15 +24,6 @@ cmake --build --preset release
 ctest --preset release
 ```
 
-## Convertir les presets de la version Python
-
-```bash
-build/release/tools/midipad-import "<chemin>/Midipad-dev/configs" presets
-```
-
-Chaque `<nom>.json` et ses fichiers `<nom>-<canal>.json` deviennent un seul
-preset ; les entrées non convertibles sont signalées.
-
 ## L'éditeur
 
 ```bash
@@ -46,8 +35,8 @@ qu'elle édite :
 
 - **Preset** : ouvrir, créer, enregistrer (Ctrl+S), enregistrer sous, annuler
   les modifications, mettre à la corbeille (bouton « Trash » : le fichier est
-  déplacé dans le sous-dossier `trash`, jamais supprimé), importer les presets de la
-  version Python, changer de dossier de presets.
+  déplacé dans le sous-dossier `trash`, jamais supprimé), changer de dossier de
+  presets. Un preset tient dans un seul fichier JSON, mappings par canal compris.
 - **Sortie MIDI** : port virtuel « MidiPad » ou un port existant ; canal actif ;
   « Panic » pour les notes collées.
 - **Key** (tonalité, facultative) : une fondamentale et une gamme (majeur, mineur
@@ -68,22 +57,34 @@ sortie) sont gardés dans `~/.local/share/MidiPad/MidiPad/settings.json`.
 Le dossier des presets par défaut est `~/.local/share/MidiPad/MidiPad/presets`
 (`midipad chemin/vers/un/preset.json` ouvre plutôt le dossier de ce preset).
 
-### Bitwig sous Linux
+### Ports VirMIDI (Linux)
 
-Bitwig ne voit que les périphériques MIDI « bruts » du noyau (`hw:`), pas les
-ports logiciels ALSA comme le port virtuel « MidiPad » (ni Midi Through,
-rtpmidid…). Il faut donc passer par le module `snd-virmidi` :
+Certains logiciels ne voient que les périphériques MIDI « bruts » du noyau
+(`hw:`), pas les ports logiciels ALSA comme le port virtuel « MidiPad » (ni
+Midi Through, rtpmidid…). Il faut alors passer par le module `snd-virmidi`.
+
+MidiPad peut créer ces ports lui-même : menu ☰ › **Options** › MIDI INTERFACE ›
+*VirMIDI ports*. On choisit le nombre de ports (1 à 4) et, si on le souhaite,
+« Create them at every startup » ; le système demande alors le mot de passe
+administrateur (via `pkexec`). Sans cette case, les ports disparaissent au
+redémarrage ; avec, MidiPad écrit `/etc/modules-load.d/midipad-virmidi.conf` et
+`/etc/modprobe.d/midipad-virmidi.conf`. « Remove » les supprime (il faut d'abord
+fermer les logiciels qui les utilisent). À la main :
+`sudo modprobe snd-virmidi midi_devs=4`.
+
+Ensuite :
 
 1. dans MidiPad, choisir la sortie `VirMIDI N-0` ;
-2. dans Bitwig, utiliser l'entrée `Virtual Raw MIDI/…` (`VirMIDI N-1`
-   correspond à `Virtual Raw MIDI 2/…`, etc.).
+2. dans le logiciel qui reçoit le MIDI, utiliser l'entrée `Virtual Raw MIDI/…`
+   (`VirMIDI N-1` correspond à `Virtual Raw MIDI 2/…`, etc.).
 
-Au démarrage, MidiPad se reconnecte au dernier port utilisé, comme la version
-Python. S'il est introuvable (ou au tout premier lancement), une fenêtre demande
-quel port utiliser, en indiquant pour chaque port VirMIDI son nom dans Bitwig ;
-le port virtuel sert en attendant. Le numéro de carte N change selon l'ordre de
-branchement ; MidiPad retrouve son port VirMIDI malgré ce changement. Sous macOS, le port virtuel « MidiPad »
-apparaîtra directement dans Bitwig ; sous Windows, il faudra loopMIDI.
+Au démarrage, MidiPad se reconnecte au dernier port utilisé. S'il est
+introuvable (ou au tout premier lancement), une fenêtre demande quel port
+utiliser, en indiquant pour chaque port VirMIDI le nom sous lequel il est vu,
+et propose de créer les ports VirMIDI s'il n'y en a aucun ; le port virtuel sert
+en attendant. Le numéro de carte N change selon l'ordre de branchement ; MidiPad
+retrouve son port VirMIDI malgré ce changement. Sous macOS, le port virtuel
+« MidiPad » sera visible directement ; sous Windows, il faudra loopMIDI.
 
 La manette reste lue quand la fenêtre MidiPad est en arrière-plan.
 
@@ -111,7 +112,7 @@ choisie est retrouvée au démarrage (`--view performance|editor` pour forcer).
   est modifié) ;
 - en bas : la sortie MIDI à gauche, l'état de la manette à droite ;
 - le menu ☰ ouvre les **Options** dans un panneau semi-transparent : interface
-  MIDI (avec le nom de chaque port dans Bitwig), délai de la croix
+  MIDI (avec le nom sous lequel chaque port est vu, création des ports VirMIDI), délai de la croix
   directionnelle et dossier des presets ;
 - un clic sur un contrôle (pad, direction, zone, potentiomètre d'axe, écran)
   ouvre ses réglages dans un panneau semi-transparent au-dessus de la vue,
@@ -131,7 +132,7 @@ reste actif et l'erreur est affichée.
 | Option | Rôle |
 |---|---|
 | `-c NOM` | envoyer vers un port existant (ex. `-c "OXI ONE"`) au lieu du port virtuel |
-| `-n NOM` | nom du port virtuel (ex. `-n "Bitwig Control"` comme la version Python) |
+| `-n NOM` | nom du port virtuel (ex. `-n "MidiPad Control"`) |
 | `--channel N` | canal de départ (1-16) |
 | `-m` | moniteur : affiche chaque message envoyé |
 | `-i` | affiche aussi les boutons et les changements de freeze |
@@ -139,8 +140,8 @@ reste actif et l'erreur est affichée.
 | `--list-ports` | liste les ports MIDI de sortie |
 
 Le touchpad de la DualSense passe par `/dev/hidraw*` : la règle udev
-`/etc/udev/rules.d/70-dualsense.rules` de la version Python est nécessaire
-(elle est déjà installée sur cette machine). Sans elle, la manette fonctionne
+donnant accès à la DualSense (par exemple `/etc/udev/rules.d/70-dualsense.rules`)
+est nécessaire (elle est déjà installée sur cette machine). Sans elle, la manette fonctionne
 mais sans touchpad, et midipad le signale à la connexion.
 
 ### Latence
@@ -149,9 +150,7 @@ Un thread dédié lit l'état de la manette 1000 fois par seconde (`--poll-hz`),
 en priorité temps réel quand le système l'autorise, et envoie le MIDI
 directement. Mesuré sur cette machine avec une DualSense, sur une session de
 18 minutes : 21 µs de traitement par lecture en moyenne (0,5 ms au pire),
-réveil en retard de 1,6 ms au pire, aucune erreur d'envoi. La version Python attendait
-jusqu'à ~15 ms (sommeil de 5 ms + attente de 10 ms) avant de traiter un
-événement.
+réveil en retard de 1,6 ms au pire, aucune erreur d'envoi.
 
 Les événements manette de SDL sont volontairement désactivés : la boucle
 d'événements du thread principal dessine l'interface, et l'affichage ne doit
@@ -166,11 +165,10 @@ src/app/       midipad : lecture SDL3 (GamepadInput), sortie RtMidi (MidiOutput)
   gui/         fenêtre ImGui (GuiApp) et éditeur de mapping (MappingEditor)
 src/core/      bibliothèque sans dépendance système (testée)
   Engine       événements manette → messages MIDI ; aucune allocation à l'exécution
-  Preset*      modèle de mapping, lecture/écriture JSON, import des anciens presets
+  Preset*      modèle de mapping, lecture/écriture JSON
   Chords/Notes théorie musicale
   PresetLibrary, AppSettings, Labels   dossier de presets, réglages, libellés
 assets/fonts/  Roboto Bold et Roboto Condensed Bold (licence Apache 2.0), embarquées
-tools/         midipad-import
 tests/         tests unitaires (doctest), dont GamepadInput face à une
                manette virtuelle SDL
 ```
@@ -178,15 +176,12 @@ tests/         tests unitaires (doctest), dont GamepadInput face à une
 Les contrôles portent les noms de l'API gamepad de SDL3 (`south`, `left_x`,
 `up_right`…), et non plus des numéros dépendant du pilote.
 
-## Différences de comportement avec la version Python
+## Comportements à connaître
 
-Volontaires. Ce sont des corrections :
-
-- **Accords** : les racines E et B ne sont plus jouées un demi-ton trop bas ;
-  `M` majuscule signifie majeur (`CM7` = Cmaj7, et non Cm7) ; `C6/9` est
-  reconnu. Aucun preset existant n'utilise ces accords.
-- **Freeze** : gèle l'axe à sa valeur courante, et non au centre.
-- **Inversion d'axe** (`axis_invert`) : elle est appliquée.
+- **Accords** : `M` majuscule signifie majeur (`CM7` = Cmaj7, et non Cm7) ;
+  `C6/9` est reconnu.
+- **Freeze** : gèle l'axe à sa valeur courante.
+- **Inversion d'axe** (`axis_invert`) : inverse le sens du CC envoyé.
 - **Gâchettes L2/R2** : utilisables à la fois comme axe (CC) et comme bouton.
 - **Transport** : `stop` et `continue` fonctionnent aussi sur les boutons.
 - **Notes collées** : une note est toujours éteinte sur le canal où elle a
@@ -195,13 +190,9 @@ Volontaires. Ce sont des corrections :
   bascule aussi sur le mapping de ce canal.
 - **Vélocité** : le champ `velocity` est respecté partout.
 - **Axes** : un CC n'est renvoyé que si sa valeur change.
-
-Simplifications à valider :
-
 - **Toggle exclusif** : les notes et accords en mode toggle s'excluent au sein
   d'une même famille de contrôles (boutons, croix directionnelle, chaque doigt
-  du touchpad). Les CC en toggle sont toujours indépendants ; en Python, ceux
-  de la croix s'excluaient entre eux.
+  du touchpad). Les CC en toggle sont toujours indépendants.
 - **Touchpad en mode axe** : CC uniquement.
 - **Seuil des gâchettes** : en mode bouton, appui à 25 % de la course,
   relâchement à 15 %.

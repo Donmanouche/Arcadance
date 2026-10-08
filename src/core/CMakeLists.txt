@@ -4,7 +4,6 @@ add_library(midipad_core STATIC
     src/Controls.cpp
     src/Engine.cpp
     src/Labels.cpp
-    src/LegacyImport.cpp
     src/Notes.cpp
     src/PresetIO.cpp
     src/PresetLibrary.cpp

@@ -68,7 +68,7 @@ constexpr auto kQualityNames = [] {
 constexpr std::pair<std::string_view, std::string_view> kAliases[] = {
     {"maj", ""},       {"dom7", "7"},       {"sus", "sus4"},     {"7sus", "7sus4"},
     {"9sus", "9sus4"}, {"aug7", "7#5"},     {"augmaj7", "maj7#5"}, {"dimmaj7", "mmaj7"},
-    {"mm7", "m7"},  // the Python version defined "mm7" as a minor seventh
+    {"mm7", "m7"},  // older presets wrote "mm7" for a minor seventh
 };
 
 bool startsWithNoCase(std::string_view s, std::string_view prefix) {

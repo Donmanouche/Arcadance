@@ -44,8 +44,6 @@ Options:
       --poll-hz N      gamepad reads per second (default: 1000)
       --list-ports     list the MIDI output ports and exit
   -h, --help           show this help
-
-Presets of the Python version are converted with midipad-import.
 )";
 
 struct Options {

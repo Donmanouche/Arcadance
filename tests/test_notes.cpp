@@ -15,7 +15,7 @@ TEST_CASE("note names use scientific pitch notation") {
     CHECK(parseNoteName("C♯4") == 61);
 }
 
-TEST_CASE("E and B are read as themselves (the Python version shifted them)") {
+TEST_CASE("E and B are read as themselves") {
     CHECK(parseNoteName("E4") == 64);
     CHECK(parseNoteName("B3") == 59);
     CHECK(parseNoteName("Eb4") == 63);

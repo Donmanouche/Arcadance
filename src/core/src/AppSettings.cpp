@@ -71,7 +71,6 @@ AppSettings loadSettings(const std::filesystem::path& file, AppSettings s) {
     read(j, "dpad_settle_release_ms", s.dpadSettleReleaseMs);
     read(j, "monitor_midi", s.monitorMidi);
     read(j, "show_buttons", s.showButtons);
-    readPath(j, "legacy_import_dir", s.legacyImportDir);
     if (s.virtualPortName.empty())
         s.virtualPortName = "MidiPad";
     return s;
@@ -92,7 +91,6 @@ void saveSettings(const AppSettings& s, const std::filesystem::path& file) {
     j["dpad_settle_release_ms"] = s.dpadSettleReleaseMs;
     j["monitor_midi"] = s.monitorMidi;
     j["show_buttons"] = s.showButtons;
-    j["legacy_import_dir"] = s.legacyImportDir.string();
 
     std::filesystem::create_directories(file.parent_path());
     std::ofstream out(file);

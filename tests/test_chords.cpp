@@ -19,7 +19,7 @@ std::vector<int> notes(std::string_view name) {
 
 }  // namespace
 
-TEST_CASE("chords used by the existing presets sound as in the Python version") {
+TEST_CASE("chords used by the existing presets keep their notes") {
     CHECK(notes("Abmaj7#11") == std::vector{68, 72, 75, 79, 82, 86});
     CHECK(notes("Bb7sus4") == std::vector{70, 75, 77, 80});
     CHECK(notes("Cm") == std::vector{60, 63, 67});
