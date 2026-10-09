@@ -71,6 +71,9 @@ private:
         float at(int age) const { return values[static_cast<std::size_t>(((head - 1 - age) % kSize + kSize) % kSize)]; }
     };
 
+    // Remembers where each stick axis was when it froze, per channel.
+    void trackFrozenPositions(const LiveState& live);
+
     void drawStick(int index, const midipad::Mapping& m, const LiveState& live, float x, float y, float w, float h);
     void drawTriggers(const midipad::Mapping& m, const LiveState& live, float x, float y, float w, float h);
     void drawDpad(const midipad::Mapping& m, const LiveState& live, float x, float y, float w, float h);
@@ -96,4 +99,10 @@ private:
     std::uint32_t previousButtons_ = 0;
     std::array<Trail, midipad::kFingerCount> trails_;
     std::array<History, 4> history_;  // left X, left Y, right X, right Y
+    // Stick positions (-1..1) at the moment each axis froze, per channel; a bit
+    // of frozenKnown_ per stick axis once recorded.
+    std::array<std::array<float, 4>, 16> frozenAt_{};
+    std::array<std::uint8_t, 16> frozenKnown_{};
+    int lastChannel_ = -1;
+    std::uint8_t lastFrozen_ = 0;
 };

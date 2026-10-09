@@ -184,7 +184,10 @@ Les contrôles portent les noms de l'API gamepad de SDL3 (`south`, `left_x`,
   dont une note sortirait de la plage MIDI est refusé. « Bass root » double la
   fondamentale une ou deux octaves plus bas pour asseoir la basse (champ
   `root_below` : 1 ou 2).
-- **Freeze** : gèle l'axe à sa valeur courante.
+- **Freeze** : gèle l'axe à sa valeur courante. Dans la vue animée, la fleur
+  reste bleu glacé et suit le stick ; une silhouette et un réticule, bleus
+  pour le stick gauche, jaunes pour le droit, marquent l'endroit du gel
+  jusqu'au dégel, pour y revenir avant de dégeler.
 - **Inversion d'axe** (`axis_invert`) : inverse le sens du CC envoyé.
 - **Gâchettes L2/R2** : utilisables à la fois comme axe (CC) et comme bouton.
 - **Transport** : `stop` et `continue` fonctionnent aussi sur les boutons.

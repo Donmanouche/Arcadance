@@ -188,6 +188,24 @@ void blob(ImDrawList* dl, ImVec2 c, float r, ImU32 col, double t, float stretchX
     shape(0.55f, alpha(mix(col, IM_COL32_WHITE, 0.6f), 0.86f), ImVec2(-r * 0.15f, -r * 0.18f));
 }
 
+// Where a stick was frozen: a still, translucent silhouette.
+void ghost(ImDrawList* dl, ImVec2 c, float r, ImU32 col, float stretchX, float stretchY) {
+    constexpr int kPoints = 64;
+    auto shape = [&](float scale, ImU32 color) {
+        ImVec2 pts[kPoints];
+        for (int i = 0; i < kPoints; ++i) {
+            const float th = static_cast<float>(i) / kPoints * 2.0f * kPi;
+            const float wobble = 1.0f + 0.10f * std::sin(3 * th + 1.2f) + 0.06f * std::sin(5 * th - 1.6f) +
+                                 0.04f * std::sin(7 * th + 0.6f);
+            const float rr = r * scale * wobble;
+            pts[i] = ImVec2(c.x + std::cos(th) * rr * stretchX, c.y + std::sin(th) * rr * stretchY);
+        }
+        dl->AddConcavePolyFilled(pts, kPoints, color);
+    };
+    shape(1.25f, alpha(col, 0.14f));
+    shape(1.08f, alpha(col, 0.34f));
+}
+
 float stickPosition(const LiveState& live, Axis a) {
     return std::clamp(static_cast<float>(live.axes[static_cast<std::size_t>(a)]) / 32767.0f, -1.0f, 1.0f);
 }
@@ -298,6 +316,7 @@ std::optional<std::string> PerformanceView::draw(const Mapping& mapping, const L
     dt_ = ImGui::GetIO().DeltaTime;
     flats_ = key && prefersFlats(*key);
     clicked_.reset();
+    trackFrozenPositions(live);
 
     // Flash the buttons pressed since the last frame.
     const std::uint32_t pressed = live.buttons & ~previousButtons_;
@@ -335,6 +354,26 @@ std::optional<std::string> PerformanceView::draw(const Mapping& mapping, const L
     return clicked_;
 }
 
+void PerformanceView::trackFrozenPositions(const LiveState& live) {
+    const auto channel = static_cast<std::size_t>(std::clamp(live.channel, 0, 15));
+    const bool sameChannel = live.channel == lastChannel_;
+    std::uint8_t& known = frozenKnown_[channel];
+    for (int a = 0; a < 4; ++a) {  // the stick axes
+        const auto bit = static_cast<std::uint8_t>(1u << a);
+        if (!(live.frozenAxes & bit)) {
+            known = static_cast<std::uint8_t>(known & ~bit);
+            continue;
+        }
+        // Just frozen, or frozen before this view saw it: the stick is there now.
+        if (!(known & bit) || (sameChannel && !(lastFrozen_ & bit))) {
+            frozenAt_[channel][static_cast<std::size_t>(a)] = stickPosition(live, static_cast<Axis>(a));
+            known = static_cast<std::uint8_t>(known | bit);
+        }
+    }
+    lastChannel_ = live.channel;
+    lastFrozen_ = live.frozenAxes;
+}
+
 void PerformanceView::drawStick(int index, const Mapping& m, const LiveState& live, float x, float y, float w,
                                 float h) {
     ImDrawList* dl = ImGui::GetWindowDrawList();
@@ -358,12 +397,34 @@ void PerformanceView::drawStick(int index, const Mapping& m, const LiveState& li
         dl->AddLine(ImVec2(s.a.x, c.y), ImVec2(s.b.x, c.y), alpha(accent, 0.12f));
         dl->AddLine(ImVec2(c.x, s.a.y), ImVec2(c.x, s.b.y), alpha(accent, 0.12f));
         dl->AddCircle(c, rh * 0.8f, alpha(accent, 0.10f), 48);
-        const float deflection = std::min(1.0f, std::sqrt(sx * sx + sy * sy));
-        const float r = rh * (0.20f + 0.12f * deflection);
-        const ImVec2 pos(c.x + sx * (rw - r * 1.4f), c.y + sy * (rh - r * 1.4f));
+        auto place = [&](float px_, float py_, float& radius) {
+            const float deflection = std::min(1.0f, std::sqrt(px_ * px_ + py_ * py_));
+            radius = rh * (0.20f + 0.12f * deflection);
+            return ImVec2(c.x + px_ * (rw - radius * 1.4f), c.y + py_ * (rh - radius * 1.4f));
+        };
+        float r = 0;
+        const ImVec2 pos = place(sx, sy, r);
+        bool away = false;
+        if (frozen) {
+            // The spot where it froze stays marked, in the stick's color, until it thaws.
+            const auto& at = frozenAt_[static_cast<std::size_t>(std::clamp(live.channel, 0, 15))];
+            const bool fx = live.frozenAxes & (1u << static_cast<unsigned>(ax));
+            const bool fy = live.frozenAxes & (1u << static_cast<unsigned>(ay));
+            const float gx = fx ? at[static_cast<std::size_t>(ax)] : sx;
+            const float gy = fy ? at[static_cast<std::size_t>(ay)] : sy;
+            float gr = 0;
+            const ImVec2 g = place(gx, gy, gr);
+            if (fx)
+                dl->AddLine(ImVec2(g.x, s.a.y), ImVec2(g.x, s.b.y), alpha(accent, 0.6f), px(1.2f));
+            if (fy)
+                dl->AddLine(ImVec2(s.a.x, g.y), ImVec2(s.b.x, g.y), alpha(accent, 0.6f), px(1.2f));
+            ghost(dl, g, gr, accent, 1.0f + std::abs(gx) * 0.35f, 1.0f + std::abs(gy) * 0.35f);
+            away = std::abs(gx - sx) > 0.06f || std::abs(gy - sy) > 0.06f;
+        }
         blob(dl, pos, r, color, time_ * (frozen ? 0.2 : 1.0), 1.0f + std::abs(sx) * 0.35f, 1.0f + std::abs(sy) * 0.35f);
         if (frozen)
-            badge(dl, gBold, px(12), c.x, s.b.y - px(30), px(22), "FROZEN", T::kIce, alpha(T::kIce, 0.16f), T::kIce);
+            badge(dl, gBold, px(12), c.x, s.b.y - px(30), px(22), away ? "FROZEN  \xC2\xB7  find the spot" : "FROZEN",
+                  T::kIce, alpha(T::kIce, 0.16f), T::kIce);
     });
     if (hoverButton(index == 0 ? "##stickL" : "##stickR", s.a, s.b))
         click(index == 0 ? "axes:left_x,left_y" : "axes:right_x,right_y");
