@@ -110,6 +110,8 @@ std::string describe(const TriggerBinding& b, bool flats) {
                                                        : "Transport: continue";
     case ActionType::ChannelStep:
         return std::string("Channel ") + (b.channelStep > 0 ? "+" : "") + std::to_string(b.channelStep);
+    case ActionType::LoopRecord:
+        return "Loop record";
     case ActionType::Freeze: {
         std::string s = "Freeze:";
         bool first = true;

@@ -6,6 +6,7 @@
 #include "midipad/Scales.hpp"
 
 #include <optional>
+#include <utility>
 #include <vector>
 #include <string>
 
@@ -31,6 +32,9 @@ public:
     // Humanize checkbox of notes and chords.
     void setHumanizeChannels(std::uint16_t channels) { humanizeChannels_ = channels; }
 
+    // A stick whose loop the user asked to clear (0: left, 1: right), once.
+    std::optional<int> takeClearLoopRequest() { return std::exchange(clearLoopRequest_, std::nullopt); }
+
     // A title for that control: "Cross", "D-pad: Up", "Left stick X"...
     static std::string controlTitle(const std::string& spec);
 
@@ -55,6 +59,7 @@ private:
     bool drawChordFields(midipad::TriggerBinding& b);
     bool drawNoteField(std::uint8_t& note);
     bool drawHumanizeCheckbox(midipad::TriggerBinding& b);
+    bool drawLoopForm(int stick, midipad::Mapping& m);
     bool drawAxisForm(const char* id, midipad::AxisBinding& a, float position);
     bool drawFingerForm(int finger, midipad::FingerBinding& f, const LiveState& live);
     const std::vector<midipad::KeyChord>& keyChords();
@@ -72,4 +77,5 @@ private:
     std::optional<midipad::Key> chordsFor_;
     std::vector<midipad::KeyChord> chords_;
     std::uint16_t humanizeChannels_ = 0;
+    std::optional<int> clearLoopRequest_;
 };

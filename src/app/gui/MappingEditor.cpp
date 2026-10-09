@@ -312,6 +312,11 @@ bool MappingEditor::drawControl(const std::string& spec, Mapping& m, const LiveS
                 ImGui::SeparatorText(label(*a).c_str());
             changed |= drawAxisForm(p[i].c_str(), m.axes[static_cast<std::size_t>(*a)], axisPosition(live, *a));
         }
+        // A whole stick: its loop too.
+        if (p.size() == 3) {
+            if (const auto a = parseAxis(p[1]); a && (*a == Axis::LeftX || *a == Axis::RightX))
+                changed |= drawLoopForm(*a == Axis::LeftX ? 0 : 1, m);
+        }
     } else if (p.size() == 2 && p[0] == "finger" && (p[1] == "1" || p[1] == "2")) {
         const int finger = p[1][0] - '1';
         changed |= drawFingerForm(finger, m.fingers[static_cast<std::size_t>(finger)], live);
@@ -446,6 +451,57 @@ bool MappingEditor::drawAxes(Mapping& m, const LiveState& live) {
                        "pressed at %d %% of their travel.",
                        static_cast<int>(Engine::kTriggerPress * 100));
     ImGui::PopStyleColor();
+    for (int stick = 0; stick < 2; ++stick) {
+        ImGui::PushID(stick);
+        changed |= drawLoopForm(stick, m);
+        ImGui::PopID();
+    }
+    return changed;
+}
+
+// The loop a Loop record button captures from this stick: how it plays, and
+// on which CCs, beside the stick's own.
+bool MappingEditor::drawLoopForm(int stick, Mapping& m) {
+    bool changed = false;
+    LoopBinding& loop = m.loops[static_cast<std::size_t>(stick)];
+    ImGui::SeparatorText(stick == 0 ? "Left stick loop (recorded movement)" : "Right stick loop (recorded movement)");
+    ImGui::PushID("loop");
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted("Playback");
+    const std::pair<LoopPlayback, const char*> playbacks[] = {
+        {LoopPlayback::Forward, "Forward"}, {LoopPlayback::Reverse, "Reverse"}, {LoopPlayback::BackAndForth, "Back & forth"}};
+    for (auto [playback, text] : playbacks) {
+        ImGui::SameLine();
+        if (ImGui::RadioButton(text, loop.playback == playback) && loop.playback != playback) {
+            loop.playback = playback;
+            changed = true;
+        }
+    }
+    changed |= inputU7("Loop CC for X", loop.ccX);
+    changed |= inputU7("Loop CC for Y", loop.ccY);
+    const AxisBinding& ax = m.axes[static_cast<std::size_t>(stick == 0 ? Axis::LeftX : Axis::RightX)];
+    const AxisBinding& ay = m.axes[static_cast<std::size_t>(stick == 0 ? Axis::LeftY : Axis::RightY)];
+    // The loop plays beside the sticks: a CC they send too would fight.
+    std::string clash;
+    for (int a = 0; a < kAxisCount; ++a) {
+        const AxisBinding& b = m.axes[static_cast<std::size_t>(a)];
+        if (b.enabled && (b.cc == loop.ccX || b.cc == loop.ccY))
+            clash += (clash.empty() ? "" : ", ") + label(static_cast<Axis>(a)) + " (CC " + std::to_string(b.cc) + ")";
+    }
+    if (!clash.empty()) {
+        ImGui::PushStyleColor(ImGuiCol_Text, kErrorColor);
+        ImGui::TextWrapped("Also sent by %s: both would fight. Choose other CCs.", clash.c_str());
+        ImGui::PopStyleColor();
+    } else {
+        ImGui::PushStyleColor(ImGuiCol_Text, kHintColor);
+        ImGui::TextWrapped("The loop plays beside the stick, on its own CCs (the stick sends %s and %s).",
+                           ax.enabled ? ("CC " + std::to_string(ax.cc)).c_str() : "nothing",
+                           ay.enabled ? ("CC " + std::to_string(ay.cc)).c_str() : "nothing");
+        ImGui::PopStyleColor();
+    }
+    if (ImGui::Button("Clear the loop"))
+        clearLoopRequest_ = stick;
+    ImGui::PopID();
     return changed;
 }
 
@@ -582,7 +638,8 @@ bool MappingEditor::drawSidePanel(Mapping& m) {
 
 bool MappingEditor::drawTriggerEditor(TriggerBinding& b) {
     bool changed = false;
-    static const char* kTypes[] = {"No action", "Note", "CC", "Chord", "Transport", "Channel change", "Axis freeze"};
+    static const char* kTypes[] = {"No action", "Note", "CC", "Chord", "Transport", "Channel change", "Axis freeze",
+                                   "Loop record"};
     int type = static_cast<int>(b.type);
     ImGui::SetNextItemWidth(ImGui::GetFontSize() * 14);
     if (ImGui::Combo("Action", &type, kTypes, IM_ARRAYSIZE(kTypes)) && type != static_cast<int>(b.type)) {
@@ -671,6 +728,13 @@ bool MappingEditor::drawTriggerEditor(TriggerBinding& b) {
         ImGui::PopStyleColor();
         break;
     }
+    case ActionType::LoopRecord:
+        ImGui::PushStyleColor(ImGuiCol_Text, kHintColor);
+        ImGui::TextWrapped("Hold to record the stick that moves (left or right, or both); release to play it in a "
+                           "loop, beside the stick, on the loop CCs set in the stick's panel. A press without moving "
+                           "any stick stops the loops.");
+        ImGui::PopStyleColor();
+        break;
     }
     return changed;
 }

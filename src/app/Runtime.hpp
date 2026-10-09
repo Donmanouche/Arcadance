@@ -41,6 +41,14 @@ struct LiveState {
     std::array<Finger, midipad::kFingerCount> fingers{};
     int channel = 0;
     std::uint8_t frozenAxes = 0;  // on the active channel
+    // The stick loops, for display: their curves reduced to kPoints.
+    struct Loop {
+        static constexpr int kPoints = 160;
+        midipad::LoopStatus status;
+        int points = 0;  // valid entries of x and y, spread over the whole loop
+        std::array<std::uint8_t, kPoints> x{}, y{};  // 0-255
+    };
+    std::array<Loop, 2> loops{};
     std::uint64_t sounding = 0;   // Engine::soundingSlots()
 
     bool isDown(midipad::Button b) const { return (buttons >> static_cast<int>(b)) & 1u; }
@@ -83,7 +91,8 @@ public:
     // Notes still on are turned off on the previous output first.
     void setOutput(std::shared_ptr<MidiOutput> output);
     void setChannel(int channel);
-    void panic();
+    void panic();  // also stops the loops
+    void clearLoop(int stick);
     void setReportMidi(bool on) { reportMidi_.store(on, std::memory_order_relaxed); }
     void setReportButtons(bool on) { reportButtons_.store(on, std::memory_order_relaxed); }
     void setDpadSettle(int pressMs, int releaseMs) {
@@ -99,7 +108,7 @@ public:
 private:
     class Tap;
     struct Command {
-        enum class Kind : std::uint8_t { SetChannel, Panic } kind;
+        enum class Kind : std::uint8_t { SetChannel, Panic, ClearLoop } kind;
         int channel = 0;
     };
 
@@ -134,6 +143,8 @@ private:
     std::atomic<int> channel_{0};
     std::atomic<std::uint8_t> frozen_{0};
     std::atomic<std::uint64_t> sounding_{0};
+    mutable std::mutex loopsMutex_;  // the input thread only try_locks it
+    std::array<LiveState::Loop, 2> loops_{};
     mutable std::mutex nameMutex_;
     std::string gamepadName_;
 

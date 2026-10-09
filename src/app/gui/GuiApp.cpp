@@ -518,6 +518,8 @@ void GuiApp::handleEvent(const SDL_Event& e) {
 
 void GuiApp::update() {
     finishVirMidiJob();
+    if (const auto stick = editor_.takeClearLoopRequest())
+        runtime_->clearLoop(*stick);
     while (auto r = runtime_->popReport())
         log(describe(*r));
     {

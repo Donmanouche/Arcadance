@@ -7,6 +7,7 @@
 
 #include <SDL3/SDL.h>
 
+#include <cmath>
 #include <cstdio>
 
 #ifdef __linux__
@@ -129,6 +130,8 @@ void Runtime::setChannel(int channel) { commands_.push({Command::Kind::SetChanne
 
 void Runtime::panic() { commands_.push({Command::Kind::Panic}); }
 
+void Runtime::clearLoop(int stick) { commands_.push({Command::Kind::ClearLoop, stick}); }
+
 LiveState Runtime::live() const {
     LiveState s;
     s.connected = connected_.load(std::memory_order_relaxed);
@@ -142,6 +145,10 @@ LiveState Runtime::live() const {
     s.channel = channel_.load(std::memory_order_relaxed);
     s.frozenAxes = frozen_.load(std::memory_order_relaxed);
     s.sounding = sounding_.load(std::memory_order_relaxed);
+    {
+        std::lock_guard lock(loopsMutex_);
+        s.loops = loops_;
+    }
     std::lock_guard lock(nameMutex_);
     s.gamepadName = gamepadName_;
     return s;
@@ -202,6 +209,22 @@ void Runtime::publish(const GamepadInput& gamepad, const Engine& engine) {
             frozen = static_cast<std::uint8_t>(frozen | (1u << a));
     frozen_.store(frozen, std::memory_order_relaxed);
     sounding_.store(engine.soundingSlots(), std::memory_order_relaxed);
+
+    // The loops, if the main thread is not reading them right now.
+    std::unique_lock lock(loopsMutex_, std::try_to_lock);
+    if (!lock.owns_lock())
+        return;
+    for (int s = 0; s < 2; ++s) {
+        LiveState::Loop& loop = loops_[static_cast<std::size_t>(s)];
+        loop.status = engine.loopStatus(s);
+        const int length = loop.status.length;
+        loop.points = std::min(length, LiveState::Loop::kPoints);
+        for (int i = 0; i < loop.points; ++i) {
+            const int at = loop.points > 1 ? static_cast<int>(static_cast<long long>(i) * (length - 1) / (loop.points - 1)) : 0;
+            loop.x[static_cast<std::size_t>(i)] = static_cast<std::uint8_t>(std::lround(engine.loopSample(s, 0, at) * 255.0f));
+            loop.y[static_cast<std::size_t>(i)] = static_cast<std::uint8_t>(std::lround(engine.loopSample(s, 1, at) * 255.0f));
+        }
+    }
 }
 
 void Runtime::run(std::stop_token stop, Options options, std::shared_ptr<const Preset> preset) {
@@ -256,10 +279,14 @@ void Runtime::run(std::stop_token stop, Options options, std::shared_ptr<const P
             }
         }
         while (auto command = commands_.pop()) {
-            if (command->kind == Command::Kind::SetChannel)
+            if (command->kind == Command::Kind::SetChannel) {
                 engine.setChannel(command->channel);
-            else
+            } else if (command->kind == Command::Kind::ClearLoop) {
+                engine.clearLoop(command->channel);
+            } else {
                 engine.releaseAll();
+                engine.stopLoops();
+            }
         }
 
         engine.setDpadSettle(dpadSettlePress_.load(std::memory_order_relaxed),

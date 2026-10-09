@@ -114,6 +114,7 @@ std::string compact(const TriggerBinding& b, bool flats) {
         return b.transport == TransportCommand::Start ? "Start" : b.transport == TransportCommand::Stop ? "Stop" : "Continue";
     case ActionType::ChannelStep: return std::string("Ch ") + (b.channelStep > 0 ? "+" : "") + std::to_string(b.channelStep);
     case ActionType::Freeze: return "Freeze";
+    case ActionType::LoopRecord: return "Rec";
     }
     return {};
 }
@@ -325,11 +326,6 @@ std::optional<std::string> PerformanceView::draw(const Mapping& mapping, const L
             lastPress_[static_cast<std::size_t>(b)] = time_;
     previousButtons_ = live.buttons;
 
-    // Stick history for the activity graphs.
-    const Axis kStickAxes[] = {Axis::LeftX, Axis::LeftY, Axis::RightX, Axis::RightY};
-    for (std::size_t i = 0; i < history_.size(); ++i)
-        history_[i].push(stickPosition(live, kStickAxes[i]));
-
     const ImVec2 origin = ImGui::GetCursorScreenPos();
     const ImVec2 avail = ImGui::GetContentRegionAvail();
     const float gap = px(8);
@@ -472,24 +468,112 @@ void PerformanceView::drawStick(int index, const Mapping& m, const LiveState& li
     if (button && hoverButton(index == 0 ? "##freezeL" : "##freezeR", ImVec2(x + px(12), fy), ImVec2(x + w - px(12), fy + fh)))
         click("button:" + std::string(toString(*button)));
 
-    // Activity: the last seconds of the stick, X and Y.
-    const float activityY = valuesY + px(220);
-    const float gTop = activityY + px(10), gBottom = y + h - px(10);
+    // Loop: the movement a Loop record button captured from this stick.
+    const float loopY = valuesY + px(220);
+    const float gTop = loopY + px(10), gBottom = y + h - px(10);
     if (gBottom - gTop < px(28))
         return;
-    section(dl, x, w, activityY, "ACTIVITY");
+    const LiveState::Loop& loop = live.loops[static_cast<std::size_t>(index)];
+    const LoopStatus& st = loop.status;
+    const LoopBinding& lb = m.loops[static_cast<std::size_t>(index)];
+    const bool recording = st.state == LoopStatus::State::Recording;
+    const bool playing = st.state == LoopStatus::State::Playing;
+    const float seconds = static_cast<float>(st.length) / Engine::kLoopRateHz;
+    char secondsText[16];
+    std::snprintf(secondsText, sizeof secondsText, "%.1f s", static_cast<double>(seconds));
+
+    // Header: LOOP ——— status.
+    const float size = px(11);
+    text(dl, gBold, size, x + px(12), loopY, T::kDim, "LOOP", H::Left, V::Middle);
+    std::string status;
+    ImU32 statusColor = T::kDim;
+    if (recording) {
+        status = std::string("REC  ") + secondsText;
+        statusColor = T::kRed;
+    } else if (st.waiting) {
+        status = "REC  \xC2\xB7  move a stick";
+        statusColor = T::kRed;
+    } else if (playing) {
+        status = std::string(lb.playback == LoopPlayback::Forward   ? "FWD"
+                             : lb.playback == LoopPlayback::Reverse ? "REV"
+                                                                    : "BACK & FORTH") +
+                 "  \xC2\xB7  " + secondsText;
+        statusColor = accent;
+    }
+    const float statusX = x + w - px(12) - textWidth(gBold, px(10), status);
+    if (!status.empty())
+        text(dl, gBold, px(10), statusX, loopY, statusColor, status, H::Left, V::Middle);
+    const float iconX = statusX - px(9);
+    if (recording || st.waiting) {
+        dl->AddCircleFilled(ImVec2(iconX, loopY), px(3.5f), alpha(T::kRed, recording ? 1.0f : 0.6f));
+    } else if (playing) {
+        auto arrow = [&](float cx, bool left) {
+            const float s2 = px(3.5f);
+            if (left)
+                dl->AddTriangleFilled(ImVec2(cx - s2, loopY), ImVec2(cx + s2, loopY - s2 * 1.2f), ImVec2(cx + s2, loopY + s2 * 1.2f), accent);
+            else
+                dl->AddTriangleFilled(ImVec2(cx + s2, loopY), ImVec2(cx - s2, loopY - s2 * 1.2f), ImVec2(cx - s2, loopY + s2 * 1.2f), accent);
+        };
+        if (lb.playback == LoopPlayback::BackAndForth) {
+            arrow(iconX - px(4), true);
+            arrow(iconX + px(3), false);
+        } else {
+            arrow(iconX, lb.playback == LoopPlayback::Reverse);
+        }
+    }
+    const float ruleEnd = status.empty() ? x + w - px(12) : iconX - px(10);
+    const float ruleStart = x + px(16) + textWidth(gBold, size, "LOOP");
+    if (ruleEnd > ruleStart)
+        dl->AddLine(ImVec2(ruleStart, loopY), ImVec2(ruleEnd, loopY), IM_COL32(0x40, 0x44, 0x4B, 255), px(1));
+
+    // The box, its border telling the state.
     const ImVec2 ga(x + px(12), gTop), gb(x + w - px(12), gBottom);
     dl->AddRectFilled(ga, gb, kGraph, px(4));
-    const float midY = (ga.y + gb.y) * 0.5f, amp = (gb.y - ga.y) * 0.5f - px(5);
-    for (int k = 0; k < 2; ++k) {
-        const History& hist = history_[static_cast<std::size_t>(index * 2 + k)];
-        ImVec2 pts[History::kSize];
-        for (int i = 0; i < History::kSize; ++i) {
-            const float t = static_cast<float>(i) / (History::kSize - 1);
-            pts[i] = ImVec2(gb.x - px(4) - t * (gb.x - ga.x - px(8)), midY + hist.at(i) * amp);
+    const ImU32 border = recording ? T::kRed : st.waiting ? alpha(T::kRed, 0.5f) : playing ? alpha(accent, 0.45f) : kGraph;
+    dl->AddRect(ga, gb, border, px(4), px(1.3f));
+    const ImVec2 mid((ga.x + gb.x) * 0.5f, (ga.y + gb.y) * 0.5f);
+    if (!recording && !playing) {
+        text(dl, gMedium, px(11), mid.x, mid.y, st.waiting ? T::kLabel : T::kDim,
+             st.waiting ? "waiting for movement\xE2\x80\xA6" : "hold Record and move this stick", H::Center, V::Middle);
+    } else if (loop.points > 1) {
+        // While recording the curve grows over a 4-second window, then fills the box.
+        const float lx0 = ga.x + px(6), lx1 = ga.x + px(6) + (gb.x - ga.x - px(12)) * (recording ? std::min(1.0f, seconds / 4.0f) : 1.0f);
+        const float ly0 = ga.y + px(5), ly1 = gb.y - px(5);
+        auto at = [&](int i, int axis) {
+            const float t = static_cast<float>(i) / static_cast<float>(loop.points - 1);
+            const float v = static_cast<float>((axis == 0 ? loop.x : loop.y)[static_cast<std::size_t>(i)]) / 255.0f;
+            return ImVec2(lx0 + t * (lx1 - lx0), ly0 + v * (ly1 - ly0));
+        };
+        for (int axis = 0; axis < 2; ++axis) {
+            ImVec2 pts[LiveState::Loop::kPoints];
+            for (int i = 0; i < loop.points; ++i)
+                pts[i] = at(i, axis);
+            dl->AddPolyline(pts, loop.points, axis == 0 ? accent : mix(accent, T::kText, 0.5f), px(1.8f));
         }
-        dl->AddPolyline(pts, History::kSize, k == 0 ? color : mix(color, T::kText, 0.5f), px(2));
+        if (recording) {
+            dl->AddLine(ImVec2(lx1, ga.y + px(2)), ImVec2(lx1, gb.y - px(2)), alpha(T::kRed, 0.8f), px(1.3f));
+        } else {
+            // Playhead, with a dot on each curve.
+            const float t = st.length > 1 ? static_cast<float>(st.position) / static_cast<float>(st.length - 1) : 0.0f;
+            const float hx = lx0 + t * (lx1 - lx0);
+            dl->AddLine(ImVec2(hx, ga.y + px(2)), ImVec2(hx, gb.y - px(2)), IM_COL32(255, 255, 255, 170), px(1.3f));
+            const int i = std::clamp(static_cast<int>(std::lround(t * static_cast<float>(loop.points - 1))), 0, loop.points - 1);
+            for (int axis = 0; axis < 2; ++axis) {
+                const ImVec2 p(hx, at(i, axis).y);
+                dl->AddCircleFilled(p, px(3.2f), axis == 0 ? accent : mix(accent, T::kText, 0.5f));
+                dl->AddCircle(p, px(3.2f), IM_COL32_WHITE, 0, px(1));
+            }
+            // The CCs the loop sends.
+            const std::string ccs = "CC " + std::to_string(lb.ccX) + " / " + std::to_string(lb.ccY);
+            const float bw = textWidth(gCondensed, px(10), ccs) + px(10);
+            const ImVec2 ba(ga.x + px(4), gb.y - px(15)), bb(ga.x + px(4) + bw, gb.y - px(4));
+            dl->AddRectFilled(ba, bb, alpha(accent, 0.2f), px(5));
+            dl->AddRect(ba, bb, alpha(accent, 0.8f), px(5), px(1));
+            text(dl, gCondensed, px(10), ba.x + px(5), (ba.y + bb.y) * 0.5f, T::kText, ccs, H::Left, V::Middle);
+        }
     }
+    if (hoverButton(index == 0 ? "##loopL" : "##loopR", ImVec2(ga.x, loopY - px(6)), gb))
+        click(index == 0 ? "axes:left_x,left_y" : "axes:right_x,right_y");
 }
 
 void PerformanceView::drawTriggers(const Mapping& m, const LiveState& live, float x, float y, float w, float h) {

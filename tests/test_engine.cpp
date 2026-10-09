@@ -555,3 +555,112 @@ TEST_CASE_FIXTURE(Fixture, "a note played again ends its previous instance first
     engine.tick(300 * kMs);
     CHECK(sink.take().empty());
 }
+
+namespace {
+
+struct LoopFixture : Fixture {
+    std::uint64_t t = 0;
+
+    LoopFixture() {
+        Preset p;
+        button(p, Button::South).type = ActionType::LoopRecord;
+        p.base.axes[static_cast<std::size_t>(Axis::LeftX)] = axisCc(40);
+        p.base.axes[static_cast<std::size_t>(Axis::RightX)] = axisCc(42);
+        load(p);
+    }
+    void setPlayback(LoopPlayback playback) {
+        Preset p = engine.preset();
+        p.base.loops[0].playback = playback;
+        load(p);
+    }
+    void step() {
+        t += kMs * 5;
+        engine.tick(t);
+    }
+    // Records the left stick going to the right, back to the center, then left.
+    void recordLeft(Axis axis = Axis::LeftX) {
+        engine.tick(t);
+        engine.buttonChanged(Button::South, true);
+        for (float v : {1.0f, 0.0f, -1.0f}) {
+            engine.axisMoved(axis, v);
+            step();
+        }
+        engine.buttonChanged(Button::South, false);
+        sink.take();
+    }
+    // The values sent on `cc` over the next `steps` loop steps.
+    std::vector<int> played(int controller, int steps) {
+        std::vector<int> values;
+        for (int i = 0; i < steps; ++i) {
+            step();
+            for (const auto& m : sink.take())
+                if ((m.bytes[0] & 0xF0) == 0xB0 && m.bytes[1] == controller)
+                    values.push_back(m.bytes[2]);
+        }
+        return values;
+    }
+};
+
+}  // namespace
+
+TEST_CASE_FIXTURE(LoopFixture, "Record captures the stick that moves and loops it on the loop CCs") {
+    recordLeft();
+    CHECK(engine.loopStatus(0).state == LoopStatus::State::Playing);
+    CHECK(engine.loopStatus(0).length == 3);
+    CHECK(engine.loopStatus(1).state == LoopStatus::State::Empty);  // the right stick did not move
+    const auto values = played(70, 6);
+    REQUIRE(values.size() >= 6);
+    CHECK(std::vector(values.begin(), values.begin() + 6) == std::vector<int>{127, 64, 0, 127, 64, 0});
+}
+
+TEST_CASE_FIXTURE(LoopFixture, "the stick keeps sending its own CC while its loop plays") {
+    recordLeft();
+    engine.axisMoved(Axis::LeftX, 0.5f);
+    bool stickSent = false;
+    for (const auto& m : sink.take())
+        stickSent |= m.bytes[1] == 40;
+    CHECK(stickSent);
+    CHECK_FALSE(played(70, 3).empty());
+}
+
+TEST_CASE_FIXTURE(LoopFixture, "loops play in reverse or back and forth") {
+    setPlayback(LoopPlayback::Reverse);
+    recordLeft();
+    auto values = played(70, 6);
+    REQUIRE(values.size() >= 6);
+    CHECK(std::vector(values.begin(), values.begin() + 6) == std::vector<int>{0, 64, 127, 0, 64, 127});
+
+    setPlayback(LoopPlayback::BackAndForth);
+    recordLeft();
+    values = played(70, 7);
+    REQUIRE(values.size() >= 7);
+    CHECK(std::vector(values.begin(), values.begin() + 7) == std::vector<int>{127, 64, 0, 64, 127, 64, 0});
+}
+
+TEST_CASE_FIXTURE(LoopFixture, "recording the other stick keeps the first loop") {
+    recordLeft();
+    recordLeft(Axis::RightX);
+    CHECK(engine.loopStatus(0).state == LoopStatus::State::Playing);
+    CHECK(engine.loopStatus(1).state == LoopStatus::State::Playing);
+    CHECK_FALSE(played(72, 3).empty());
+}
+
+TEST_CASE_FIXTURE(LoopFixture, "pressing Record without moving a stick stops the loops") {
+    recordLeft();
+    engine.buttonChanged(Button::South, true);
+    step();
+    engine.buttonChanged(Button::South, false);
+    CHECK(engine.loopStatus(0).state == LoopStatus::State::Empty);
+    sink.take();
+    CHECK(played(70, 4).empty());
+}
+
+TEST_CASE_FIXTURE(LoopFixture, "a small wobble of a resting stick is not a movement") {
+    engine.tick(t);
+    engine.buttonChanged(Button::South, true);
+    engine.axisMoved(Axis::LeftX, 0.08f);  // 4 % of the travel
+    step();
+    CHECK(engine.loopStatus(0).waiting);
+    CHECK(engine.loopStatus(0).state == LoopStatus::State::Empty);
+    engine.buttonChanged(Button::South, false);
+}

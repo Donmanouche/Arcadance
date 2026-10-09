@@ -15,7 +15,7 @@ enum class Mode : std::uint8_t {
     Toggle,     // press to latch, press again to release
 };
 
-enum class ActionType : std::uint8_t { None, Note, ControlChange, Chord, Transport, ChannelStep, Freeze };
+enum class ActionType : std::uint8_t { None, Note, ControlChange, Chord, Transport, ChannelStep, Freeze, LoopRecord };
 
 enum class TransportCommand : std::uint8_t { Start, Stop, Continue };
 
@@ -53,6 +53,20 @@ struct AxisBinding {
     bool invert = false;
 };
 
+// A stick movement recorded by a LoopRecord button and played back in a loop,
+// beside the stick, on CCs of its own.
+enum class LoopPlayback : std::uint8_t { Forward, Reverse, BackAndForth };
+
+struct LoopBinding {
+    LoopPlayback playback = LoopPlayback::Forward;
+    std::uint8_t ccX = 70, ccY = 71;
+    friend bool operator==(const LoopBinding&, const LoopBinding&) = default;
+};
+
+// Loops of the left and right sticks, by default on CC 70/71 and 72/73.
+inline constexpr std::array<LoopBinding, 2> kDefaultLoops{{{LoopPlayback::Forward, 70, 71},
+                                                           {LoopPlayback::Forward, 72, 73}}};
+
 enum class TouchMode : std::uint8_t { Off, Axis, Zones };
 
 struct FingerBinding {
@@ -66,6 +80,7 @@ struct Mapping {
     std::array<TriggerBinding, kHatDirCount> dpad;
     std::array<AxisBinding, kAxisCount> axes;
     std::array<FingerBinding, kFingerCount> fingers;
+    std::array<LoopBinding, 2> loops = kDefaultLoops;  // left stick, right stick
 };
 
 struct Preset {

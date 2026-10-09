@@ -43,6 +43,10 @@ std::uint8_t transportStatus(TransportCommand c) {
 }  // namespace
 
 Engine::Engine(MidiSink& sink) : sink_(sink) {
+    for (auto& loop : loops_) {
+        loop.x.assign(kMaxLoopSamples, 0.5f);
+        loop.y.assign(kMaxLoopSamples, 0.5f);
+    }
     for (auto& channel : lastCc_)
         channel.fill(-1);
     setPreset(nullptr);
@@ -97,6 +101,7 @@ void Engine::tick(std::uint64_t nowNs) {
         pendingHatDir_.reset();
         setHatDir(dir);
     }
+    runLoops();
     // Humanized notes now due, oldest first.
     while (delayedCount_ > 0) {
         std::size_t next = delayedCount_;
@@ -163,6 +168,8 @@ void Engine::axisMoved(Axis axis, float value) {
     if (axis >= Axis::Count || std::isnan(value))
         return;
     const float position = std::clamp(isTrigger(axis) ? value : (value + 1.0f) * 0.5f, 0.0f, 1.0f);
+    if (!isTrigger(axis))
+        stickPosition_[static_cast<std::size_t>(axis)] = position;
     if (isTrigger(axis))
         updateDigitalTrigger(axis, position);
 
@@ -238,6 +245,10 @@ std::uint64_t Engine::soundingSlots() const {
 }
 
 void Engine::reset() {
+    if (recordHolders_.any()) {  // the release will never come
+        recordHolders_.reset();
+        endRecordHold();
+    }
     releaseAll();
     pressed_.reset();
     dpadBits_ = 0;
@@ -276,6 +287,11 @@ void Engine::press(int slot) {
         return;
     case ActionType::Freeze:
         toggleFreeze(binding.freezeAxes);
+        return;
+    case ActionType::LoopRecord:
+        if (recordHolders_.none())
+            beginRecordHold();
+        recordHolders_.set(static_cast<std::size_t>(slot));
         return;
     case ActionType::Note:
     case ActionType::Chord:
@@ -316,6 +332,11 @@ void Engine::release(int slot) {
     if (!pressed_.test(static_cast<std::size_t>(slot)))
         return;
     pressed_.reset(static_cast<std::size_t>(slot));
+    if (recordHolders_.test(static_cast<std::size_t>(slot))) {
+        recordHolders_.reset(static_cast<std::size_t>(slot));
+        if (recordHolders_.none())
+            endRecordHold();
+    }
     Sounding& s = held_[static_cast<std::size_t>(slot)];
     if (s.active())
         stop(s);
@@ -392,6 +413,138 @@ void Engine::sendAxis(const AxisBinding& binding, float position) {
     if (lastCc_[static_cast<std::size_t>(channel_)][binding.cc & 0x7F] == value)
         return;
     sendCc(channel_, binding.cc, value);
+}
+
+// --- Loops --------------------------------------------------------------------
+
+void Engine::beginRecordHold() {
+    recordedThisHold_ = false;
+    for (std::size_t s = 0; s < loops_.size(); ++s) {
+        Loop& loop = loops_[s];
+        loop.waiting = true;
+        loop.startX = stickPosition_[s * 2];
+        loop.startY = stickPosition_[s * 2 + 1];
+    }
+}
+
+void Engine::endRecordHold() {
+    for (std::size_t s = 0; s < loops_.size(); ++s) {
+        Loop& loop = loops_[s];
+        loop.waiting = false;
+        if (loop.state != LoopStatus::State::Recording)
+            continue;
+        if (loop.length < 2) {
+            loop.state = LoopStatus::State::Empty;
+            continue;
+        }
+        loop.state = LoopStatus::State::Playing;
+        const LoopPlayback playback = preset_->forChannel(loop.channel).loops[s].playback;
+        loop.position = playback == LoopPlayback::Reverse ? loop.length - 1 : 0;
+        loop.direction = playback == LoopPlayback::Reverse ? -1 : 1;
+        loop.nextAt = now_;
+        loop.sentX = loop.sentY = -1;
+    }
+    if (!recordedThisHold_)
+        stopLoops();  // Record pressed without moving a stick
+}
+
+void Engine::runLoops() {
+    constexpr std::uint64_t kStep = 1'000'000'000ull / kLoopRateHz;
+    for (std::size_t s = 0; s < loops_.size(); ++s) {
+        Loop& loop = loops_[s];
+        const float x = stickPosition_[s * 2], y = stickPosition_[s * 2 + 1];
+        if (loop.waiting && (std::abs(x - loop.startX) > kLoopMoveThreshold || std::abs(y - loop.startY) > kLoopMoveThreshold)) {
+            // This stick moves: record it, replacing its loop.
+            loop.waiting = false;
+            loop.state = LoopStatus::State::Recording;
+            loop.length = 0;
+            loop.channel = static_cast<std::uint8_t>(channel_);
+            loop.nextAt = now_;
+            recordedThisHold_ = true;
+        }
+        if (loop.state == LoopStatus::State::Empty)
+            continue;
+        if (now_ > loop.nextAt + 100 * kStep)
+            loop.nextAt = now_;  // the thread stalled: do not catch up in a burst
+        while (now_ >= loop.nextAt) {
+            loop.nextAt += kStep;
+            if (loop.state == LoopStatus::State::Recording) {
+                if (loop.length < kMaxLoopSamples) {
+                    loop.x[static_cast<std::size_t>(loop.length)] = x;
+                    loop.y[static_cast<std::size_t>(loop.length)] = y;
+                    ++loop.length;
+                }
+                continue;
+            }
+            sendLoopSample(static_cast<int>(s));
+            // Then step, as the playback asks now (it can change while playing).
+            const LoopPlayback playback = preset_->forChannel(loop.channel).loops[s].playback;
+            if (playback == LoopPlayback::Forward) {
+                loop.direction = 1;
+                loop.position = (loop.position + 1) % loop.length;
+            } else if (playback == LoopPlayback::Reverse) {
+                loop.direction = -1;
+                loop.position = (loop.position - 1 + loop.length) % loop.length;
+            } else {
+                loop.position += loop.direction;
+                if (loop.position >= loop.length) {
+                    loop.direction = -1;
+                    loop.position = std::max(0, loop.length - 2);
+                } else if (loop.position < 0) {
+                    loop.direction = 1;
+                    loop.position = std::min(1, loop.length - 1);
+                }
+            }
+        }
+    }
+}
+
+// Sends the loop's current sample on its CCs, scaled like the stick's axes.
+void Engine::sendLoopSample(int stick) {
+    Loop& loop = loops_[static_cast<std::size_t>(stick)];
+    const Mapping& m = preset_->forChannel(loop.channel);
+    const LoopBinding& binding = m.loops[static_cast<std::size_t>(stick)];
+    auto value = [&](Axis axis, float position) {
+        const AxisBinding& a = m.axes[static_cast<std::size_t>(axis)];
+        if (a.invert)
+            position = 1.0f - position;
+        const int lo = a.enabled ? a.min : 0, hi = a.enabled ? a.max : 127;
+        return lo + static_cast<int>(std::lround(position * static_cast<float>(hi - lo)));
+    };
+    const auto i = static_cast<std::size_t>(loop.position);
+    const int vx = value(stick == 0 ? Axis::LeftX : Axis::RightX, loop.x[i]);
+    const int vy = value(stick == 0 ? Axis::LeftY : Axis::RightY, loop.y[i]);
+    if (vx != loop.sentX) {
+        sendCc(loop.channel, binding.ccX, vx);
+        loop.sentX = vx;
+    }
+    if (vy != loop.sentY) {
+        sendCc(loop.channel, binding.ccY, vy);
+        loop.sentY = vy;
+    }
+}
+
+LoopStatus Engine::loopStatus(int stick) const {
+    const Loop& loop = loops_[static_cast<std::size_t>(std::clamp(stick, 0, 1))];
+    return {loop.state, loop.waiting, loop.length, loop.position, loop.channel};
+}
+
+float Engine::loopSample(int stick, int axis, int index) const {
+    const Loop& loop = loops_[static_cast<std::size_t>(std::clamp(stick, 0, 1))];
+    const auto i = static_cast<std::size_t>(std::clamp(index, 0, kMaxLoopSamples - 1));
+    return axis == 0 ? loop.x[i] : loop.y[i];
+}
+
+void Engine::clearLoop(int stick) {
+    Loop& loop = loops_[static_cast<std::size_t>(std::clamp(stick, 0, 1))];
+    loop.state = LoopStatus::State::Empty;
+    loop.length = 0;
+}
+
+void Engine::stopLoops() {
+    for (std::size_t s = 0; s < loops_.size(); ++s)
+        if (loops_[s].state == LoopStatus::State::Playing)
+            clearLoop(static_cast<int>(s));
 }
 
 void Engine::toggleFreeze(std::uint8_t axes) {

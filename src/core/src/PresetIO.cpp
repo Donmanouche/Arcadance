@@ -142,6 +142,8 @@ TriggerBinding triggerFromJson(const Json& j, const std::string& where) {
         if (!step.is_number_integer() || step.get<int>() == 0 || std::abs(step.get<int>()) > 15)
             fail(where + ".step", "expected a non-zero integer from -15 to 15");
         b.channelStep = step.get<std::int8_t>();
+    } else if (type == "loop_record") {
+        b.type = ActionType::LoopRecord;
     } else if (type == "freeze") {
         b.type = ActionType::Freeze;
         if (!j.contains("axes"))
@@ -202,6 +204,9 @@ Json triggerToJson(const TriggerBinding& b) {
     case ActionType::ChannelStep:
         j["type"] = "channel";
         j["step"] = b.channelStep;
+        return j;
+    case ActionType::LoopRecord:
+        j["type"] = "loop_record";
         return j;
     case ActionType::Freeze: {
         j["type"] = "freeze";
@@ -316,6 +321,27 @@ Mapping mappingFromJson(const Json& j, const std::string& where) {
             }
         }
     }
+    if (j.contains("loops")) {
+        for (const auto& [key, value] : requireObject(j["loops"], where + ".loops").items()) {
+            const std::string at = where + ".loops." + key;
+            const int stick = key == "left" ? 0 : key == "right" ? 1 : -1;
+            if (stick < 0)
+                fail(at, "expected \"left\" or \"right\"");
+            requireObject(value, at);
+            LoopBinding& loop = m.loops[static_cast<std::size_t>(stick)];
+            const std::string playback = readString(value, "playback", "forward", at);
+            if (playback == "forward")
+                loop.playback = LoopPlayback::Forward;
+            else if (playback == "reverse")
+                loop.playback = LoopPlayback::Reverse;
+            else if (playback == "back_and_forth")
+                loop.playback = LoopPlayback::BackAndForth;
+            else
+                fail(at + ".playback", "expected \"forward\", \"reverse\" or \"back_and_forth\"");
+            loop.ccX = readU7(value, "cc_x", loop.ccX, at);
+            loop.ccY = readU7(value, "cc_y", loop.ccY, at);
+        }
+    }
     return m;
 }
 
@@ -367,6 +393,22 @@ Json mappingToJson(const Mapping& m) {
     }
     if (!touchpad.empty())
         j["touchpad"] = touchpad;
+
+    Json loops = Json::object();
+    for (std::size_t s = 0; s < m.loops.size(); ++s) {
+        const LoopBinding& loop = m.loops[s];
+        if (loop == kDefaultLoops[s])
+            continue;
+        Json lj;
+        lj["playback"] = loop.playback == LoopPlayback::Forward   ? "forward"
+                         : loop.playback == LoopPlayback::Reverse ? "reverse"
+                                                                  : "back_and_forth";
+        lj["cc_x"] = loop.ccX;
+        lj["cc_y"] = loop.ccY;
+        loops[s == 0 ? "left" : "right"] = lj;
+    }
+    if (!loops.empty())
+        j["loops"] = loops;
     return j;
 }
 

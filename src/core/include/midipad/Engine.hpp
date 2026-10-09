@@ -8,6 +8,7 @@
 #include <bitset>
 #include <memory>
 #include <optional>
+#include <vector>
 
 namespace midipad {
 
@@ -23,6 +24,15 @@ public:
     virtual void channelChanged(int /*channel*/) {}
     // One bit per Axis that is now frozen on `channel`.
     virtual void freezeChanged(int /*channel*/, std::uint8_t /*frozenAxes*/) {}
+};
+
+// What a stick's loop is doing, for display.
+struct LoopStatus {
+    enum class State : std::uint8_t { Empty, Recording, Playing } state = State::Empty;
+    bool waiting = false;  // Record held, this stick has not moved yet
+    int length = 0;        // samples, at Engine::kLoopRateHz
+    int position = 0;      // sample playing now
+    int channel = 0;
 };
 
 // Turns controller events into MIDI according to the active preset.
@@ -63,6 +73,17 @@ public:
     void tick(std::uint64_t nowNs);
 
     void setHumanize(const Humanize& humanize) { humanize_ = humanize; }
+
+    // Loops: a LoopRecord binding held records each stick that moves (X and Y);
+    // on release each recording plays in a loop on its own CCs (Mapping::loops),
+    // beside the stick. A hold where no stick moves stops the loops.
+    static constexpr int kLoopRateHz = 200;
+    static constexpr int kMaxLoopSamples = 60 * kLoopRateHz;
+    static constexpr float kLoopMoveThreshold = 0.06f;  // of the [0, 1] travel
+    LoopStatus loopStatus(int stick) const;
+    float loopSample(int stick, int axis, int index) const;  // [0, 1]; axis 0: X, 1: Y
+    void clearLoop(int stick);
+    void stopLoops();
     void seedRandom(std::uint64_t seed) { random_ = seed ? seed : 0x9E3779B97F4A7C15ull; }
 
     void buttonChanged(Button button, bool pressed);
@@ -117,6 +138,10 @@ private:
     void toggleFreeze(std::uint8_t axes);
     void updateDigitalTrigger(Axis axis, float position);
     void setHatDir(std::optional<HatDir> dir);
+    void beginRecordHold();
+    void endRecordHold();
+    void runLoops();
+    void sendLoopSample(int stick);
     // Sends `message` at `at` (now if it is not later); in time order.
     void sendAt(std::uint64_t at, const MidiMessage& message);
     void sendNow(const MidiMessage& message);
@@ -152,6 +177,21 @@ private:
     std::size_t delayedCount_ = 0;
     std::uint64_t delayedOrder_ = 0;
     bool immediate_ = false;  // releaseAll(): no delays
+
+    struct Loop {
+        LoopStatus::State state = LoopStatus::State::Empty;
+        bool waiting = false;
+        float startX = 0.5f, startY = 0.5f;  // where the stick was when Record went down
+        std::vector<float> x, y;             // kMaxLoopSamples each, allocated once
+        int length = 0, position = 0, direction = 1;
+        std::uint8_t channel = 0;
+        std::uint64_t nextAt = 0;
+        int sentX = -1, sentY = -1;
+    };
+    std::array<Loop, 2> loops_;
+    std::array<float, 4> stickPosition_{0.5f, 0.5f, 0.5f, 0.5f};  // [0, 1], LeftX..RightY
+    std::bitset<kSlotCount> recordHolders_;
+    bool recordedThisHold_ = false;
     std::array<std::optional<Zone>, kFingerCount> fingerZone_{};
     std::array<bool, 2> triggerDown_{};
 };
