@@ -8,8 +8,8 @@ Convertisseur manette (DualSense) → MIDI, écrit en C++20.
 |---|---|---|
 | 1 | Moteur (logique pure), accords, format de preset, tests | fait |
 | 2 | Thread temps réel SDL3 (manette + touchpad) et RtMidi, exécutable sans interface | fait, validé sur DualSense |
-| 3 | Éditeur de mapping et gestion des presets (Dear ImGui) | fait, à tester |
-| 4 | Écran performance animé | à faire |
+| 3 | Interface (Dear ImGui) : vue animée, mapping, presets, options | fait |
+| 4 | Enregistrement de boucles, humanisation | fait |
 | 5 | Paquets Windows et macOS | à faire |
 
 ## Compiler
@@ -24,36 +24,49 @@ cmake --build --preset release
 ctest --preset release
 ```
 
-## L'éditeur
+## La fenêtre
 
 ```bash
 build/release/src/app/midipad
 ```
 
-Ouvre la fenêtre MidiPad (interface en anglais), qui joue en même temps
-qu'elle édite :
+Ouvre la fenêtre MidiPad (interface en anglais), une vue animée pensée pour la
+scène, qui joue en même temps qu'elle édite. **F11** passe en plein écran,
+**Ctrl+S** enregistre le preset, **Ctrl+Q** quitte.
 
-- **Preset** : ouvrir, créer, enregistrer (Ctrl+S), enregistrer sous, annuler
-  les modifications, mettre à la corbeille (bouton « Trash » : le fichier est
-  déplacé dans le sous-dossier `trash`, jamais supprimé), changer de dossier de
-  presets. Un preset tient dans un seul fichier JSON, mappings par canal compris.
-- **Sortie MIDI** : port virtuel « MidiPad » ou un port existant ; canal actif ;
-  « Panic » pour les notes collées.
-- **Key** (tonalité, facultative) : une fondamentale et une gamme (majeur, mineur
-  naturel, harmonique, mélodique, modes, pentatoniques, blues, par tons).
-  L'éditeur ne propose alors que les notes de la gamme et, pour les accords,
-  un menu « Chord of the key » listant par degré tous les accords dont les
-  notes appartiennent à la gamme ; la saisie libre reste possible, et une note
-  ou un accord hors gamme est signalé. « None » : tout est proposé.
-- **Mapping** : la base ou le mapping spécifique d'un canal. « Suivre le canal
-  actif » affiche ce qui joue sur le canal en cours, y compris quand il change
-  depuis la manette. Quatre onglets : boutons, croix directionnelle, sticks et
-  gâchettes, touchpad. Les contrôles touchés sur la manette s'allument en vert.
-- **Journal** : connexions, moniteur MIDI, boutons appuyés.
+- un module par partie de la manette : sticks gauche et droit, gâchettes,
+  croix directionnelle, touchpad ; chacun a un écran animé qui suit la
+  manette et des potentiomètres affichant les CC envoyés ;
+- un bandeau de pads pour les boutons (✕ ○ □ △ aux couleurs PlayStation) :
+  éclair à chaque appui, éclairage tant que la note ou l'accord sonne (les
+  bascules verrouillées restent allumées) ;
+- en haut : menu ☰, Panic, canal, tonalité, preset ;
+- en bas : la sortie MIDI à gauche, l'état de la manette à droite ;
+- un clic sur un contrôle (pad, direction, zone, potentiomètre d'axe, écran,
+  panneau LOOP) ouvre ses réglages dans un panneau semi-transparent au-dessus
+  de la vue. Il modifie le mapping du canal actif s'il en a un, sinon le
+  mapping de base.
+
+**Presets** : le menu déroulant PRESET (avec précédent / suivant) ouvre un
+preset ; il propose aussi New…, Save as… et Move to trash… (le fichier est
+déplacé dans le sous-dossier `trash`, jamais supprimé). SAVE apparaît quand le
+preset est modifié. Un preset tient dans un seul fichier JSON, mappings par
+canal compris.
+
+**Key** (tonalité, facultative) : une fondamentale et une gamme (majeur, mineur
+naturel, harmonique, mélodique, modes, pentatoniques, blues, par tons). Le
+panneau de mapping ne propose alors que les notes de la gamme et, pour les
+accords, un menu « Chord of the key » listant par degré tous les accords dont
+les notes appartiennent à la gamme ; la saisie libre reste possible, et une
+note ou un accord hors gamme est signalé. « None » : tout est proposé.
+
+**Options** (menu ☰) : interface MIDI (avec le nom sous lequel chaque port est
+vu, création des ports VirMIDI), délai de la croix directionnelle,
+humanisation et dossier des presets.
 
 Chaque modification s'entend tout de suite ; elle n'est écrite sur le disque
 qu'à l'enregistrement. Les réglages (dossier des presets, dernier preset,
-sortie) sont gardés dans `~/.local/share/MidiPad/MidiPad/settings.json`.
+sortie, options) sont gardés dans `~/.local/share/MidiPad/MidiPad/settings.json`.
 Le dossier des presets par défaut est `~/.local/share/MidiPad/MidiPad/presets`
 (`midipad chemin/vers/un/preset.json` ouvre plutôt le dossier de ce preset).
 
@@ -93,30 +106,6 @@ d'une diagonale de la croix : une nouvelle direction n'est donc jouée qu'après
 être restée stable un court instant (15 ms par défaut, à l'appui comme au
 relâchement, réglable dans Options), pour que la direction traversée entre
 les deux ne sonne pas. Relâcher toute la croix coupe la note immédiatement.
-
-### La vue animée
-
-**F2** (ou le bouton « Animated view » / l'entrée « Mapping editor » du menu ☰)
-bascule entre l'éditeur et une vue animée pensée pour la scène ; **F11** passe
-en plein écran, **Ctrl+Q** quitte. La vue
-choisie est retrouvée au démarrage (`--view performance|editor` pour forcer).
-
-- un module par partie de la manette : sticks gauche et droit, gâchettes,
-  croix directionnelle, touchpad ; chacun a un écran animé qui suit la
-  manette et des potentiomètres affichant les CC envoyés ;
-- un bandeau de pads pour les boutons (✕ ○ □ △ aux couleurs PlayStation) :
-  éclair à chaque appui, éclairage tant que la note ou l'accord sonne (les
-  bascules verrouillées restent allumées) ;
-- en haut : menu ☰, Panic, canal, tonalité (fondamentale et gamme dans un
-  même menu), preset (menu déroulant avec précédent / suivant, SAVE quand il
-  est modifié) ;
-- en bas : la sortie MIDI à gauche, l'état de la manette à droite ;
-- le menu ☰ ouvre les **Options** dans un panneau semi-transparent : interface
-  MIDI (avec le nom sous lequel chaque port est vu, création des ports VirMIDI), délai de la croix
-  directionnelle, humanisation et dossier des presets ;
-- un clic sur un contrôle (pad, direction, zone, potentiomètre d'axe, écran)
-  ouvre ses réglages dans un panneau semi-transparent au-dessus de la vue,
-  sans la quitter ; « Open in editor » ouvre l'éditeur complet dessus.
 
 ## Jouer sans fenêtre
 
@@ -162,7 +151,8 @@ l'interface (clavier et souris uniquement).
 ```
 src/app/       midipad : lecture SDL3 (GamepadInput), sortie RtMidi (MidiOutput),
                thread temps réel (Runtime), mode console (Headless)
-  gui/         fenêtre ImGui (GuiApp) et éditeur de mapping (MappingEditor)
+  gui/         fenêtre ImGui (GuiApp), vue animée (PerformanceView) et
+               panneau de mapping (MappingEditor)
 src/core/      bibliothèque sans dépendance système (testée)
   Engine       événements manette → messages MIDI ; aucune allocation à l'exécution
   Preset*      modèle de mapping, lecture/écriture JSON
@@ -179,7 +169,7 @@ Les contrôles portent les noms de l'API gamepad de SDL3 (`south`, `left_x`,
 ## Comportements à connaître
 
 - **Accords** : `M` majuscule signifie majeur (`CM7` = Cmaj7, et non Cm7) ;
-  `C6/9` est reconnu. L'octave de la fondamentale se règle dans l'éditeur
+  `C6/9` est reconnu. L'octave de la fondamentale se règle dans le panneau de mapping
   (champ `octave` du preset, 4 par défaut : C4 = note MIDI 60) ; un accord
   dont une note sortirait de la plage MIDI est refusé. « Bass root » double la
   fondamentale une ou deux octaves plus bas pour asseoir la basse (champ

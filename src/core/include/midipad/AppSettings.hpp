@@ -23,16 +23,12 @@ struct AppSettings {
     // Narrows the notes and chords offered by the editor; none: every note.
     std::optional<Key> key;
 
-    bool performanceView = false;  // the animated view rather than the editor
-
     // Engine::setDpadSettle, in milliseconds.
     int dpadSettlePressMs = 15;
     int dpadSettleReleaseMs = 15;
 
     Humanize humanize;  // off on every channel by default
 
-    bool monitorMidi = false;
-    bool showButtons = false;
 };
 
 // Missing or unreadable values keep the ones of `defaults`.

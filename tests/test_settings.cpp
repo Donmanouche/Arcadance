@@ -22,9 +22,7 @@ TEST_CASE("settings round-trip and fall back to defaults") {
     s.output = AppSettings::Output::ExistingPort;
     s.existingPortName = "OXI ONE";
     s.outputChosen = true;
-    s.monitorMidi = true;
     s.key = Key{9, *findScale("harmonic_minor")};
-    s.performanceView = true;
     s.humanize.channels = 0b1000'0000'0000'0101;  // channels 1, 3 and 16
     s.humanize.velocityMinPercent = 60;
     s.humanize.delayMaxMs = 40;
@@ -36,8 +34,6 @@ TEST_CASE("settings round-trip and fall back to defaults") {
     CHECK(loaded.output == AppSettings::Output::ExistingPort);
     CHECK(loaded.existingPortName == "OXI ONE");
     CHECK(loaded.outputChosen);
-    CHECK(loaded.monitorMidi);
-    CHECK(loaded.performanceView);
     CHECK(loaded.humanize == s.humanize);
     REQUIRE(loaded.key);
     CHECK(loaded.key->root == 9);

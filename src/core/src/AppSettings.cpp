@@ -66,9 +66,6 @@ AppSettings loadSettings(const std::filesystem::path& file, AppSettings s) {
         s.key = Key{keyRoot, *scale};
     else
         s.key.reset();
-    std::string view = s.performanceView ? "performance" : "editor";
-    read(j, "view", view);
-    s.performanceView = view == "performance";
     read(j, "dpad_settle_press_ms", s.dpadSettlePressMs);
     read(j, "dpad_settle_release_ms", s.dpadSettleReleaseMs);
     std::vector<int> humanizeChannels;
@@ -87,8 +84,6 @@ AppSettings loadSettings(const std::filesystem::path& file, AppSettings s) {
     h.velocityMaxPercent = std::clamp(h.velocityMaxPercent, h.velocityMinPercent, 100);
     h.delayMinMs = std::clamp(h.delayMinMs, 0, Humanize::kMaxDelayMs);
     h.delayMaxMs = std::clamp(h.delayMaxMs, h.delayMinMs, Humanize::kMaxDelayMs);
-    read(j, "monitor_midi", s.monitorMidi);
-    read(j, "show_buttons", s.showButtons);
     if (s.virtualPortName.empty())
         s.virtualPortName = "MidiPad";
     return s;
@@ -104,7 +99,6 @@ void saveSettings(const AppSettings& s, const std::filesystem::path& file) {
     j["output_chosen"] = s.outputChosen;
     j["key_root"] = s.key ? s.key->root : -1;
     j["key_scale"] = s.key ? std::string(s.key->type().id) : std::string();
-    j["view"] = s.performanceView ? "performance" : "editor";
     j["dpad_settle_press_ms"] = s.dpadSettlePressMs;
     j["dpad_settle_release_ms"] = s.dpadSettleReleaseMs;
     Json channels = Json::array();
@@ -116,8 +110,6 @@ void saveSettings(const AppSettings& s, const std::filesystem::path& file) {
     j["humanize_velocity_max"] = s.humanize.velocityMaxPercent;
     j["humanize_delay_min_ms"] = s.humanize.delayMinMs;
     j["humanize_delay_max_ms"] = s.humanize.delayMaxMs;
-    j["monitor_midi"] = s.monitorMidi;
-    j["show_buttons"] = s.showButtons;
 
     std::filesystem::create_directories(file.parent_path());
     std::ofstream out(file);

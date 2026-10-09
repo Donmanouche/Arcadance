@@ -29,7 +29,6 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
-#include <deque>
 #include <filesystem>
 #include <functional>
 #include <future>
@@ -52,10 +51,8 @@ using namespace midipad;
 namespace {
 
 constexpr float kFontSize = 16.0f;
-constexpr std::size_t kLogLines = 500;
 constexpr ImVec4 kHintColor{0.65f, 0.65f, 0.7f, 1.0f};
 constexpr ImVec4 kErrorColor{1.0f, 0.45f, 0.4f, 1.0f};
-constexpr ImVec4 kOkColor{0.45f, 0.85f, 0.55f, 1.0f};
 
 fs::path prefPath() {
     char* path = SDL_GetPrefPath("MidiPad", "MidiPad");
@@ -73,10 +70,7 @@ std::optional<fs::file_time_type> modificationTime(const fs::path& file) {
 struct GuiOptions {
     std::optional<fs::path> preset;
     std::optional<fs::path> screenshot;  // render a few frames, save a BMP, quit
-    std::optional<MappingEditor::Tab> tab;
-    std::optional<std::string> select;
     std::vector<std::pair<float, float>> clicks;  // simulated mouse clicks, for screenshots
-    std::optional<bool> performanceView;           // --view
     bool demo = false;                             // fake controller state, for screenshots
     bool help = false;
     std::string error;
@@ -90,34 +84,14 @@ GuiOptions parseGuiArgs(const std::vector<std::string>& args) {
             o.help = true;
         } else if (a == "--screenshot" && i + 1 < args.size()) {
             o.screenshot = args[++i];
-        } else if (a == "--tab" && i + 1 < args.size()) {
-            const std::string t = args[++i];
-            if (t == "buttons")
-                o.tab = MappingEditor::Tab::Buttons;
-            else if (t == "dpad")
-                o.tab = MappingEditor::Tab::Dpad;
-            else if (t == "axes")
-                o.tab = MappingEditor::Tab::Axes;
-            else if (t == "touchpad")
-                o.tab = MappingEditor::Tab::Touchpad;
-            else
-                o.error = "--tab expects buttons, dpad, axes or touchpad";
         } else if (a == "--click" && i + 1 < args.size()) {
             float x = 0, y = 0;
             if (std::sscanf(args[++i].c_str(), "%f,%f", &x, &y) == 2)
                 o.clicks.emplace_back(x, y);
             else
                 o.error = "--click expects X,Y";
-        } else if (a == "--view" && i + 1 < args.size()) {
-            const std::string v = args[++i];
-            if (v == "performance" || v == "editor")
-                o.performanceView = v == "performance";
-            else
-                o.error = "--view expects performance or editor";
         } else if (a == "--demo") {
             o.demo = true;
-        } else if (a == "--select" && i + 1 < args.size()) {
-            o.select = args[++i];
         } else if (!a.empty() && a[0] == '-') {
             o.error = "unknown option " + a;
         } else {
@@ -171,10 +145,7 @@ constexpr const char* kUsage = R"(Usage: midipad [preset.json]
 Opens the MidiPad window. With a preset file, its folder becomes the presets
 folder and the preset is opened.
 
-  --view performance|editor   view at startup (otherwise the last one used)
-
-In the window: F2 switches between the editor and the animated view, F11
-toggles fullscreen.
+In the window: F11 toggles fullscreen, Ctrl+Q quits.
 )";
 
 class GuiApp {
@@ -195,22 +166,12 @@ private:
 
     // Drawing.
     void draw();
-    void drawPresetBar();
-    void drawOutputBar(const LiveState& live);
-    void drawKeyBar();
-    bool drawKeyCombos(float rootWidth = 0, float scaleWidth = 0);
     bool drawKeyCombo(float width);
     void drawOptionsOverlay();
     void drawPerformanceStatus(const LiveState& live, float height);
-    void drawChannelAndStatus(const LiveState& live);
-    void drawOutputCombo(float width);
     void drawPerformance(const LiveState& live);
     void drawMappingOverlay(const LiveState& live);
-    void setView(bool performance);
     void toggleFullscreen();
-    void drawMappingArea(const LiveState& live);
-    void drawLog();
-    void drawStatusBar(const LiveState& live);
     void drawDialogs();
     void drawNameDialog();
     void drawUnsavedDialog();
@@ -279,13 +240,7 @@ private:
     bool overlayAppearing_ = false;
     bool optionsOpen_ = false;  // the Options panel over the animated view
     bool optionsAppearing_ = false;
-    int editChannel_ = -1;  // -1: base mapping
-    bool followChannel_ = true;
-    int lastLiveChannel_ = -1;
-    std::optional<int> pickedChannel_;
 
-    std::deque<std::string> log_;
-    bool scrollLog_ = false;
     std::mutex pendingLogMutex_;
     std::vector<std::string> pendingLog_;  // from the input thread
 
@@ -363,8 +318,6 @@ bool GuiApp::init() {
     }
 
     Runtime::Options runtimeOptions;
-    runtimeOptions.reportMidi = settings_.monitorMidi;
-    runtimeOptions.reportButtons = settings_.showButtons;
     runtimeOptions.dpadSettlePressMs = settings_.dpadSettlePressMs;
     runtimeOptions.dpadSettleReleaseMs = settings_.dpadSettleReleaseMs;
     runtimeOptions.humanize = settings_.humanize;
@@ -413,12 +366,6 @@ bool GuiApp::init() {
     // The gamepad plays music; it must not drive the interface.
     ImGui_ImplSDL3_SetGamepadMode(ImGui_ImplSDL3_GamepadMode_Manual, nullptr, 0);
 
-    if (options_.performanceView)
-        settings_.performanceView = *options_.performanceView;
-    if (options_.tab)
-        editor_.showTab(*options_.tab);
-    if (options_.select && !editor_.select(*options_.select))
-        log("--select: unknown control " + *options_.select);
     log("Presets: " + settings_.presetsDir.string());
     return true;
 }
@@ -520,8 +467,8 @@ void GuiApp::update() {
     finishVirMidiJob();
     if (const auto stick = editor_.takeClearLoopRequest())
         runtime_->clearLoop(*stick);
-    while (auto r = runtime_->popReport())
-        log(describe(*r));
+    while (runtime_->popReport()) {
+    }
     {
         std::lock_guard lock(pendingLogMutex_);
         for (auto& line : pendingLog_)
@@ -783,12 +730,8 @@ void GuiApp::finishVirMidiJob() {
 
 // --- Helpers ----------------------------------------------------------------
 
-void GuiApp::log(const std::string& line) {
-    log_.push_back(line);
-    while (log_.size() > kLogLines)
-        log_.pop_front();
-    scrollLog_ = true;
-}
+// Notes for a terminal the window was started from.
+void GuiApp::log(const std::string& line) { std::cout << "midipad: " << line << '\n'; }
 
 void GuiApp::showError(const std::string& message) {
     errorMessage_ = message;
@@ -831,187 +774,24 @@ void GuiApp::draw() {
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(viewport->WorkPos);
     ImGui::SetNextWindowSize(viewport->WorkSize);
-    if (settings_.performanceView)
-        ImGui::PushStyleColor(ImGuiCol_WindowBg, ImGui::ColorConvertU32ToFloat4(PerformanceView::Theme::kBackground));
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImGui::ColorConvertU32ToFloat4(PerformanceView::Theme::kBackground));
     ImGui::Begin("MidiPad", nullptr,
                  ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
                      ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoScrollbar);
-    if (settings_.performanceView)
-        ImGui::PopStyleColor();
+    ImGui::PopStyleColor();
 
     if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_S, ImGuiInputFlags_RouteGlobal))
         saveCurrent();
-    if (ImGui::Shortcut(ImGuiKey_F2, ImGuiInputFlags_RouteGlobal))
-        setView(!settings_.performanceView);
     if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_Q, ImGuiInputFlags_RouteGlobal))
         guard([this] { quit_ = true; });
     if (ImGui::Shortcut(ImGuiKey_F11, ImGuiInputFlags_RouteGlobal))
         toggleFullscreen();
 
-    if (settings_.performanceView) {
-        drawPerformance(live);
-        drawDialogs();
-        ImGui::End();
-        return;
-    }
-
-    drawPresetBar();
-    drawOutputBar(live);
-    drawKeyBar();
-    ImGui::Separator();
-
-    const float logHeight = ImGui::GetTextLineHeightWithSpacing() * 8;
-    const float statusHeight = ImGui::GetFrameHeightWithSpacing();
-    ImGui::BeginChild("mapping", ImVec2(0, -(logHeight + statusHeight)));
-    drawMappingArea(live);
-    ImGui::EndChild();
-    drawLog();
-    drawStatusBar(live);
-
+    drawPerformance(live);
     drawDialogs();
     ImGui::End();
 }
 
-void GuiApp::drawPresetBar() {
-    ImGui::AlignTextToFramePadding();
-    ImGui::TextUnformatted("Preset");
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 16);
-    const std::string current = (hasFile_ ? preset_.name : std::string("Untitled")) + (dirty_ ? " *" : "");
-    if (ImGui::BeginCombo("##preset", current.c_str())) {
-        if (presetNames_.empty())
-            ImGui::TextDisabled("No preset in this folder");
-        for (const auto& name : presetNames_) {
-            if (ImGui::Selectable(name.c_str(), hasFile_ && name == preset_.name) && !(hasFile_ && name == preset_.name))
-                guard([this, name] { openPreset(name); });
-        }
-        ImGui::EndCombo();
-    }
-
-    ImGui::SameLine();
-    if (ImGui::Button("New"))
-        guard([this] {
-            nameDialog_ = NameDialog::New;
-            nameInput_ = library_->uniqueName("New preset");
-            nameError_.clear();
-            openNameDialog_ = true;
-        });
-    ImGui::SameLine();
-    ImGui::BeginDisabled(hasFile_ && !dirty_);
-    if (ImGui::Button("Save"))
-        saveCurrent();
-    ImGui::EndDisabled();
-    ImGui::SetItemTooltip("Ctrl+S");
-    ImGui::SameLine();
-    if (ImGui::Button("Save as…")) {
-        nameDialog_ = NameDialog::SaveAs;
-        nameInput_ = library_->uniqueName(hasFile_ ? preset_.name : "New preset");
-        nameError_.clear();
-        openNameDialog_ = true;
-    }
-    ImGui::SameLine();
-    ImGui::BeginDisabled(!hasFile_ || !dirty_);
-    if (ImGui::Button("Revert"))
-        openPreset(preset_.name);
-    ImGui::EndDisabled();
-    ImGui::SameLine();
-    ImGui::BeginDisabled(!hasFile_);
-    if (ImGui::Button("Trash"))
-        openTrashDialog_ = true;
-    ImGui::EndDisabled();
-    ImGui::SetItemTooltip("Moves the preset to the \"trash\" subfolder");
-
-    ImGui::SameLine(0, ImGui::GetFontSize() * 2);
-    if (ImGui::Button("Folder…"))
-        browseFolder(FolderTarget::Presets, settings_.presetsDir);
-    ImGui::SetItemTooltip("Presets folder:\n%s", settings_.presetsDir.string().c_str());
-
-    ImGui::SameLine(0, ImGui::GetFontSize() * 2);
-    if (ImGui::Button("Animated view"))
-        setView(true);
-    ImGui::SetItemTooltip("F2; F11 for fullscreen");
-}
-
-void GuiApp::drawOutputBar(const LiveState& live) {
-    ImGui::AlignTextToFramePadding();
-    ImGui::TextUnformatted("MIDI output");
-    ImGui::SameLine();
-    drawOutputCombo(ImGui::GetFontSize() * 18);
-    ImGui::SameLine();
-    if (ImGui::Button("Refresh"))
-        refreshPorts();
-    drawChannelAndStatus(live);
-}
-
-void GuiApp::drawOutputCombo(float width) {
-    ImGui::SetNextItemWidth(width);
-    if (ImGui::BeginCombo("##output", outputLabel_.c_str())) {
-        const std::string virtualLabel = "Virtual port \"" + settings_.virtualPortName + "\"";
-        if (ImGui::Selectable(virtualLabel.c_str(), settings_.output == AppSettings::Output::VirtualPort))
-            useOutput(AppSettings::Output::VirtualPort, {});
-        ImGui::Separator();
-        if (ports_.empty())
-            ImGui::TextDisabled("No MIDI port");
-        for (const auto& port : ports_)
-            if (ImGui::Selectable(port.c_str(), outputLabel_ == port))
-                useOutput(AppSettings::Output::ExistingPort, port);
-            else if (const auto name = rawMidiName(port); !name.empty())
-                ImGui::SetItemTooltip("Seen as %s/…", name.c_str());
-        ImGui::EndCombo();
-    }
-    if (const auto name = rawMidiName(outputLabel_); !name.empty())
-        ImGui::SetItemTooltip("This output is seen as %s/…", name.c_str());
-}
-
-void GuiApp::drawChannelAndStatus(const LiveState& live) {
-    ImGui::SameLine(0, ImGui::GetFontSize() * 2);
-    ImGui::AlignTextToFramePadding();
-    ImGui::TextUnformatted("Active channel");
-    ImGui::SameLine();
-    if (ImGui::ArrowButton("##chdown", ImGuiDir_Left))
-        runtime_->setChannel((live.channel + 15) % 16);
-    ImGui::SameLine();
-    ImGui::Text("%2d", live.channel + 1);
-    ImGui::SameLine();
-    if (ImGui::ArrowButton("##chup", ImGuiDir_Right))
-        runtime_->setChannel((live.channel + 1) % 16);
-
-    ImGui::SameLine(0, ImGui::GetFontSize() * 2);
-    if (ImGui::Button("Panic"))
-        runtime_->panic();
-    ImGui::SetItemTooltip("Turns off every note and CC still on (stuck notes, toggles)");
-
-    ImGui::SameLine(0, ImGui::GetFontSize() * 2);
-    ImGui::AlignTextToFramePadding();
-    if (live.connected)
-        ImGui::TextColored(kOkColor, "Gamepad: %s%s", live.gamepadName.c_str(),
-                           live.hasTouchpad ? "" : " (no touchpad)");
-    else
-        ImGui::TextColored(kHintColor, "No gamepad: plug one in, it will be detected");
-}
-
-void GuiApp::drawKeyBar() {
-    ImGui::AlignTextToFramePadding();
-    ImGui::TextUnformatted("Key");
-    ImGui::SameLine();
-    const bool changed = drawKeyCombos();
-    const bool flats = settings_.key && prefersFlats(*settings_.key);
-    ImGui::SameLine();
-    ImGui::PushStyleColor(ImGuiCol_Text, kHintColor);
-    if (settings_.key) {
-        std::string notes;
-        for (int pc : scalePitchClasses(*settings_.key))
-            notes += pitchName(pc, flats) + " ";
-        ImGui::Text("Notes: %s  - the editor only offers these notes and the chords they form", notes.c_str());
-    } else {
-        ImGui::TextUnformatted("None: every note and chord is offered");
-    }
-    ImGui::PopStyleColor();
-    if (changed)
-        persistSettings();
-}
-
-// One drop-down for the whole key: roots on the left, scales on the right.
 bool GuiApp::drawKeyCombo(float width) {
     const bool flats = settings_.key && prefersFlats(*settings_.key);
     const std::string preview =
@@ -1056,50 +836,6 @@ bool GuiApp::drawKeyCombo(float width) {
     }
     ImGui::EndCombo();
     return changed;
-}
-
-bool GuiApp::drawKeyCombos(float rootWidth, float scaleWidth) {
-    const bool flats = settings_.key && prefersFlats(*settings_.key);
-    const std::string rootPreview = settings_.key ? pitchName(settings_.key->root, flats) : std::string("None");
-    bool changed = false;
-    ImGui::SetNextItemWidth(rootWidth > 0 ? rootWidth : ImGui::GetFontSize() * 6);
-    if (ImGui::BeginCombo("##keyroot", rootPreview.c_str())) {
-        if (ImGui::Selectable("None", !settings_.key)) {
-            settings_.key.reset();
-            changed = true;
-        }
-        for (int pc = 0; pc < 12; ++pc) {
-            // Both spellings for the black keys: the scale decides which one is shown.
-            const std::string name = pitchName(pc) == pitchName(pc, true) ? pitchName(pc)
-                                                                         : pitchName(pc) + " / " + pitchName(pc, true);
-            if (ImGui::Selectable(name.c_str(), settings_.key && settings_.key->root == pc)) {
-                settings_.key = Key{pc, settings_.key ? settings_.key->scale : 0};
-                changed = true;
-            }
-        }
-        ImGui::EndCombo();
-    }
-    ImGui::SameLine();
-    ImGui::BeginDisabled(!settings_.key);
-    ImGui::SetNextItemWidth(scaleWidth > 0 ? scaleWidth : ImGui::GetFontSize() * 11);
-    const std::string scalePreview = settings_.key ? std::string(settings_.key->type().label) : std::string("-");
-    if (ImGui::BeginCombo("##keyscale", scalePreview.c_str())) {
-        for (std::size_t i = 0; i < scaleTypes().size(); ++i) {
-            const std::string name(scaleTypes()[i].label);
-            if (ImGui::Selectable(name.c_str(), settings_.key && settings_.key->scale == i)) {
-                settings_.key->scale = i;
-                changed = true;
-            }
-        }
-        ImGui::EndCombo();
-    }
-    ImGui::EndDisabled();
-    return changed;
-}
-
-void GuiApp::setView(bool performance) {
-    settings_.performanceView = performance;
-    persistSettings();
 }
 
 void GuiApp::toggleFullscreen() {
@@ -1169,8 +905,6 @@ void GuiApp::drawPerformance(const LiveState& live) {
             optionsAppearing_ = true;
             overlaySpec_.reset();
         }
-        if (ImGui::MenuItem("Mapping editor", "F2"))
-            setView(false);
         if (ImGui::MenuItem("Fullscreen", "F11", (SDL_GetWindowFlags(window_) & SDL_WINDOW_FULLSCREEN) != 0))
             toggleFullscreen();
         ImGui::Separator();
@@ -1290,6 +1024,24 @@ void GuiApp::drawPerformance(const LiveState& live) {
                 if (selected)
                     ImGui::SetItemDefaultFocus();
             }
+            // Managing presets.
+            ImGui::Separator();
+            if (ImGui::Selectable("New\u2026"))
+                guard([this] {
+                    nameDialog_ = NameDialog::New;
+                    nameInput_ = library_->uniqueName("New preset");
+                    nameError_.clear();
+                    openNameDialog_ = true;
+                });
+            if (ImGui::Selectable("Save as\u2026")) {
+                nameDialog_ = NameDialog::SaveAs;
+                nameInput_ = library_->uniqueName(hasFile_ ? preset_.name : "New preset");
+                nameError_.clear();
+                openNameDialog_ = true;
+            }
+            if (ImGui::Selectable("Move to trash\u2026", false, hasFile_ ? 0 : ImGuiSelectableFlags_Disabled))
+                openTrashDialog_ = true;
+            ImGui::SetItemTooltip("Moves the preset to the \"trash\" subfolder of the presets folder");
             ImGui::PopFont();
             ImGui::EndCombo();
         }
@@ -1764,15 +1516,6 @@ void GuiApp::drawMappingOverlay(const LiveState& live) {
             openPreset(preset_.name);
         ImGui::EndDisabled();
         ImGui::SameLine();
-        if (ImGui::Button("Open in editor")) {
-            const std::string kind = spec.substr(0, spec.find(':'));
-            editor_.select(kind == "axis" || kind == "axes" ? "tab:axes"
-                           : kind == "finger" || kind == "fingers" ? "tab:touchpad"
-                                                                   : spec);
-            open = false;
-            setView(false);
-        }
-        ImGui::SameLine();
         if (ImGui::Button("Close") ||
             (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) && ImGui::IsKeyPressed(ImGuiKey_Escape)))
             open = false;
@@ -1783,125 +1526,6 @@ void GuiApp::drawMappingOverlay(const LiveState& live) {
     if (!open)
         overlaySpec_.reset();
 }
-
-void GuiApp::drawMappingArea(const LiveState& live) {
-    // Following shows what plays on the active channel: its own mapping if it
-    // has one, the base otherwise. A channel picked in the list stays shown
-    // once the engine has switched to it.
-    if (followChannel_ && live.channel != lastLiveChannel_ && (!pickedChannel_ || live.channel == *pickedChannel_)) {
-        const bool own = preset_.channels[static_cast<std::size_t>(live.channel)].has_value();
-        editChannel_ = own || pickedChannel_ ? live.channel : -1;
-        pickedChannel_.reset();
-        lastLiveChannel_ = live.channel;
-    }
-
-    ImGui::AlignTextToFramePadding();
-    ImGui::TextUnformatted("Mapping");
-    ImGui::SameLine();
-    auto channelLabel = [this](int c) {
-        if (c < 0)
-            return std::string("Base (all channels)");
-        return "Channel " + std::to_string(c + 1) +
-               (preset_.channels[static_cast<std::size_t>(c)] ? "  (own mapping)" : "  (uses base)");
-    };
-    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 16);
-    if (ImGui::BeginCombo("##editchannel", channelLabel(editChannel_).c_str())) {
-        if (ImGui::Selectable(channelLabel(-1).c_str(), editChannel_ < 0)) {
-            editChannel_ = -1;
-            followChannel_ = false;
-        }
-        for (int c = 0; c < kChannelCount; ++c) {
-            if (ImGui::Selectable(channelLabel(c).c_str(), editChannel_ == c)) {
-                editChannel_ = c;
-                if (c != live.channel) {
-                    pickedChannel_ = c;
-                    runtime_->setChannel(c);  // hear what you edit
-                }
-            }
-        }
-        ImGui::EndCombo();
-    }
-    ImGui::SameLine();
-    ImGui::Checkbox("Follow active channel", &followChannel_);
-    ImGui::SetItemTooltip("Shows the mapping of the active channel, also when the gamepad changes it");
-
-    Mapping* target = &preset_.base;
-    bool readOnly = false;
-    if (editChannel_ >= 0) {
-        auto& slot = preset_.channels[static_cast<std::size_t>(editChannel_)];
-        ImGui::SameLine();
-        if (slot) {
-            target = &*slot;
-            if (ImGui::Button("Use the base for this channel")) {
-                slot.reset();
-                edited();
-                target = &preset_.base;
-                readOnly = true;
-            }
-            ImGui::SetItemTooltip("Removes this channel's own mapping");
-        } else {
-            readOnly = true;
-            if (ImGui::Button("Create an own mapping (copy of the base)")) {
-                slot = preset_.base;
-                edited();
-                target = &*slot;
-                readOnly = false;
-            }
-        }
-    }
-    if (readOnly) {
-        ImGui::PushStyleColor(ImGuiCol_Text, kHintColor);
-        ImGui::TextUnformatted("This channel plays the base mapping, shown read-only below.");
-        ImGui::PopStyleColor();
-    }
-
-    editor_.setHumanizeChannels(settings_.humanize.channels);
-    if (editor_.draw(*target, live, readOnly, settings_.key))
-        edited();
-}
-
-void GuiApp::drawLog() {
-    ImGui::BeginChild("log", ImVec2(0, -ImGui::GetFrameHeightWithSpacing()), ImGuiChildFlags_Borders);
-    if (ImGui::Checkbox("MIDI monitor", &settings_.monitorMidi)) {
-        runtime_->setReportMidi(settings_.monitorMidi);
-        persistSettings();
-    }
-    ImGui::SameLine();
-    if (ImGui::Checkbox("Buttons", &settings_.showButtons)) {
-        runtime_->setReportButtons(settings_.showButtons);
-        persistSettings();
-    }
-    ImGui::SameLine();
-    if (ImGui::SmallButton("Clear"))
-        log_.clear();
-    ImGui::Separator();
-    ImGui::BeginChild("lines");
-    ImGuiListClipper clipper;
-    clipper.Begin(static_cast<int>(log_.size()));
-    while (clipper.Step())
-        for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; ++i)
-            ImGui::TextUnformatted(log_[static_cast<std::size_t>(i)].c_str());
-    if (scrollLog_ && ImGui::GetScrollY() >= ImGui::GetScrollMaxY() - ImGui::GetTextLineHeight() * 3)
-        ImGui::SetScrollHereY(1.0f);
-    scrollLog_ = false;
-    ImGui::EndChild();
-    ImGui::EndChild();
-}
-
-void GuiApp::drawStatusBar(const LiveState& live) {
-    const RuntimeStats stats = runtime_->stats();
-    std::string frozen;
-    for (int a = 0; a < kAxisCount; ++a)
-        if (live.frozenAxes & (1u << a))
-            frozen += (frozen.empty() ? "" : ", ") + label(static_cast<Axis>(a));
-    ImGui::AlignTextToFramePadding();
-    ImGui::TextColored(kHintColor, "Freeze: %s    |    Processing: %.0f µs average, %.0f µs max    |    "
-                                   "MIDI errors: %llu",
-                       frozen.empty() ? "none" : frozen.c_str(), stats.averageWorkUs, stats.maxWorkUs,
-                       static_cast<unsigned long long>(stats.sendErrors));
-}
-
-// --- Dialogs ----------------------------------------------------------------
 
 void GuiApp::drawDialogs() {
     drawNameDialog();
