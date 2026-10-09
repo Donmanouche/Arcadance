@@ -91,8 +91,8 @@ public:
     // Notes still on are turned off on the previous output first.
     void setOutput(std::shared_ptr<MidiOutput> output);
     void setChannel(int channel);
-    void panic();  // also stops the loops
-    void clearLoop(int stick);
+    void panic();  // also stops the loops, on every channel
+    void clearLoop(int stick);  // on the active channel
     void setReportMidi(bool on) { reportMidi_.store(on, std::memory_order_relaxed); }
     void setReportButtons(bool on) { reportButtons_.store(on, std::memory_order_relaxed); }
     void setDpadSettle(int pressMs, int releaseMs) {

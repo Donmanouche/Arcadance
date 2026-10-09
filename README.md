@@ -191,9 +191,12 @@ Les contrôles portent les noms de l'API gamepad de SDL3 (`south`, `left_x`,
   côté du stick, qui reste libre : elle a ses propres CC (70/71 à gauche,
   72/73 à droite par défaut), son mode de lecture (avant, arrière,
   aller-retour), réglés dans la fenêtre du stick (champ `loops` du preset).
-  Un appui sans bouger aucun stick arrête les boucles ; Panic aussi. Les
-  panneaux LOOP de la vue animée montrent la boucle et sa tête de lecture.
-  Les boucles ne sont pas gardées d'une session à l'autre.
+  Chaque canal a ses deux boucles (gauche et droite) : on peut enregistrer
+  sur le canal 1, passer au canal 2 et enregistrer encore ; toutes jouent en
+  même temps. Un appui sans bouger aucun stick arrête les boucles du canal
+  actif ; Panic arrête celles de tous les canaux. Les panneaux LOOP de la vue
+  animée montrent les boucles du canal actif et leur tête de lecture. Les
+  boucles ne sont pas gardées d'une session à l'autre.
 - **Freeze** : gèle l'axe à sa valeur courante. Dans la vue animée, la fleur
   reste bleu glacé et suit le stick ; une silhouette et un réticule, bleus
   pour le stick gauche, jaunes pour le droit, marquent l'endroit du gel

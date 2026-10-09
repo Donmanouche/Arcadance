@@ -74,16 +74,19 @@ public:
 
     void setHumanize(const Humanize& humanize) { humanize_ = humanize; }
 
-    // Loops: a LoopRecord binding held records each stick that moves (X and Y);
-    // on release each recording plays in a loop on its own CCs (Mapping::loops),
-    // beside the stick. A hold where no stick moves stops the loops.
+    // Loops, two per channel (left and right stick): a LoopRecord binding held
+    // records each stick that moves (X and Y) into its loop on the active
+    // channel; on release each recording plays in a loop on its own CCs
+    // (Mapping::loops), beside the stick. Every channel's loops play at once.
+    // A hold where no stick moves stops the loops of the active channel.
     static constexpr int kLoopRateHz = 200;
     static constexpr int kMaxLoopSamples = 60 * kLoopRateHz;
     static constexpr float kLoopMoveThreshold = 0.06f;  // of the [0, 1] travel
-    LoopStatus loopStatus(int stick) const;
-    float loopSample(int stick, int axis, int index) const;  // [0, 1]; axis 0: X, 1: Y
-    void clearLoop(int stick);
-    void stopLoops();
+    LoopStatus loopStatus(int channel, int stick) const;
+    float loopSample(int channel, int stick, int axis, int index) const;  // [0, 1]; axis 0: X, 1: Y
+    void clearLoop(int channel, int stick);
+    void stopLoops(int channel);
+    void stopLoops();  // every channel
     void seedRandom(std::uint64_t seed) { random_ = seed ? seed : 0x9E3779B97F4A7C15ull; }
 
     void buttonChanged(Button button, bool pressed);
@@ -141,7 +144,7 @@ private:
     void beginRecordHold();
     void endRecordHold();
     void runLoops();
-    void sendLoopSample(int stick);
+    void sendLoopSample(std::size_t loop);
     // Sends `message` at `at` (now if it is not later); in time order.
     void sendAt(std::uint64_t at, const MidiMessage& message);
     void sendNow(const MidiMessage& message);
@@ -180,15 +183,18 @@ private:
 
     struct Loop {
         LoopStatus::State state = LoopStatus::State::Empty;
-        bool waiting = false;
-        float startX = 0.5f, startY = 0.5f;  // where the stick was when Record went down
-        std::vector<float> x, y;             // kMaxLoopSamples each, allocated once
+        std::vector<std::uint16_t> x, y;  // kMaxLoopSamples each, allocated once; [0, 1] as 0-65535
         int length = 0, position = 0, direction = 1;
-        std::uint8_t channel = 0;
         std::uint64_t nextAt = 0;
         int sentX = -1, sentY = -1;
     };
-    std::array<Loop, 2> loops_;
+    static constexpr std::size_t loopIndex(int channel, int stick) { return static_cast<std::size_t>(channel * 2 + stick); }
+    std::array<Loop, kChannelCount * 2> loops_;  // loopIndex(channel, stick)
+    // The hold of a LoopRecord binding: on which channel, which sticks may
+    // still start recording, and where they were when it began.
+    int holdChannel_ = 0;
+    std::array<bool, 2> waiting_{};
+    std::array<float, 4> holdStart_{};
     std::array<float, 4> stickPosition_{0.5f, 0.5f, 0.5f, 0.5f};  // [0, 1], LeftX..RightY
     std::bitset<kSlotCount> recordHolders_;
     bool recordedThisHold_ = false;

@@ -605,9 +605,9 @@ struct LoopFixture : Fixture {
 
 TEST_CASE_FIXTURE(LoopFixture, "Record captures the stick that moves and loops it on the loop CCs") {
     recordLeft();
-    CHECK(engine.loopStatus(0).state == LoopStatus::State::Playing);
-    CHECK(engine.loopStatus(0).length == 3);
-    CHECK(engine.loopStatus(1).state == LoopStatus::State::Empty);  // the right stick did not move
+    CHECK(engine.loopStatus(0, 0).state == LoopStatus::State::Playing);
+    CHECK(engine.loopStatus(0, 0).length == 3);
+    CHECK(engine.loopStatus(0, 1).state == LoopStatus::State::Empty);  // the right stick did not move
     const auto values = played(70, 6);
     REQUIRE(values.size() >= 6);
     CHECK(std::vector(values.begin(), values.begin() + 6) == std::vector<int>{127, 64, 0, 127, 64, 0});
@@ -640,8 +640,8 @@ TEST_CASE_FIXTURE(LoopFixture, "loops play in reverse or back and forth") {
 TEST_CASE_FIXTURE(LoopFixture, "recording the other stick keeps the first loop") {
     recordLeft();
     recordLeft(Axis::RightX);
-    CHECK(engine.loopStatus(0).state == LoopStatus::State::Playing);
-    CHECK(engine.loopStatus(1).state == LoopStatus::State::Playing);
+    CHECK(engine.loopStatus(0, 0).state == LoopStatus::State::Playing);
+    CHECK(engine.loopStatus(0, 1).state == LoopStatus::State::Playing);
     CHECK_FALSE(played(72, 3).empty());
 }
 
@@ -650,7 +650,7 @@ TEST_CASE_FIXTURE(LoopFixture, "pressing Record without moving a stick stops the
     engine.buttonChanged(Button::South, true);
     step();
     engine.buttonChanged(Button::South, false);
-    CHECK(engine.loopStatus(0).state == LoopStatus::State::Empty);
+    CHECK(engine.loopStatus(0, 0).state == LoopStatus::State::Empty);
     sink.take();
     CHECK(played(70, 4).empty());
 }
@@ -660,7 +660,35 @@ TEST_CASE_FIXTURE(LoopFixture, "a small wobble of a resting stick is not a movem
     engine.buttonChanged(Button::South, true);
     engine.axisMoved(Axis::LeftX, 0.08f);  // 4 % of the travel
     step();
-    CHECK(engine.loopStatus(0).waiting);
-    CHECK(engine.loopStatus(0).state == LoopStatus::State::Empty);
+    CHECK(engine.loopStatus(0, 0).waiting);
+    CHECK(engine.loopStatus(0, 0).state == LoopStatus::State::Empty);
     engine.buttonChanged(Button::South, false);
+}
+
+TEST_CASE_FIXTURE(LoopFixture, "each channel has its own loops, and they all play") {
+    recordLeft();                // channel 1
+    engine.setChannel(1);
+    recordLeft();                // channel 2: a second left loop, the first keeps playing
+    CHECK(engine.loopStatus(0, 0).state == LoopStatus::State::Playing);
+    CHECK(engine.loopStatus(1, 0).state == LoopStatus::State::Playing);
+    bool channel1 = false, channel2 = false;
+    for (int i = 0; i < 4; ++i) {
+        step();
+        for (const auto& m : sink.take()) {
+            channel1 |= m.bytes[0] == 0xB0 && m.bytes[1] == 70;
+            channel2 |= m.bytes[0] == 0xB1 && m.bytes[1] == 70;
+        }
+    }
+    CHECK(channel1);
+    CHECK(channel2);
+
+    // A press without movement stops the active channel's loops only.
+    engine.buttonChanged(Button::South, true);
+    step();
+    engine.buttonChanged(Button::South, false);
+    CHECK(engine.loopStatus(1, 0).state == LoopStatus::State::Empty);
+    CHECK(engine.loopStatus(0, 0).state == LoopStatus::State::Playing);
+
+    engine.stopLoops();  // Panic: every channel
+    CHECK(engine.loopStatus(0, 0).state == LoopStatus::State::Empty);
 }

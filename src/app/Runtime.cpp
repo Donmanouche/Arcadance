@@ -214,15 +214,16 @@ void Runtime::publish(const GamepadInput& gamepad, const Engine& engine) {
     std::unique_lock lock(loopsMutex_, std::try_to_lock);
     if (!lock.owns_lock())
         return;
+    const int channel = engine.channel();  // the loops shown are the active channel's
     for (int s = 0; s < 2; ++s) {
         LiveState::Loop& loop = loops_[static_cast<std::size_t>(s)];
-        loop.status = engine.loopStatus(s);
+        loop.status = engine.loopStatus(channel, s);
         const int length = loop.status.length;
         loop.points = std::min(length, LiveState::Loop::kPoints);
         for (int i = 0; i < loop.points; ++i) {
             const int at = loop.points > 1 ? static_cast<int>(static_cast<long long>(i) * (length - 1) / (loop.points - 1)) : 0;
-            loop.x[static_cast<std::size_t>(i)] = static_cast<std::uint8_t>(std::lround(engine.loopSample(s, 0, at) * 255.0f));
-            loop.y[static_cast<std::size_t>(i)] = static_cast<std::uint8_t>(std::lround(engine.loopSample(s, 1, at) * 255.0f));
+            loop.x[static_cast<std::size_t>(i)] = static_cast<std::uint8_t>(std::lround(engine.loopSample(channel, s, 0, at) * 255.0f));
+            loop.y[static_cast<std::size_t>(i)] = static_cast<std::uint8_t>(std::lround(engine.loopSample(channel, s, 1, at) * 255.0f));
         }
     }
 }
@@ -282,7 +283,7 @@ void Runtime::run(std::stop_token stop, Options options, std::shared_ptr<const P
             if (command->kind == Command::Kind::SetChannel) {
                 engine.setChannel(command->channel);
             } else if (command->kind == Command::Kind::ClearLoop) {
-                engine.clearLoop(command->channel);
+                engine.clearLoop(engine.channel(), command->channel);  // `channel` holds the stick
             } else {
                 engine.releaseAll();
                 engine.stopLoops();
