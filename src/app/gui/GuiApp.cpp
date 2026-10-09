@@ -367,6 +367,7 @@ bool GuiApp::init() {
     runtimeOptions.reportButtons = settings_.showButtons;
     runtimeOptions.dpadSettlePressMs = settings_.dpadSettlePressMs;
     runtimeOptions.dpadSettleReleaseMs = settings_.dpadSettleReleaseMs;
+    runtimeOptions.humanize = settings_.humanize;
     runtime_ = std::make_unique<Runtime>(output_, std::make_shared<const Preset>(preset_), runtimeOptions,
                                          [this](const std::string& line) {
                                              std::lock_guard lock(pendingLogMutex_);
@@ -1383,10 +1384,11 @@ void GuiApp::drawOptionsOverlay() {
     ImFont* bold = uiFonts_.bold ? uiFonts_.bold : ImGui::GetFont();
     ImFont* medium = uiFonts_.medium ? uiFonts_.medium : ImGui::GetFont();
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    // Centered, every frame: its height follows the window and the content.
+    ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + viewport->WorkSize.x * 0.5f,
+                                   viewport->WorkPos.y + viewport->WorkSize.y * 0.5f),
+                            ImGuiCond_Always, ImVec2(0.5f, 0.5f));
     if (optionsAppearing_) {
-        ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + viewport->WorkSize.x * 0.5f,
-                                       viewport->WorkPos.y + viewport->WorkSize.y * 0.45f),
-                                ImGuiCond_Always, ImVec2(0.5f, 0.5f));
         ImGui::SetNextWindowFocus();
         optionsAppearing_ = false;
     }
@@ -1404,6 +1406,9 @@ void GuiApp::drawOptionsOverlay() {
                                           ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoScrollbar);
     ImGui::PopFont();
     if (visible) {
+        // The sections scroll when the window is too short; Close stays in view.
+        ImGui::SetNextWindowSizeConstraints(ImVec2(0, 0), ImVec2(FLT_MAX, std::max(px(200), viewport->WorkSize.y - px(150))));
+        ImGui::BeginChild("optionsbody", ImVec2(0, 0), ImGuiChildFlags_AutoResizeY);
         ImDrawList* dl = ImGui::GetWindowDrawList();
         auto section = [&](const char* title) {
             ImGui::Spacing();
@@ -1499,6 +1504,94 @@ void GuiApp::drawOptionsOverlay() {
         settleSlider("Delay on release", "##settlerelease", settings_.dpadSettleReleaseMs);
         ImGui::PopFont();
 
+        // Humanization: which channels, and how much.
+        ImGui::Spacing();
+        section("HUMANIZE");
+        ImGui::PushFont(medium, 12.0f);
+        ImGui::TextColored(color(Theme::kLabel),
+                           "Random velocity and timing for the notes and chords of the chosen channels;\n"
+                           "each note of a chord varies on its own. A mapping can opt out.");
+        ImGui::PopFont();
+        ImGui::Spacing();
+        ImGui::PushFont(medium, 13.0f);
+        Humanize& h = settings_.humanize;
+        bool humanizeChanged = false;
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextColored(color(Theme::kLabel), "Channels");
+        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(px(4), px(4)));
+        const float channelsX = px(150);
+        for (int c = 0; c < 16; ++c) {
+            if (c == 0)
+                ImGui::SameLine(channelsX);
+            else if (c == 8)
+                ImGui::SetCursorPosX(channelsX);
+            else
+                ImGui::SameLine();
+            const bool on = h.appliesTo(c);
+            ImGui::PushStyleColor(ImGuiCol_Button, color(on ? (Theme::kBlue & ~IM_COL32_A_MASK) | IM_COL32(0, 0, 0, 150)
+                                                            : Theme::kControl));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, color(on ? Theme::kBlue : Theme::kControlBorder));
+            ImGui::PushStyleColor(ImGuiCol_Border, color(on ? Theme::kBlue : Theme::kControlBorder));
+            if (ImGui::Button(("##hc" + std::to_string(c)).c_str(), ImVec2(px(34), 0))) {
+                h.channels = static_cast<std::uint16_t>(h.channels ^ (1u << c));
+                humanizeChanged = true;
+            }
+            ImGui::PopStyleColor(3);
+            // The label drawn over the button, so the id stays stable.
+            const ImVec2 bmin = ImGui::GetItemRectMin(), bmax = ImGui::GetItemRectMax();
+            const std::string number = std::to_string(c + 1);
+            const ImVec2 tsz = ImGui::CalcTextSize(number.c_str());
+            ImGui::GetWindowDrawList()->AddText(ImVec2((bmin.x + bmax.x - tsz.x) * 0.5f, (bmin.y + bmax.y - tsz.y) * 0.5f),
+                                                on ? Theme::kText : Theme::kLabel, number.c_str());
+            if (c == 7 || c == 15) {
+                ImGui::SameLine(0, px(12));
+                if (c == 7 && ImGui::Button("All", ImVec2(px(48), 0))) {
+                    h.channels = 0xFFFF;
+                    humanizeChanged = true;
+                }
+                if (c == 15 && ImGui::Button("None", ImVec2(px(48), 0))) {
+                    h.channels = 0;
+                    humanizeChanged = true;
+                }
+            }
+        }
+        ImGui::PopStyleVar();
+        ImGui::Spacing();
+        // A min/max pair of sliders on one row; min never exceeds max.
+        auto rangeRow = [&](const char* label, const char* id, int& low, int& high, int limit, const char* format) {
+            ImGui::AlignTextToFramePadding();
+            ImGui::TextColored(color(Theme::kLabel), "%s", label);
+            ImGui::SameLine(px(150));
+            const float w = (ImGui::GetContentRegionAvail().x - px(8)) * 0.5f;
+            ImGui::SetNextItemWidth(w);
+            if (ImGui::SliderInt((std::string("##min") + id).c_str(), &low, 0, limit, (std::string("min ") + format).c_str(),
+                                 ImGuiSliderFlags_AlwaysClamp)) {
+                high = std::max(high, low);
+                humanizeChanged = true;
+            }
+            if (ImGui::IsItemDeactivatedAfterEdit())
+                persistSettings();
+            ImGui::SameLine(0, px(8));
+            ImGui::SetNextItemWidth(w);
+            if (ImGui::SliderInt((std::string("##max") + id).c_str(), &high, 0, limit, (std::string("max ") + format).c_str(),
+                                 ImGuiSliderFlags_AlwaysClamp)) {
+                low = std::min(low, high);
+                humanizeChanged = true;
+            }
+            if (ImGui::IsItemDeactivatedAfterEdit())
+                persistSettings();
+        };
+        rangeRow("Velocity", "vel", h.velocityMinPercent, h.velocityMaxPercent, 100, "%d %%");
+        ImGui::SetItemTooltip("Percent of the velocity set in the mapping");
+        rangeRow("Delay", "delay", h.delayMinMs, h.delayMaxMs, Humanize::kMaxDelayMs, "%d ms");
+        ImGui::SetItemTooltip("Each note starts this much later; its release is delayed alike");
+        ImGui::PopFont();
+        if (humanizeChanged) {
+            runtime_->setHumanize(h);
+            if (!ImGui::IsAnyItemActive())
+                persistSettings();
+        }
+
         // Presets: folder and import.
         ImGui::Spacing();
         section("PRESETS");
@@ -1520,8 +1613,11 @@ void GuiApp::drawOptionsOverlay() {
         ImGui::PushFont(bold, 13.0f);
         if (ImGui::Button("Change…", ImVec2(-FLT_MIN, 0)))
             browseFolder(FolderTarget::Presets, settings_.presetsDir);
+        ImGui::PopFont();
         ImGui::Spacing();
+        ImGui::EndChild();
         ImGui::Spacing();
+        ImGui::PushFont(bold, 13.0f);
         ImGui::SetCursorPosX(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x - px(80));
         if (ImGui::Button("Close", ImVec2(px(80), 0)) ||
             (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) && ImGui::IsKeyPressed(ImGuiKey_Escape)))
@@ -1582,7 +1678,8 @@ void GuiApp::drawVirMidiSection(bool inOutputDialog) {
     }
     ImGui::PopStyleVar();
     ImGui::SameLine(0, px(18));
-    ImGui::Checkbox("Create them at every startup", &virmidiAtStartup_);
+    ImGui::Checkbox(inOutputDialog ? "Create them at every startup" : "At every startup", &virmidiAtStartup_);
+    ImGui::SetItemTooltip("Creates the ports again at every startup of the computer");
     ImGui::PopFont();
 
     ImGui::PushFont(bold, 13.0f);
@@ -1648,6 +1745,7 @@ void GuiApp::drawMappingOverlay(const LiveState& live) {
                            own ? ("Editing the mapping of channel " + std::to_string(live.channel + 1)).c_str()
                                : "Editing the base mapping (all channels)");
         ImGui::Spacing();
+        editor_.setHumanizeChannels(settings_.humanize.channels);
         if (editor_.drawControl(spec, target, live, settings_.key))
             edited();
 
@@ -1755,6 +1853,7 @@ void GuiApp::drawMappingArea(const LiveState& live) {
         ImGui::PopStyleColor();
     }
 
+    editor_.setHumanizeChannels(settings_.humanize.channels);
     if (editor_.draw(*target, live, readOnly, settings_.key))
         edited();
 }

@@ -9,10 +9,10 @@
 
 namespace midipad {
 
-// Notes of a chord, lowest first. Eight is enough for a thirteenth chord
-// plus a slash bass.
+// Notes of a chord, lowest first. Nine is enough for a thirteenth chord plus
+// a slash bass and a doubled root.
 struct ChordNotes {
-    std::array<std::uint8_t, 8> notes{};
+    std::array<std::uint8_t, 9> notes{};
     std::uint8_t count = 0;
 
     std::span<const std::uint8_t> view() const { return {notes.data(), count}; }
@@ -23,8 +23,9 @@ struct ChordNotes {
 
 // "Cm9", "Bb7sus4", "Abmaj7#11", "CM7", "C6/9", "F/A"... The root is placed
 // in `rootOctave` (4 -> C4 = 60); a slash bass goes one octave below it.
-// None if the name is unknown or a note falls outside 0..127.
-std::optional<ChordNotes> parseChord(std::string_view name, int rootOctave = 4);
+// `rootBelow` (1 or 2) doubles the root that many octaves lower, to anchor
+// the bass. None if the name is unknown or a note falls outside 0..127.
+std::optional<ChordNotes> parseChord(std::string_view name, int rootOctave = 4, int rootBelow = 0);
 
 // Canonical quality suffixes, in the order a chord picker should show them
 // ("" is the major triad).

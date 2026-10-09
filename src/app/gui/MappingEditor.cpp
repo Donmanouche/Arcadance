@@ -610,6 +610,7 @@ bool MappingEditor::drawTriggerEditor(TriggerBinding& b) {
         changed |= drawNoteField(b.number);
         changed |= sliderU7("Velocity", b.velocity, 1, 127);
         changed |= modeRadio(b.mode);
+        changed |= drawHumanizeCheckbox(b);
         break;
     case ActionType::ControlChange:
         changed |= inputU7("CC number", b.number);
@@ -621,6 +622,7 @@ bool MappingEditor::drawTriggerEditor(TriggerBinding& b) {
         changed |= drawChordFields(b);
         changed |= sliderU7("Velocity", b.velocity, 1, 127);
         changed |= modeRadio(b.mode);
+        changed |= drawHumanizeCheckbox(b);
         break;
     case ActionType::Transport: {
         const std::pair<TransportCommand, const char*> commands[] = {
@@ -736,6 +738,17 @@ bool MappingEditor::drawNoteField(std::uint8_t& note) {
     return changed;
 }
 
+bool MappingEditor::drawHumanizeCheckbox(TriggerBinding& b) {
+    const bool changed = ImGui::Checkbox("Humanize", &b.humanize);
+    ImGui::SetItemTooltip("Random velocity and timing on the channels chosen in Options; "
+                          "each note of a chord varies on its own.");
+    if (b.humanize && humanizeChannels_ == 0) {
+        ImGui::SameLine();
+        ImGui::TextColored(kHintColor, "off on every channel (Options)");
+    }
+    return changed;
+}
+
 bool MappingEditor::drawChordFields(TriggerBinding& b) {
     bool changed = false;
     // The text field keeps what is typed even while it is not a valid chord;
@@ -746,7 +759,7 @@ bool MappingEditor::drawChordFields(TriggerBinding& b) {
     }
 
     auto apply = [&](const std::string& text) {
-        if (auto chord = parseChord(text, b.chordOctave)) {
+        if (auto chord = parseChord(text, b.chordOctave, b.chordRootBelow)) {
             b.chordName = text;
             b.chord = *chord;
             chordText_ = text;
@@ -790,14 +803,14 @@ bool MappingEditor::drawChordFields(TriggerBinding& b) {
 
     ImGui::SetNextItemWidth(ImGui::GetFontSize() * 10);
     if (ImGui::InputText(key_ ? "Free entry" : "Chord", &chordText_)) {
-        if (auto chord = parseChord(chordText_, b.chordOctave)) {
+        if (auto chord = parseChord(chordText_, b.chordOctave, b.chordRootBelow)) {
             b.chordName = chordText_;
             b.chord = *chord;
             changed = true;
         }
     }
 
-    const auto typed = parseChord(chordText_, b.chordOctave);
+    const auto typed = parseChord(chordText_, b.chordOctave, b.chordRootBelow);
     if (!typed && !chordText_.empty()) {
         ImGui::TextColored(kErrorColor, "Unknown chord (the previous one stays active)");
     } else if (b.chord.count) {
@@ -874,7 +887,7 @@ bool MappingEditor::drawChordFields(TriggerBinding& b) {
         ImGui::SetNextItemWidth(ImGui::GetFontSize() * 6);
         if (ImGui::InputInt("Octave", &octave)) {
             octave = std::clamp(octave, kMinChordOctave, kMaxChordOctave);
-            if (auto chord = parseChord(b.chordName, octave)) {
+            if (auto chord = parseChord(b.chordName, octave, b.chordRootBelow)) {
                 b.chordOctave = static_cast<std::int8_t>(octave);
                 b.chord = *chord;
                 changed = true;
@@ -883,6 +896,28 @@ bool MappingEditor::drawChordFields(TriggerBinding& b) {
         ImGui::SetItemTooltip("Octave of the root note: 4 places C on C4 (MIDI 60)");
         ImGui::SameLine();
         ImGui::TextDisabled("root %s", noteName((b.chordOctave + 1) * 12 + *rootPitch, flats()).c_str());
+
+        // The root doubled lower, to anchor the bass.
+        static constexpr const char* kBelow[] = {"None", "1 octave below", "2 octaves below"};
+        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 9);
+        ImGui::SetNextWindowSizeConstraints(ImVec2(ImGui::GetFontSize() * 11, 0), ImVec2(FLT_MAX, FLT_MAX));  // no scrollbar
+        if (ImGui::BeginCombo("Bass root", kBelow[std::min<int>(b.chordRootBelow, 2)])) {
+            for (int below = 0; below <= 2; ++below) {
+                const auto chord = parseChord(b.chordName, b.chordOctave, below);
+                std::string label = kBelow[below];
+                if (below > 0)
+                    label += "  (" + noteName((b.chordOctave + 1 - below) * 12 + *rootPitch, flats()) + ")";
+                ImGui::BeginDisabled(!chord);
+                if (ImGui::Selectable(label.c_str(), below == b.chordRootBelow) && chord) {
+                    b.chordRootBelow = static_cast<std::uint8_t>(below);
+                    b.chord = *chord;
+                    changed = true;
+                }
+                ImGui::EndDisabled();
+            }
+            ImGui::EndCombo();
+        }
+        ImGui::SetItemTooltip("Also plays the root one or two octaves lower, to anchor the bass of the chord");
     }
     return changed;
 }

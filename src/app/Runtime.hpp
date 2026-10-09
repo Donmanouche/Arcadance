@@ -68,6 +68,7 @@ public:
         bool reportMidi = false;
         bool reportButtons = false;
         int dpadSettlePressMs = 15, dpadSettleReleaseMs = 15;  // see Engine::setDpadSettle
+        midipad::Humanize humanize;
     };
     // Called from the input thread, only on rare events (gamepad connected...).
     using Log = std::function<void(const std::string&)>;
@@ -89,6 +90,7 @@ public:
         dpadSettlePress_.store(pressMs, std::memory_order_relaxed);
         dpadSettleRelease_.store(releaseMs, std::memory_order_relaxed);
     }
+    void setHumanize(const midipad::Humanize& humanize) { humanize_.store(pack(humanize), std::memory_order_relaxed); }
 
     std::optional<Report> popReport() { return reports_.pop(); }
     LiveState live() const;
@@ -102,12 +104,16 @@ private:
     };
 
     void run(std::stop_token stop, Options options, std::shared_ptr<const midipad::Preset> preset);
+    // Humanize in one atomic word: channels, velocity and delay bounds.
+    static std::uint64_t pack(const midipad::Humanize& h);
+    static midipad::Humanize unpack(std::uint64_t word);
     void report(const Report& r);
     void publish(const class GamepadInput& gamepad, const midipad::Engine& engine);
 
     Log log_;
     std::atomic<bool> reportMidi_, reportButtons_;
     std::atomic<int> dpadSettlePress_, dpadSettleRelease_;
+    std::atomic<std::uint64_t> humanize_;
     std::shared_ptr<MidiOutput> output_;  // main thread's view, for stats
 
     midipad::SpscRing<Report, 4096> reports_;

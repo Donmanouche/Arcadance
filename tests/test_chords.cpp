@@ -81,6 +81,17 @@ TEST_CASE("the root octave can be changed") {
     CHECK(chord->notes[0] == 48);
 }
 
+TEST_CASE("the root can be doubled one or two octaves lower") {
+    auto one = parseChord("Ebmaj7", 4, 1);
+    REQUIRE(one);
+    CHECK(std::vector(one->view().begin(), one->view().end()) == std::vector<std::uint8_t>{51, 63, 67, 70, 74});
+    auto two = parseChord("F/A", 4, 2);
+    REQUIRE(two);
+    CHECK(two->notes[0] == 41);  // F2, under the A3 slash bass
+    CHECK(parseChord("C13/D", 4, 1)->count == 9);
+    CHECK_FALSE(parseChord("C", 0, 2));  // below MIDI note 0
+}
+
 TEST_CASE("invalid chords are rejected") {
     CHECK_FALSE(parseChord(""));
     CHECK_FALSE(parseChord("H"));

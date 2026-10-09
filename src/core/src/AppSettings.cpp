@@ -2,7 +2,9 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <fstream>
+#include <vector>
 #include <stdexcept>
 
 namespace midipad {
@@ -69,6 +71,22 @@ AppSettings loadSettings(const std::filesystem::path& file, AppSettings s) {
     s.performanceView = view == "performance";
     read(j, "dpad_settle_press_ms", s.dpadSettlePressMs);
     read(j, "dpad_settle_release_ms", s.dpadSettleReleaseMs);
+    std::vector<int> humanizeChannels;
+    read(j, "humanize_channels", humanizeChannels);
+    if (j.contains("humanize_channels"))
+        s.humanize.channels = 0;
+    for (int c : humanizeChannels)
+        if (c >= 1 && c <= 16)
+            s.humanize.channels = static_cast<std::uint16_t>(s.humanize.channels | (1u << (c - 1)));
+    Humanize& h = s.humanize;
+    read(j, "humanize_velocity_min", h.velocityMinPercent);
+    read(j, "humanize_velocity_max", h.velocityMaxPercent);
+    read(j, "humanize_delay_min_ms", h.delayMinMs);
+    read(j, "humanize_delay_max_ms", h.delayMaxMs);
+    h.velocityMinPercent = std::clamp(h.velocityMinPercent, 0, 100);
+    h.velocityMaxPercent = std::clamp(h.velocityMaxPercent, h.velocityMinPercent, 100);
+    h.delayMinMs = std::clamp(h.delayMinMs, 0, Humanize::kMaxDelayMs);
+    h.delayMaxMs = std::clamp(h.delayMaxMs, h.delayMinMs, Humanize::kMaxDelayMs);
     read(j, "monitor_midi", s.monitorMidi);
     read(j, "show_buttons", s.showButtons);
     if (s.virtualPortName.empty())
@@ -89,6 +107,15 @@ void saveSettings(const AppSettings& s, const std::filesystem::path& file) {
     j["view"] = s.performanceView ? "performance" : "editor";
     j["dpad_settle_press_ms"] = s.dpadSettlePressMs;
     j["dpad_settle_release_ms"] = s.dpadSettleReleaseMs;
+    Json channels = Json::array();
+    for (int c = 0; c < 16; ++c)
+        if (s.humanize.appliesTo(c))
+            channels.push_back(c + 1);
+    j["humanize_channels"] = channels;
+    j["humanize_velocity_min"] = s.humanize.velocityMinPercent;
+    j["humanize_velocity_max"] = s.humanize.velocityMaxPercent;
+    j["humanize_delay_min_ms"] = s.humanize.delayMinMs;
+    j["humanize_delay_max_ms"] = s.humanize.delayMaxMs;
     j["monitor_midi"] = s.monitorMidi;
     j["show_buttons"] = s.showButtons;
 

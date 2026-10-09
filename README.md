@@ -113,7 +113,7 @@ choisie est retrouvée au démarrage (`--view performance|editor` pour forcer).
 - en bas : la sortie MIDI à gauche, l'état de la manette à droite ;
 - le menu ☰ ouvre les **Options** dans un panneau semi-transparent : interface
   MIDI (avec le nom sous lequel chaque port est vu, création des ports VirMIDI), délai de la croix
-  directionnelle et dossier des presets ;
+  directionnelle, humanisation et dossier des presets ;
 - un clic sur un contrôle (pad, direction, zone, potentiomètre d'axe, écran)
   ouvre ses réglages dans un panneau semi-transparent au-dessus de la vue,
   sans la quitter ; « Open in editor » ouvre l'éditeur complet dessus.
@@ -181,7 +181,9 @@ Les contrôles portent les noms de l'API gamepad de SDL3 (`south`, `left_x`,
 - **Accords** : `M` majuscule signifie majeur (`CM7` = Cmaj7, et non Cm7) ;
   `C6/9` est reconnu. L'octave de la fondamentale se règle dans l'éditeur
   (champ `octave` du preset, 4 par défaut : C4 = note MIDI 60) ; un accord
-  dont une note sortirait de la plage MIDI est refusé.
+  dont une note sortirait de la plage MIDI est refusé. « Bass root » double la
+  fondamentale une ou deux octaves plus bas pour asseoir la basse (champ
+  `root_below` : 1 ou 2).
 - **Freeze** : gèle l'axe à sa valeur courante.
 - **Inversion d'axe** (`axis_invert`) : inverse le sens du CC envoyé.
 - **Gâchettes L2/R2** : utilisables à la fois comme axe (CC) et comme bouton.
@@ -192,6 +194,13 @@ Les contrôles portent les noms de l'API gamepad de SDL3 (`south`, `left_x`,
   bascule aussi sur le mapping de ce canal.
 - **Vélocité** : le champ `velocity` est respecté partout.
 - **Axes** : un CC n'est renvoyé que si sa valeur change.
+- **Humanisation** : dans Options, on choisit les canaux concernés, une plage
+  de vélocité (en % de la vélocité du mapping, 100 % par défaut) et une plage
+  de retard (0 à 500 ms). Chaque note, y compris chaque note d'un accord, tire
+  sa vélocité et son retard au hasard dans ces plages ; son relâchement est
+  retardé d'autant, si bien que sa durée ne change pas. Une affectation peut
+  s'en passer (case « Humanize » du mapping, champ `"humanize": false` du
+  preset). Panic coupe tout immédiatement, notes en attente comprises.
 - **Toggle exclusif** : les notes et accords en mode toggle s'excluent au sein
   d'une même famille de contrôles (boutons, croix directionnelle, chaque doigt
   du touchpad). Les CC en toggle sont toujours indépendants.

@@ -3,6 +3,7 @@
 #include <doctest/doctest.h>
 
 #include <algorithm>
+#include <functional>
 #include <utility>
 #include <vector>
 
@@ -424,4 +425,133 @@ TEST_CASE_FIXTURE(Fixture, "sounding slots show held and latched controls of the
 
     tap(Button::Start);  // channel 2: the latch belongs to channel 1
     CHECK(engine.soundingSlots() == 0);
+}
+
+namespace {
+
+Humanize humanizeChannel1(int velocityMin, int velocityMax, int delayMin, int delayMax) {
+    Humanize h;
+    h.channels = 1;  // channel 1 only
+    h.velocityMinPercent = velocityMin;
+    h.velocityMaxPercent = velocityMax;
+    h.delayMinMs = delayMin;
+    h.delayMaxMs = delayMax;
+    return h;
+}
+
+constexpr std::uint64_t kMs = 1'000'000;
+
+}  // namespace
+
+TEST_CASE_FIXTURE(Fixture, "humanization scales the velocity on the chosen channels only") {
+    Preset p;
+    button(p, Button::South) = note(60);
+    load(p);
+    engine.setHumanize(humanizeChannel1(50, 50, 0, 0));
+
+    tap(Button::South);
+    CHECK(sink.take() == Messages{on(0, 60, 50), off(0, 60)});
+
+    engine.setChannel(1);  // channel 2: not humanized
+    tap(Button::South);
+    CHECK(sink.take() == Messages{on(1, 60, 100), off(1, 60)});
+}
+
+TEST_CASE_FIXTURE(Fixture, "a mapping can opt out of humanization") {
+    Preset p;
+    button(p, Button::South) = note(60);
+    button(p, Button::South).humanize = false;
+    load(p);
+    engine.setHumanize(humanizeChannel1(10, 10, 200, 200));
+
+    tap(Button::South);
+    CHECK(sink.take() == Messages{on(0, 60, 100), off(0, 60)});
+}
+
+TEST_CASE_FIXTURE(Fixture, "a humanized note starts late and keeps its length") {
+    Preset p;
+    button(p, Button::North) = chord("C");
+    load(p);
+    engine.setHumanize(humanizeChannel1(100, 100, 100, 100));
+
+    engine.tick(0);
+    engine.buttonChanged(Button::North, true);
+    engine.tick(99 * kMs);
+    CHECK(sink.take().empty());
+    engine.tick(100 * kMs);
+    CHECK(sink.take() == Messages{on(0, 60, 100), on(0, 64, 100), on(0, 67, 100)});
+
+    engine.tick(150 * kMs);
+    engine.buttonChanged(Button::North, false);
+    CHECK(sink.take().empty());
+    engine.tick(250 * kMs);
+    CHECK(sink.take() == Messages{off(0, 60), off(0, 64), off(0, 67)});
+}
+
+TEST_CASE_FIXTURE(Fixture, "each note of a humanized chord gets its own velocity and delay, within the bounds") {
+    Preset p;
+    button(p, Button::North) = chord("Cmaj9");
+    load(p);
+    engine.setHumanize(humanizeChannel1(40, 80, 0, 300));
+
+    bool velocitiesDiffer = false;
+    std::uint64_t t = 0;
+    for (int round = 0; round < 20; ++round) {
+        engine.tick(t);
+        engine.buttonChanged(Button::North, true);
+        std::vector<int> velocities;
+        for (int ms = 0; ms <= 300; ++ms) {
+            engine.tick(t + static_cast<std::uint64_t>(ms) * kMs);
+            for (const auto& m : sink.take()) {
+                velocities.push_back(m.bytes[2]);
+                CHECK(m.bytes[2] >= 40);
+                CHECK(m.bytes[2] <= 80);
+            }
+        }
+        CHECK(velocities.size() == 5);
+        velocitiesDiffer |= std::adjacent_find(velocities.begin(), velocities.end(), std::not_equal_to<>()) !=
+                            velocities.end();
+        engine.buttonChanged(Button::North, false);
+        t += 1000 * kMs;
+        engine.tick(t);
+        CHECK(sink.take().size() == 5);
+    }
+    CHECK(velocitiesDiffer);
+}
+
+TEST_CASE_FIXTURE(Fixture, "panic drops the humanized notes not started yet") {
+    Preset p;
+    button(p, Button::North) = note(60);
+    button(p, Button::South) = note(62);
+    load(p);
+    engine.setHumanize(humanizeChannel1(100, 100, 100, 100));
+
+    engine.tick(0);
+    engine.buttonChanged(Button::South, true);
+    engine.tick(100 * kMs);
+    CHECK(sink.take() == Messages{on(0, 62, 100)});
+    engine.buttonChanged(Button::North, true);  // due at 200 ms
+    engine.releaseAll();
+    CHECK(sink.take() == Messages{off(0, 62), off(0, 60)});  // slot order; 60 never started
+    engine.tick(300 * kMs);
+    CHECK(sink.take().empty());
+}
+
+TEST_CASE_FIXTURE(Fixture, "a note played again ends its previous instance first") {
+    Preset p;
+    button(p, Button::South) = note(60);
+    load(p);
+    Humanize h = humanizeChannel1(100, 100, 100, 100);
+    engine.setHumanize(h);
+
+    engine.tick(0);
+    engine.buttonChanged(Button::South, true);
+    engine.tick(100 * kMs);
+    engine.buttonChanged(Button::South, false);  // off due at 200 ms
+    h.delayMinMs = h.delayMaxMs = 0;
+    engine.setHumanize(h);
+    engine.buttonChanged(Button::South, true);  // starts now
+    CHECK(sink.take() == Messages{on(0, 60, 100), off(0, 60), on(0, 60, 100)});
+    engine.tick(300 * kMs);
+    CHECK(sink.take().empty());
 }

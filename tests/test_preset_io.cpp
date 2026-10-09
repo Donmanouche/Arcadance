@@ -86,10 +86,29 @@ TEST_CASE("a chord can be placed in another octave") {
     CHECK(saved["base"]["buttons"]["north"]["octave"] == 2);
     CHECK_FALSE(saved["base"]["buttons"]["south"].contains("octave"));  // the default stays implicit
 
+    const Json doubled = minimal({{"buttons", {{"north", {{"type", "chord"}, {"chord", "Cm"}, {"root_below", 2}}}}}});
+    const TriggerBinding bass = presetFromJson(doubled).base.buttons[static_cast<std::size_t>(Button::North)];
+    CHECK(bass.chordRootBelow == 2);
+    CHECK(std::vector(bass.chord.view().begin(), bass.chord.view().end()) == std::vector<std::uint8_t>{36, 60, 63, 67});
+    CHECK(presetToJson(presetFromJson(doubled))["base"]["buttons"]["north"]["root_below"] == 2);
+    CHECK(errorFor(minimal({{"buttons", {{"north", {{"type", "chord"}, {"chord", "Cm"}, {"root_below", 3}}}}}})) ==
+          "base.buttons.north.root_below: expected 0, 1 or 2 (octaves below the root)");
+
     CHECK(errorFor(minimal({{"buttons", {{"north", {{"type", "chord"}, {"chord", "Cm"}, {"octave", 9}}}}}})) ==
           "base.buttons.north.octave: expected an integer from 0 to 8");
     CHECK(errorFor(minimal({{"buttons", {{"north", {{"type", "chord"}, {"chord", "B13"}, {"octave", 8}}}}}})) ==
           "base.buttons.north.octave: \"B13\" goes beyond the MIDI notes in this octave");
+}
+
+TEST_CASE("a note or chord can opt out of humanization") {
+    const Json j = minimal({{"buttons", {{"north", {{"type", "chord"}, {"chord", "Cm"}, {"humanize", false}}},
+                                         {"south", {{"type", "note"}, {"note", 60}}}}}});
+    const Preset p = presetFromJson(j);
+    CHECK_FALSE(p.base.buttons[static_cast<std::size_t>(Button::North)].humanize);
+    CHECK(p.base.buttons[static_cast<std::size_t>(Button::South)].humanize);
+    const Json saved = presetToJson(p);
+    CHECK(saved["base"]["buttons"]["north"]["humanize"] == false);
+    CHECK_FALSE(saved["base"]["buttons"]["south"].contains("humanize"));
 }
 
 TEST_CASE("errors name the faulty entry") {

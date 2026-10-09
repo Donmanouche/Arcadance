@@ -100,6 +100,7 @@ private:
 Runtime::Runtime(std::shared_ptr<MidiOutput> output, std::shared_ptr<const Preset> preset, Options options, Log log)
     : log_(std::move(log)), reportMidi_(options.reportMidi), reportButtons_(options.reportButtons),
       dpadSettlePress_(options.dpadSettlePressMs), dpadSettleRelease_(options.dpadSettleReleaseMs),
+      humanize_(pack(options.humanize)),
       output_(output), channel_(options.channel) {
     pendingOutput_ = std::move(output);
     thread_ = std::jthread([this, options, preset](std::stop_token stop) { run(stop, options, preset); });
@@ -162,6 +163,22 @@ void Runtime::report(const Report& r) {
         droppedReports_.fetch_add(1, std::memory_order_relaxed);
 }
 
+std::uint64_t Runtime::pack(const Humanize& h) {
+    auto field = [](int v, int high) { return static_cast<std::uint64_t>(std::clamp(v, 0, high)); };
+    return static_cast<std::uint64_t>(h.channels) | field(h.velocityMinPercent, 127) << 16 |
+           field(h.velocityMaxPercent, 127) << 23 | field(h.delayMinMs, 1023) << 30 | field(h.delayMaxMs, 1023) << 40;
+}
+
+Humanize Runtime::unpack(std::uint64_t w) {
+    Humanize h;
+    h.channels = static_cast<std::uint16_t>(w & 0xFFFF);
+    h.velocityMinPercent = static_cast<int>((w >> 16) & 0x7F);
+    h.velocityMaxPercent = static_cast<int>((w >> 23) & 0x7F);
+    h.delayMinMs = static_cast<int>((w >> 30) & 0x3FF);
+    h.delayMaxMs = static_cast<int>((w >> 40) & 0x3FF);
+    return h;
+}
+
 void Runtime::publish(const GamepadInput& gamepad, const Engine& engine) {
     const bool connected = gamepad.connected();
     if (connected != connected_.load(std::memory_order_relaxed)) {
@@ -203,6 +220,7 @@ void Runtime::run(std::stop_token stop, Options options, std::shared_ptr<const P
     }
     Tap tap(*this, std::move(output));  // the tap alone owns it, so a replaced output is closed
     Engine engine(tap);
+    engine.seedRandom(SDL_GetTicksNS() ^ static_cast<std::uint64_t>(SDL_GetPerformanceCounter()));
     engine.setPreset(std::move(preset));
     engine.setChannel(options.channel);
     engine.setObserver(&tap);
@@ -246,6 +264,7 @@ void Runtime::run(std::stop_token stop, Options options, std::shared_ptr<const P
 
         engine.setDpadSettle(dpadSettlePress_.load(std::memory_order_relaxed),
                              dpadSettleRelease_.load(std::memory_order_relaxed));
+        engine.setHumanize(unpack(humanize_.load(std::memory_order_relaxed)));
         engine.tick(start);
         gamepad.poll(start);
         publish(gamepad, engine);

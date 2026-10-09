@@ -97,6 +97,56 @@ void Engine::tick(std::uint64_t nowNs) {
         pendingHatDir_.reset();
         setHatDir(dir);
     }
+    // Humanized notes now due, oldest first.
+    while (delayedCount_ > 0) {
+        std::size_t next = delayedCount_;
+        for (std::size_t i = 0; i < delayedCount_; ++i) {
+            const Delayed& d = delayed_[i];
+            if (d.at <= now_ && (next == delayedCount_ || d.at < delayed_[next].at ||
+                                 (d.at == delayed_[next].at && d.order < delayed_[next].order)))
+                next = i;
+        }
+        if (next == delayedCount_)
+            break;
+        const MidiMessage message = delayed_[next].message;
+        delayed_[next] = delayed_[--delayedCount_];
+        sendNow(message);
+    }
+}
+
+void Engine::sendAt(std::uint64_t at, const MidiMessage& message) {
+    if (at <= now_ || delayedCount_ == delayed_.size()) {
+        sendNow(message);
+        return;
+    }
+    delayed_[delayedCount_++] = {at, delayedOrder_++, message};
+}
+
+void Engine::sendNow(const MidiMessage& message) {
+    // A note starting again first ends its previous instance, whose delayed
+    // release would otherwise cut it.
+    if ((message.bytes[0] & 0xF0) == 0x90) {
+        for (std::size_t i = 0; i < delayedCount_;) {
+            const MidiMessage& m = delayed_[i].message;
+            if ((m.bytes[0] & 0xF0) == 0x80 && (m.bytes[0] & 0x0F) == (message.bytes[0] & 0x0F) &&
+                m.bytes[1] == message.bytes[1]) {
+                sink_.send(m);
+                delayed_[i] = delayed_[--delayedCount_];
+            } else {
+                ++i;
+            }
+        }
+    }
+    sink_.send(message);
+}
+
+int Engine::randomBetween(int low, int high) {
+    if (low > high)
+        std::swap(low, high);
+    random_ ^= random_ << 13;  // xorshift64
+    random_ ^= random_ >> 7;
+    random_ ^= random_ << 17;
+    return low + static_cast<int>(random_ % static_cast<std::uint64_t>(high - low + 1));
 }
 
 void Engine::setHatDir(std::optional<HatDir> dir) {
@@ -157,6 +207,12 @@ void Engine::touchReleased(int finger) {
 }
 
 void Engine::releaseAll() {
+    // Releases still waiting go out now; notes not started yet never will.
+    for (std::size_t i = 0; i < delayedCount_; ++i)
+        if ((delayed_[i].message.bytes[0] & 0xF0) == 0x80)
+            sink_.send(delayed_[i].message);
+    delayedCount_ = 0;
+    immediate_ = true;
     for (auto& s : held_) {
         if (s.active())
             stop(s);
@@ -169,6 +225,7 @@ void Engine::releaseAll() {
             s = {};
         }
     }
+    immediate_ = false;
 }
 
 std::uint64_t Engine::soundingSlots() const {
@@ -265,7 +322,7 @@ void Engine::release(int slot) {
     s = {};
 }
 
-Engine::Sounding Engine::soundingFor(const TriggerBinding& binding) const {
+Engine::Sounding Engine::soundingFor(const TriggerBinding& binding) {
     Sounding s;
     s.type = binding.type;
     s.channel = static_cast<std::uint8_t>(channel_);
@@ -279,7 +336,13 @@ Engine::Sounding Engine::soundingFor(const TriggerBinding& binding) const {
         s.cc = binding.number;
         s.onValue = binding.onValue;
         s.offValue = binding.offValue;
+        return s;
     }
+    s.humanized = binding.humanize && humanize_.appliesTo(channel_);
+    if (s.humanized)
+        for (std::size_t i = 0; i < s.notes.count; ++i)
+            s.delayMs[i] = static_cast<std::uint16_t>(std::clamp(
+                randomBetween(humanize_.delayMinMs, humanize_.delayMaxMs), 0, Humanize::kMaxDelayMs));
     return s;
 }
 
@@ -288,8 +351,16 @@ void Engine::start(const Sounding& s) {
         sendCc(s.channel, s.cc, s.onValue);
         return;
     }
-    for (std::uint8_t note : s.notes.view())
-        sink_.send(MidiMessage::noteOn(s.channel, note, s.velocity));
+    for (std::size_t i = 0; i < s.notes.count; ++i) {
+        int velocity = s.velocity;
+        std::uint64_t at = now_;
+        if (s.humanized) {
+            const int percent = randomBetween(humanize_.velocityMinPercent, humanize_.velocityMaxPercent);
+            velocity = std::clamp((s.velocity * percent + 50) / 100, 1, 127);
+            at += static_cast<std::uint64_t>(s.delayMs[i]) * 1'000'000u;
+        }
+        sendAt(at, MidiMessage::noteOn(s.channel, s.notes.notes[i], velocity));
+    }
 }
 
 void Engine::stop(const Sounding& s) {
@@ -297,8 +368,13 @@ void Engine::stop(const Sounding& s) {
         sendCc(s.channel, s.cc, s.offValue);
         return;
     }
-    for (std::uint8_t note : s.notes.view())
-        sink_.send(MidiMessage::noteOff(s.channel, note));
+    for (std::size_t i = 0; i < s.notes.count; ++i) {
+        const MidiMessage off = MidiMessage::noteOff(s.channel, s.notes.notes[i]);
+        if (immediate_ || !s.humanized)
+            sendNow(off);
+        else
+            sendAt(now_ + static_cast<std::uint64_t>(s.delayMs[i]) * 1'000'000u, off);
+    }
 }
 
 void Engine::sendCc(int channel, int cc, int value) {

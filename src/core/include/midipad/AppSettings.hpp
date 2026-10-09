@@ -1,5 +1,6 @@
 #pragma once
 
+#include "midipad/Humanize.hpp"
 #include "midipad/Scales.hpp"
 
 #include <filesystem>
@@ -27,6 +28,8 @@ struct AppSettings {
     // Engine::setDpadSettle, in milliseconds.
     int dpadSettlePressMs = 15;
     int dpadSettleReleaseMs = 15;
+
+    Humanize humanize;  // off on every channel by default
 
     bool monitorMidi = false;
     bool showButtons = false;

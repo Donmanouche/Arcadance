@@ -1,5 +1,6 @@
 #pragma once
 
+#include "midipad/Humanize.hpp"
 #include "midipad/MidiMessage.hpp"
 #include "midipad/Preset.hpp"
 
@@ -58,7 +59,11 @@ public:
     // is immediate. 0 (the default) plays every direction at once.
     void setDpadSettle(int pressMs, int releaseMs);
     // The time, from any steady clock; call it on every poll, before the events.
+    // Also sends the humanized notes that are due.
     void tick(std::uint64_t nowNs);
+
+    void setHumanize(const Humanize& humanize) { humanize_ = humanize; }
+    void seedRandom(std::uint64_t seed) { random_ = seed ? seed : 0x9E3779B97F4A7C15ull; }
 
     void buttonChanged(Button button, bool pressed);
     // Sticks in [-1, 1] (SDL convention: up is negative), triggers in [0, 1].
@@ -67,7 +72,8 @@ public:
     void touchMoved(int finger, float x, float y);
     void touchReleased(int finger);
 
-    // Turns off every note and CC still on, latched or held.
+    // Turns off every note and CC still on, latched or held, at once: humanized
+    // notes not started yet are dropped.
     void releaseAll();
     // releaseAll(), and forgets which controls are held: for a disconnected controller.
     void reset();
@@ -94,6 +100,8 @@ private:
         std::uint8_t velocity = 0;
         std::uint8_t cc = 0, onValue = 0, offValue = 0;
         ChordNotes notes;
+        bool humanized = false;
+        std::array<std::uint16_t, 9> delayMs{};  // per note, humanized: the release is delayed alike
 
         bool active() const { return type != ActionType::None; }
     };
@@ -101,7 +109,7 @@ private:
     const TriggerBinding& bindingFor(int slot) const;
     void press(int slot);
     void release(int slot);
-    Sounding soundingFor(const TriggerBinding& binding) const;
+    Sounding soundingFor(const TriggerBinding& binding);
     void start(const Sounding& s);
     void stop(const Sounding& s);
     void sendCc(int channel, int cc, int value);
@@ -109,6 +117,10 @@ private:
     void toggleFreeze(std::uint8_t axes);
     void updateDigitalTrigger(Axis axis, float position);
     void setHatDir(std::optional<HatDir> dir);
+    // Sends `message` at `at` (now if it is not later); in time order.
+    void sendAt(std::uint64_t at, const MidiMessage& message);
+    void sendNow(const MidiMessage& message);
+    int randomBetween(int low, int high);
 
     MidiSink& sink_;
     EngineObserver* observer_ = nullptr;
@@ -128,6 +140,18 @@ private:
     std::uint64_t pendingHatAt_ = 0;
     std::uint64_t now_ = 0;
     std::uint64_t settlePressNs_ = 0, settleReleaseNs_ = 0;
+
+    Humanize humanize_;
+    std::uint64_t random_ = 0x9E3779B97F4A7C15ull;
+    struct Delayed {
+        std::uint64_t at = 0, order = 0;
+        MidiMessage message;
+    };
+    static constexpr std::size_t kMaxDelayed = 512;
+    std::array<Delayed, kMaxDelayed> delayed_{};
+    std::size_t delayedCount_ = 0;
+    std::uint64_t delayedOrder_ = 0;
+    bool immediate_ = false;  // releaseAll(): no delays
     std::array<std::optional<Zone>, kFingerCount> fingerZone_{};
     std::array<bool, 2> triggerDown_{};
 };

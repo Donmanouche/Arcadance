@@ -203,7 +203,12 @@ int run(const Options& options) {
 
     RuntimeStats stats;
     {
-        Runtime runtime(out, preset, {options.pollHz, options.channel, options.monitor, options.showInput}, say);
+        Runtime::Options runtimeOptions;
+        runtimeOptions.pollHz = options.pollHz;
+        runtimeOptions.channel = options.channel;
+        runtimeOptions.reportMidi = options.monitor;
+        runtimeOptions.reportButtons = options.showInput;
+        Runtime runtime(out, preset, runtimeOptions, say);
         auto lastModified = modificationTime(options.preset);
         auto nextPresetCheck = std::chrono::steady_clock::now();
         while (!gQuit.load()) {

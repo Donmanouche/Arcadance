@@ -72,6 +72,12 @@ TriggerBinding triggerFromJson(const Json& j, const std::string& where) {
     else
         fail(where + ".mode", "expected \"momentary\" or \"toggle\"");
 
+    if (j.contains("humanize")) {
+        if (!j["humanize"].is_boolean())
+            fail(where + ".humanize", "expected true or false");
+        b.humanize = j["humanize"].get<bool>();
+    }
+
     const std::string type = readString(j, "type", nullptr, where);
     if (type == "note") {
         b.type = ActionType::Note;
@@ -97,7 +103,11 @@ TriggerBinding triggerFromJson(const Json& j, const std::string& where) {
                 fail(where + ".octave", "expected an integer from " + std::to_string(kMinChordOctave) + " to " +
                                             std::to_string(kMaxChordOctave));
             b.chordOctave = octave.get<std::int8_t>();
-            auto chord = parseChord(b.chordName, b.chordOctave);
+            const Json below = j.value("root_below", Json(0));
+            if (!below.is_number_integer() || below.get<int>() < 0 || below.get<int>() > 2)
+                fail(where + ".root_below", "expected 0, 1 or 2 (octaves below the root)");
+            b.chordRootBelow = below.get<std::uint8_t>();
+            auto chord = parseChord(b.chordName, b.chordOctave, b.chordRootBelow);
             if (!chord && parseChord(b.chordName))
                 fail(where + ".octave", "\"" + b.chordName + "\" goes beyond the MIDI notes in this octave");
             if (!chord)
@@ -106,7 +116,7 @@ TriggerBinding triggerFromJson(const Json& j, const std::string& where) {
         } else if (j.contains("notes") && j["notes"].is_array()) {
             for (const Json& n : j["notes"]) {
                 auto note = noteFromJson(n);
-                if (!note || b.chord.count == b.chord.notes.size())
+                if (!note || b.chord.count == 8)
                     fail(where + ".notes", "expected 1 to 8 MIDI notes");
                 b.chord.notes[b.chord.count++] = *note;
             }
@@ -153,6 +163,8 @@ Json triggerToJson(const TriggerBinding& b) {
         j["note"] = b.number;
         if (b.velocity != 100)
             j["velocity"] = b.velocity;
+        if (!b.humanize)
+            j["humanize"] = false;
         break;
     case ActionType::ControlChange:
         j["type"] = "cc";
@@ -168,6 +180,8 @@ Json triggerToJson(const TriggerBinding& b) {
             j["chord"] = b.chordName;
             if (b.chordOctave != kDefaultChordOctave)
                 j["octave"] = b.chordOctave;
+            if (b.chordRootBelow != 0)
+                j["root_below"] = b.chordRootBelow;
         } else {
             Json notes = Json::array();
             for (auto n : b.chord.view())
@@ -176,6 +190,8 @@ Json triggerToJson(const TriggerBinding& b) {
         }
         if (b.velocity != 100)
             j["velocity"] = b.velocity;
+        if (!b.humanize)
+            j["humanize"] = false;
         break;
     case ActionType::Transport:
         j["type"] = "transport";

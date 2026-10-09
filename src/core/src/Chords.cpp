@@ -158,7 +158,7 @@ const Quality* findQuality(std::string_view canonical) {
 
 std::span<const std::string_view> chordQualities() { return kQualityNames; }
 
-std::optional<ChordNotes> parseChord(std::string_view name, int rootOctave) {
+std::optional<ChordNotes> parseChord(std::string_view name, int rootOctave, int rootBelow) {
     while (!name.empty() && name.front() == ' ')
         name.remove_prefix(1);
     while (!name.empty() && name.back() == ' ')
@@ -200,6 +200,8 @@ std::optional<ChordNotes> parseChord(std::string_view name, int rootOctave) {
     };
     if (bassPitch)
         add(rootOctave * 12 + *bassPitch);  // the bass pitch, one octave below the root's octave
+    if (rootBelow > 0)
+        add(root - 12 * rootBelow);
     for (std::uint8_t i = 0; i < q->count; ++i)
         add(root + q->intervals[i]);
     if (!inRange || chord.count == 0)

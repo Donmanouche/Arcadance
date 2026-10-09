@@ -27,6 +27,10 @@ public:
     // "fingers". Returns true when `mapping` was changed.
     bool drawControl(const std::string& spec, midipad::Mapping& mapping, const LiveState& live,
                      const std::optional<midipad::Key>& key);
+    // Channels where humanization is on (Options), for the hint next to the
+    // Humanize checkbox of notes and chords.
+    void setHumanizeChannels(std::uint16_t channels) { humanizeChannels_ = channels; }
+
     // A title for that control: "Cross", "D-pad: Up", "Left stick X"...
     static std::string controlTitle(const std::string& spec);
 
@@ -50,6 +54,7 @@ private:
     bool drawTriggerEditor(midipad::TriggerBinding& b);
     bool drawChordFields(midipad::TriggerBinding& b);
     bool drawNoteField(std::uint8_t& note);
+    bool drawHumanizeCheckbox(midipad::TriggerBinding& b);
     bool drawAxisForm(const char* id, midipad::AxisBinding& a, float position);
     bool drawFingerForm(int finger, midipad::FingerBinding& f, const LiveState& live);
     const std::vector<midipad::KeyChord>& keyChords();
@@ -66,4 +71,5 @@ private:
     std::optional<midipad::Key> key_;
     std::optional<midipad::Key> chordsFor_;
     std::vector<midipad::KeyChord> chords_;
+    std::uint16_t humanizeChannels_ = 0;
 };
