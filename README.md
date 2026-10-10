@@ -44,7 +44,8 @@ scène, qui joue en même temps qu'elle édite. **F11** passe en plein écran,
 - un bandeau de pads pour les boutons (✕ ○ □ △ aux couleurs PlayStation) :
   éclair à chaque appui, éclairage tant que la note ou l'accord sonne (les
   bascules verrouillées restent allumées) ;
-- en haut : menu ☰, canal et preset au centre, PANIC à droite ;
+- en haut : menu ☰, canal, preset et les boutons ▶ / ■ des boucles au centre,
+  PANIC à droite ;
 - en bas : la sortie MIDI à gauche, l'état de la manette à droite ;
 - un clic sur un contrôle (pad, direction, zone, potentiomètre d'axe, écran,
   panneau LOOP) ouvre ses réglages dans un panneau semi-transparent au-dessus
@@ -218,6 +219,11 @@ Les contrôles portent les noms de l'API gamepad de SDL3 (`south`, `left_x`,
   tête de lecture balaie dans le sens de la lecture ; ses notes s'illuminent
   quand la tête les traverse. Un clic sur le panneau règle le mode de lecture
   (champ `loops.notes` du preset).
+- **Play / Stop** : les boutons ▶ et ■ de la barre du haut pilotent les
+  boucles de tous les canaux. ■ les met en pause sans les effacer (ce qu'elles
+  font sonner s'arrête) ; ▶ les relance toutes depuis leur début, et s'allume
+  en vert tant qu'elles jouent. Un enregistrement commencé pendant l'arrêt
+  relance toutes les boucles.
 - **Overdub** : quand une boucle de notes tourne, un appui bref (moins de
   500 ms, sans rien jouer) sur « Loop record » active l'overdub : les notes
   jouées ensuite (boutons, croix, gâchettes, pads du touchpad)

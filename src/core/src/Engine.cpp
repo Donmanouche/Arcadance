@@ -539,6 +539,8 @@ void Engine::runLoops() {
         if (!moved)
             continue;
         waiting_[i] = false;
+        if (loopsPaused_)
+            playLoops();
         const std::size_t index = loopIndex(holdChannel_, source);
         silenceLoop(index);
         Loop& loop = loops_[index];
@@ -573,6 +575,10 @@ void Engine::runLoops() {
                     ++loop.length;
                 }
                 continue;
+            }
+            if (loopsPaused_) {
+                loop.nextAt = now_ + kStep;
+                break;
             }
             fromLoop_ = true;
             if (source == static_cast<int>(LoopSource::Notes))
@@ -671,6 +677,8 @@ void Engine::recordNote(int channel, int note, int velocity, std::uint64_t at) {
     Loop& loop = loops_[index];
     if (velocity > 0 && waiting_[kNotes] && channel == holdChannel_) {
         waiting_[kNotes] = false;
+        if (loopsPaused_)
+            playLoops();
         silenceLoop(index);
         loop.state = LoopStatus::State::Recording;
         loop.length = 0;
@@ -805,6 +813,36 @@ void Engine::stopLoops(int channel) {
     for (int source = 0; source < kLoopSourceCount; ++source)
         if (loops_[loopIndex(channel, source)].state == LoopStatus::State::Playing)
             clearLoop(channel, source);
+}
+
+void Engine::pauseLoops() {
+    if (loopsPaused_)
+        return;
+    loopsPaused_ = true;
+    fromLoop_ = true;
+    for (std::size_t i = 0; i < loops_.size(); ++i)
+        silenceLoop(i);  // the notes the note loops have on
+    fromLoop_ = false;
+}
+
+void Engine::playLoops() {
+    loopsPaused_ = false;
+    for (int channel = 0; channel < kChannelCount; ++channel) {
+        for (int source = 0; source < kLoopSourceCount; ++source) {
+            const std::size_t index = loopIndex(channel, source);
+            Loop& loop = loops_[index];
+            if (loop.state != LoopStatus::State::Playing)
+                continue;
+            fromLoop_ = true;
+            silenceLoop(index);
+            fromLoop_ = false;
+            const bool reverse = preset_->forChannel(channel).loops[static_cast<std::size_t>(source)].playback == LoopPlayback::Reverse;
+            loop.position = reverse ? loop.length - 1 : 0;
+            loop.direction = reverse ? -1 : 1;
+            loop.nextAt = now_;
+            loop.sentX = loop.sentY = -1;
+        }
+    }
 }
 
 std::uint16_t Engine::channelsWithLoops() const {

@@ -113,6 +113,12 @@ public:
     // A bit per channel where a loop plays or records.
     std::uint16_t channelsWithLoops() const;
     void stopLoops();  // every channel
+    // Pauses every channel's loops, keeping them (what they have on stops), or
+    // plays them all again from their start. A loop that starts recording
+    // while they are paused plays them all again.
+    void pauseLoops();
+    void playLoops();
+    bool loopsPaused() const { return loopsPaused_; }
     void seedRandom(std::uint64_t seed) { random_ = seed ? seed : 0x9E3779B97F4A7C15ull; }
 
     void buttonChanged(Button button, bool pressed);
@@ -248,6 +254,7 @@ private:
     std::array<std::uint8_t, 128> noteVelocity_{};  // of the last note-on recorded, for its release
     std::uint64_t noteRecordStart_ = 0;
     int overdubChannel_ = -1;        // the channel whose note loop takes new notes
+    bool loopsPaused_ = false;
     std::uint64_t holdStartedAt_ = 0;  // when Record went down
     std::array<std::array<float, 2>, kFingerCount> fingerPosition_{};  // raw touchpad X, Y
     std::array<bool, kFingerCount> fingerDown_{};

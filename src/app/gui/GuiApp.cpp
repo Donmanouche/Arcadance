@@ -943,7 +943,8 @@ void GuiApp::drawPerformance(const LiveState& live) {
     // Channel and preset, centered in the bar.
     ImGui::SameLine(0, px(14));
     {
-        const float groupW = px(150) + px(16) + medium->CalcTextSizeA(px(12), FLT_MAX, 0, "PRESET").x + px(8) + px(26) * 2 + px(180);
+        const float groupW = px(150) + px(16) + medium->CalcTextSizeA(px(12), FLT_MAX, 0, "PRESET").x + px(8) + px(26) * 2 + px(180) +
+                             px(14) + px(70);  // then Play and Stop
         const float centered = winPos.x + (winW - groupW) * 0.5f;
         ImGui::SetCursorScreenPos(ImVec2(std::max(ImGui::GetCursorScreenPos().x, centered), ImGui::GetCursorScreenPos().y));
     }
@@ -1043,6 +1044,40 @@ void GuiApp::drawPerformance(const LiveState& live) {
         }
         ImGui::SetCursorScreenPos(p);
         ImGui::Dummy(ImVec2(w, h));
+
+        // Play and Stop every channel's loops: Play lit green while they play.
+        const bool anyLoop = live.loopChannels != 0;
+        const bool loopsPlaying = anyLoop && !live.loopsPaused;
+        auto transport = [&](const char* id, bool play) {
+            ImGui::SameLine(0, play ? px(14) : px(6));
+            const ImVec2 q = ImGui::GetCursorScreenPos();
+            const float side = px(32);
+            const bool clicked = ImGui::InvisibleButton(id, ImVec2(side, side));
+            const bool hovered = ImGui::IsItemHovered();
+            const bool lit = play && loopsPlaying;
+            dl->AddRectFilled(q, ImVec2(q.x + side, q.y + side),
+                              lit ? (Theme::kGreen & ~IM_COL32_A_MASK) | IM_COL32(0, 0, 0, 60)
+                                  : hovered ? Theme::kControlBorder : Theme::kControl, px(5));
+            dl->AddRect(q, ImVec2(q.x + side, q.y + side), lit ? Theme::kGreen : Theme::kControlBorder, px(5), px(lit ? 1.3f : 1.0f));
+            const ImVec2 c(q.x + side * 0.5f, q.y + side * 0.5f);
+            if (play) {
+                const float t = px(6.5f);
+                dl->AddTriangleFilled(ImVec2(c.x - t * 0.75f, c.y - t), ImVec2(c.x - t * 0.75f, c.y + t), ImVec2(c.x + t, c.y),
+                                      lit ? Theme::kGreen : Theme::kLabel);
+            } else {
+                const float t = px(5.5f);
+                dl->AddRectFilled(ImVec2(c.x - t, c.y - t), ImVec2(c.x + t, c.y + t),
+                                  anyLoop && !loopsPlaying ? Theme::kText : Theme::kLabel, px(1.5f));
+            }
+            return clicked;
+        };
+        if (transport("##loopsplay", true))
+            runtime_->playLoops();
+        ImGui::SetItemTooltip("Plays every channel's loops again, from their start");
+        if (transport("##loopsstop", false))
+            runtime_->pauseLoops();
+        ImGui::SetItemTooltip("Stops every channel's loops, keeping them");
+
         if (dirty_) {
             ImGui::SameLine(0, px(8));
             ImGui::PushStyleColor(ImGuiCol_Text, color(Theme::kOrange));

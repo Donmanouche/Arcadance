@@ -1062,3 +1062,27 @@ TEST_CASE_FIXTURE(ZonesFixture, "after recording only pads, a tap of Record turn
     NoteInterval notes[8];
     CHECK(engine.noteLoopIntervals(0, notes, 8) == 2);
 }
+
+TEST_CASE_FIXTURE(NoteLoopFixture, "Stop pauses every loop without clearing it, Play starts them again from the start") {
+    recordLeft();  // a stick loop on CC 70
+    recordShortLoop(*this, 4);  // and a note loop
+    engine.pauseLoops();
+    CHECK(engine.loopsPaused());
+    sink.take();
+    CHECK(played(70, 6).empty());
+    CHECK(engine.loopStatus(0, 0).state == LoopStatus::State::Playing);  // kept
+    engine.playLoops();
+    CHECK_FALSE(engine.loopsPaused());
+    const auto values = played(70, 3);
+    REQUIRE(values.size() >= 1);
+    CHECK(values[0] == 127);  // from the start
+}
+
+TEST_CASE_FIXTURE(NoteLoopFixture, "recording while the loops are stopped plays them all again") {
+    recordLeft();
+    engine.pauseLoops();
+    engine.setChannel(1);
+    recordLeft(Axis::RightX);  // a new loop, on another channel
+    CHECK_FALSE(engine.loopsPaused());
+    CHECK_FALSE(played(70, 4).empty());  // channel 1's loop plays again
+}

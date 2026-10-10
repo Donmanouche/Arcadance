@@ -64,6 +64,7 @@ struct LiveState {
     int noteLoopCount = 0;
     std::uint64_t sounding = 0;   // Engine::soundingSlots()
     std::uint16_t loopChannels = 0;  // Engine::channelsWithLoops()
+    bool loopsPaused = false;
 
     bool isDown(midipad::Button b) const { return (buttons >> static_cast<int>(b)) & 1u; }
     bool isSounding(int slot) const { return (sounding >> slot) & 1u; }
@@ -107,6 +108,8 @@ public:
     void setChannel(int channel);
     void panic();  // also stops the loops, on every channel
     void clearLoop(int source);  // a LoopSource, on the active channel
+    void pauseLoops();  // every channel's
+    void playLoops();
     void setReportMidi(bool on) { reportMidi_.store(on, std::memory_order_relaxed); }
     void setReportButtons(bool on) { reportButtons_.store(on, std::memory_order_relaxed); }
     void setDpadSettle(int pressMs, int releaseMs) {
@@ -123,7 +126,7 @@ public:
 private:
     class Tap;
     struct Command {
-        enum class Kind : std::uint8_t { SetChannel, Panic, ClearLoop } kind;
+        enum class Kind : std::uint8_t { SetChannel, Panic, ClearLoop, PauseLoops, PlayLoops } kind;
         int channel = 0;
     };
 
@@ -160,6 +163,7 @@ private:
     std::atomic<std::uint8_t> frozen_{0};
     std::atomic<std::uint64_t> sounding_{0};
     std::atomic<std::uint16_t> loopChannels_{0};
+    std::atomic<bool> loopsPaused_{false};
     mutable std::mutex loopsMutex_;  // the input thread only try_locks it
     std::array<LiveState::Loop, midipad::kLoopSourceCount> loops_{};
     std::array<midipad::NoteInterval, LiveState::kMaxNoteLoopNotes> noteLoop_{};

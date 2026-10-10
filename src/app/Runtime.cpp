@@ -136,6 +136,10 @@ void Runtime::panic() { commands_.push({Command::Kind::Panic}); }
 
 void Runtime::clearLoop(int source) { commands_.push({Command::Kind::ClearLoop, source}); }
 
+void Runtime::pauseLoops() { commands_.push({Command::Kind::PauseLoops}); }
+
+void Runtime::playLoops() { commands_.push({Command::Kind::PlayLoops}); }
+
 LiveState Runtime::live() const {
     LiveState s;
     s.connected = connected_.load(std::memory_order_relaxed);
@@ -150,6 +154,7 @@ LiveState Runtime::live() const {
     s.frozenAxes = frozen_.load(std::memory_order_relaxed);
     s.sounding = sounding_.load(std::memory_order_relaxed);
     s.loopChannels = loopChannels_.load(std::memory_order_relaxed);
+    s.loopsPaused = loopsPaused_.load(std::memory_order_relaxed);
     {
         std::lock_guard lock(loopsMutex_);
         s.loops = loops_;
@@ -217,6 +222,7 @@ void Runtime::publish(const GamepadInput& gamepad, const Engine& engine) {
     frozen_.store(frozen, std::memory_order_relaxed);
     sounding_.store(engine.soundingSlots(), std::memory_order_relaxed);
     loopChannels_.store(engine.channelsWithLoops(), std::memory_order_relaxed);
+    loopsPaused_.store(engine.loopsPaused(), std::memory_order_relaxed);
 
     // The loops, if the main thread is not reading them right now.
     std::unique_lock lock(loopsMutex_, std::try_to_lock);
@@ -296,6 +302,10 @@ void Runtime::run(std::stop_token stop, Options options, std::shared_ptr<const P
                 engine.setChannel(command->channel);
             } else if (command->kind == Command::Kind::ClearLoop) {
                 engine.clearLoop(engine.channel(), command->channel);  // `channel` holds the source
+            } else if (command->kind == Command::Kind::PauseLoops) {
+                engine.pauseLoops();
+            } else if (command->kind == Command::Kind::PlayLoops) {
+                engine.playLoops();
             } else {
                 engine.releaseAll();
                 engine.stopLoops();
