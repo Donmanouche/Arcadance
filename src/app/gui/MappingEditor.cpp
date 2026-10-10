@@ -201,10 +201,12 @@ bool MappingEditor::drawControl(const std::string& spec, Mapping& m, const LiveS
     } else if (p.size() == 2 && p[0] == "finger" && (p[1] == "1" || p[1] == "2")) {
         const int finger = p[1][0] - '1';
         changed |= drawFingerForm(finger, m.fingers[static_cast<std::size_t>(finger)], live);
+        changed |= drawLoopForm(2 + finger, m);
     } else if (p.size() == 1 && p[0] == "fingers") {
         for (int f = 0; f < kFingerCount; ++f) {
             ImGui::SeparatorText(f == 0 ? "Finger 1" : "Finger 2");
             changed |= drawFingerForm(f, m.fingers[static_cast<std::size_t>(f)], live);
+            changed |= drawLoopForm(2 + f, m);
         }
     }
     if (trigger)
@@ -213,11 +215,15 @@ bool MappingEditor::drawControl(const std::string& spec, Mapping& m, const LiveS
     return changed;
 }
 
-bool MappingEditor::drawLoopForm(int stick, Mapping& m) {
+// The loop a Loop record button captures from a stick or finger (a
+// LoopSource): how it plays, and on which CCs, beside the source's own.
+bool MappingEditor::drawLoopForm(int source, Mapping& m) {
+    static constexpr const char* kTitles[] = {"Left stick loop (recorded movement)", "Right stick loop (recorded movement)",
+                                              "Finger 1 loop (recorded movement)", "Finger 2 loop (recorded movement)"};
     bool changed = false;
-    LoopBinding& loop = m.loops[static_cast<std::size_t>(stick)];
-    ImGui::SeparatorText(stick == 0 ? "Left stick loop (recorded movement)" : "Right stick loop (recorded movement)");
-    ImGui::PushID("loop");
+    LoopBinding& loop = m.loops[static_cast<std::size_t>(source)];
+    ImGui::PushID(source);
+    ImGui::SeparatorText(kTitles[source]);
     ImGui::AlignTextToFramePadding();
     ImGui::TextUnformatted("Playback");
     const std::pair<LoopPlayback, const char*> playbacks[] = {
@@ -229,16 +235,40 @@ bool MappingEditor::drawLoopForm(int stick, Mapping& m) {
             changed = true;
         }
     }
+    // What the source itself sends.
+    const bool finger = source >= 2;
+    const FingerBinding* f = finger ? &m.fingers[static_cast<std::size_t>(source - 2)] : nullptr;
+    if (finger && f->mode != TouchMode::Axis) {
+        ImGui::PushStyleColor(ImGuiCol_Text, kHintColor);
+        ImGui::TextWrapped(f->mode == TouchMode::Zones
+                               ? "In 4-pad mode the loop plays the pads again, as they are mapped; what still sounds "
+                                 "is cut when the loop starts over."
+                               : "The finger is off: nothing to record.");
+        ImGui::PopStyleColor();
+        if (ImGui::Button("Clear the loop"))
+            clearLoopRequest_ = source;
+        ImGui::PopID();
+        return changed;
+    }
     changed |= inputU7("Loop CC for X", loop.ccX);
     changed |= inputU7("Loop CC for Y", loop.ccY);
-    const AxisBinding& ax = m.axes[static_cast<std::size_t>(stick == 0 ? Axis::LeftX : Axis::RightX)];
-    const AxisBinding& ay = m.axes[static_cast<std::size_t>(stick == 0 ? Axis::LeftY : Axis::RightY)];
-    // The loop plays beside the sticks: a CC they send too would fight.
+    const AxisBinding& own = finger ? f->x : m.axes[static_cast<std::size_t>(source == 0 ? Axis::LeftX : Axis::RightX)];
+    const AxisBinding& ownY = finger ? f->y : m.axes[static_cast<std::size_t>(source == 0 ? Axis::LeftY : Axis::RightY)];
+
+    // The loop plays beside the sticks and fingers: a CC they send too would fight.
     std::string clash;
-    for (int a = 0; a < kAxisCount; ++a) {
-        const AxisBinding& b = m.axes[static_cast<std::size_t>(a)];
+    auto check = [&](const AxisBinding& b, const std::string& name) {
         if (b.enabled && (b.cc == loop.ccX || b.cc == loop.ccY))
-            clash += (clash.empty() ? "" : ", ") + label(static_cast<Axis>(a)) + " (CC " + std::to_string(b.cc) + ")";
+            clash += (clash.empty() ? "" : ", ") + name + " (CC " + std::to_string(b.cc) + ")";
+    };
+    for (int a = 0; a < kAxisCount; ++a)
+        check(m.axes[static_cast<std::size_t>(a)], label(static_cast<Axis>(a)));
+    for (int k = 0; k < kFingerCount; ++k) {
+        const FingerBinding& other = m.fingers[static_cast<std::size_t>(k)];
+        if (other.mode == TouchMode::Axis) {
+            check(other.x, "finger " + std::to_string(k + 1) + " X");
+            check(other.y, "finger " + std::to_string(k + 1) + " Y");
+        }
     }
     if (!clash.empty()) {
         ImGui::PushStyleColor(ImGuiCol_Text, kErrorColor);
@@ -246,13 +276,14 @@ bool MappingEditor::drawLoopForm(int stick, Mapping& m) {
         ImGui::PopStyleColor();
     } else {
         ImGui::PushStyleColor(ImGuiCol_Text, kHintColor);
-        ImGui::TextWrapped("The loop plays beside the stick, on its own CCs (the stick sends %s and %s).",
-                           ax.enabled ? ("CC " + std::to_string(ax.cc)).c_str() : "nothing",
-                           ay.enabled ? ("CC " + std::to_string(ay.cc)).c_str() : "nothing");
+        ImGui::TextWrapped("The loop plays beside the %s, on its own CCs (the %s sends %s and %s).",
+                           finger ? "finger" : "stick", finger ? "finger" : "stick",
+                           own.enabled ? ("CC " + std::to_string(own.cc)).c_str() : "nothing",
+                           ownY.enabled ? ("CC " + std::to_string(ownY.cc)).c_str() : "nothing");
         ImGui::PopStyleColor();
     }
     if (ImGui::Button("Clear the loop"))
-        clearLoopRequest_ = stick;
+        clearLoopRequest_ = source;
     ImGui::PopID();
     return changed;
 }

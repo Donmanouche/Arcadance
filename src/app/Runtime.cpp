@@ -130,7 +130,7 @@ void Runtime::setChannel(int channel) { commands_.push({Command::Kind::SetChanne
 
 void Runtime::panic() { commands_.push({Command::Kind::Panic}); }
 
-void Runtime::clearLoop(int stick) { commands_.push({Command::Kind::ClearLoop, stick}); }
+void Runtime::clearLoop(int source) { commands_.push({Command::Kind::ClearLoop, source}); }
 
 LiveState Runtime::live() const {
     LiveState s;
@@ -215,15 +215,18 @@ void Runtime::publish(const GamepadInput& gamepad, const Engine& engine) {
     if (!lock.owns_lock())
         return;
     const int channel = engine.channel();  // the loops shown are the active channel's
-    for (int s = 0; s < 2; ++s) {
+    for (int s = 0; s < kLoopSourceCount; ++s) {
         LiveState::Loop& loop = loops_[static_cast<std::size_t>(s)];
         loop.status = engine.loopStatus(channel, s);
         const int length = loop.status.length;
         loop.points = std::min(length, LiveState::Loop::kPoints);
         for (int i = 0; i < loop.points; ++i) {
             const int at = loop.points > 1 ? static_cast<int>(static_cast<long long>(i) * (length - 1) / (loop.points - 1)) : 0;
-            loop.x[static_cast<std::size_t>(i)] = static_cast<std::uint8_t>(std::lround(engine.loopSample(channel, s, 0, at) * 255.0f));
-            loop.y[static_cast<std::size_t>(i)] = static_cast<std::uint8_t>(std::lround(engine.loopSample(channel, s, 1, at) * 255.0f));
+            const float x = engine.loopSample(channel, s, 0, at), y = engine.loopSample(channel, s, 1, at);
+            const float scale = loop.status.zones ? 1.0f : 255.0f;  // pads stay pad numbers
+            loop.on[static_cast<std::size_t>(i)] = x >= 0;
+            loop.x[static_cast<std::size_t>(i)] = static_cast<std::uint8_t>(std::lround(std::max(x, 0.0f) * scale));
+            loop.y[static_cast<std::size_t>(i)] = static_cast<std::uint8_t>(std::lround(std::max(y, 0.0f) * scale));
         }
     }
 }
@@ -283,7 +286,7 @@ void Runtime::run(std::stop_token stop, Options options, std::shared_ptr<const P
             if (command->kind == Command::Kind::SetChannel) {
                 engine.setChannel(command->channel);
             } else if (command->kind == Command::Kind::ClearLoop) {
-                engine.clearLoop(engine.channel(), command->channel);  // `channel` holds the stick
+                engine.clearLoop(engine.channel(), command->channel);  // `channel` holds the source
             } else {
                 engine.releaseAll();
                 engine.stopLoops();

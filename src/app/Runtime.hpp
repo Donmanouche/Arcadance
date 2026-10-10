@@ -41,14 +41,16 @@ struct LiveState {
     std::array<Finger, midipad::kFingerCount> fingers{};
     int channel = 0;
     std::uint8_t frozenAxes = 0;  // on the active channel
-    // The stick loops, for display: their curves reduced to kPoints.
+    // The active channel's loops (by LoopSource), for display: their curves
+    // reduced to kPoints.
     struct Loop {
         static constexpr int kPoints = 160;
         midipad::LoopStatus status;
-        int points = 0;  // valid entries of x and y, spread over the whole loop
-        std::array<std::uint8_t, kPoints> x{}, y{};  // 0-255
+        int points = 0;  // valid entries of x, y and on, spread over the whole loop
+        std::array<std::uint8_t, kPoints> x{}, y{};  // 0-255; the pad (0-3) for a 4-pad loop
+        std::array<bool, kPoints> on{};              // false while a finger was lifted
     };
-    std::array<Loop, 2> loops{};
+    std::array<Loop, midipad::kLoopSourceCount> loops{};
     std::uint64_t sounding = 0;   // Engine::soundingSlots()
 
     bool isDown(midipad::Button b) const { return (buttons >> static_cast<int>(b)) & 1u; }
@@ -92,7 +94,7 @@ public:
     void setOutput(std::shared_ptr<MidiOutput> output);
     void setChannel(int channel);
     void panic();  // also stops the loops, on every channel
-    void clearLoop(int stick);  // on the active channel
+    void clearLoop(int source);  // a LoopSource, on the active channel
     void setReportMidi(bool on) { reportMidi_.store(on, std::memory_order_relaxed); }
     void setReportButtons(bool on) { reportButtons_.store(on, std::memory_order_relaxed); }
     void setDpadSettle(int pressMs, int releaseMs) {
@@ -144,7 +146,7 @@ private:
     std::atomic<std::uint8_t> frozen_{0};
     std::atomic<std::uint64_t> sounding_{0};
     mutable std::mutex loopsMutex_;  // the input thread only try_locks it
-    std::array<LiveState::Loop, 2> loops_{};
+    std::array<LiveState::Loop, midipad::kLoopSourceCount> loops_{};
     mutable std::mutex nameMutex_;
     std::string gamepadName_;
 

@@ -175,12 +175,20 @@ Les contrôles portent les noms de l'API gamepad de SDL3 (`south`, `left_x`,
   fondamentale une ou deux octaves plus bas pour asseoir la basse (champ
   `root_below` : 1 ou 2).
 - **Boucles (Loop record)** : tant qu'un bouton « Loop record » est maintenu,
-  MidiPad enregistre le stick qui bouge (gauche, droit ou les deux, au-delà
-  d'environ 12 % de course) ; au relâchement, le mouvement X/Y tourne en
-  boucle, comme un LFO, sur le canal où il a été enregistré. La boucle joue à
-  côté du stick, qui reste libre : elle a ses propres CC (70/71 à gauche,
-  72/73 à droite par défaut), son mode de lecture (avant, arrière,
-  aller-retour), réglés dans la fenêtre du stick (champ `loops` du preset).
+  MidiPad enregistre ce qui bouge : un stick (au-delà d'environ 12 % de
+  course) ou un doigt sur le touchpad, plusieurs à la fois si besoin ; au relâchement, chaque mouvement X/Y tourne en boucle,
+  comme un LFO, sur le canal où il a été enregistré. Les moments où un doigt
+  était levé sont enregistrés aussi et ne jouent rien. La boucle joue à côté
+  du stick ou du doigt, qui reste libre : elle a ses propres CC (70/71 et
+  72/73 pour les sticks, 74/75 et 76/77 pour les doigts par défaut) et son
+  mode de lecture (avant, arrière, aller-retour), réglés dans la fenêtre du
+  stick ou du touchpad (champ `loops` du preset). En mode 4 pads, un doigt
+  enregistre les pads qu'il joue : la boucle les rejoue tels qu'ils sont
+  mappés (notes, accords, CC, momentanés ou en bascule), et coupe ce qui sonne
+  encore quand elle repart du début. Le module TOUCHPAD montre les CC (ou les
+  pads) de chaque doigt et un écran LOOP où les gestes enregistrés sont tracés
+  (une ligne par pad pour les boucles de pads), avec une frise des moments où
+  chaque doigt touchait.
   Chaque canal a ses deux boucles (gauche et droite) : on peut enregistrer
   sur le canal 1, passer au canal 2 et enregistrer encore ; toutes jouent en
   même temps. Un appui sans bouger aucun stick arrête les boucles du canal

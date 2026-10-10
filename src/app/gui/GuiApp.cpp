@@ -238,6 +238,7 @@ private:
     PerformanceView::Fonts uiFonts_;
     std::optional<std::string> overlaySpec_;  // control edited over the animated view
     bool overlayAppearing_ = false;
+    int overlayPlacingFrames_ = 0;
     bool optionsOpen_ = false;  // the Options panel over the animated view
     bool optionsAppearing_ = false;
 
@@ -465,8 +466,8 @@ void GuiApp::handleEvent(const SDL_Event& e) {
 
 void GuiApp::update() {
     finishVirMidiJob();
-    if (const auto stick = editor_.takeClearLoopRequest())
-        runtime_->clearLoop(*stick);
+    if (const auto source = editor_.takeClearLoopRequest())
+        runtime_->clearLoop(*source);
     while (runtime_->popReport()) {
     }
     {
@@ -1468,16 +1469,20 @@ void GuiApp::drawMappingOverlay(const LiveState& live) {
     using Theme = PerformanceView::Theme;
     const std::string spec = *overlaySpec_;
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    // Centered for its first frames, while its size settles; movable afterwards.
     if (overlayAppearing_) {
-        ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + viewport->WorkSize.x * 0.5f,
-                                       viewport->WorkPos.y + viewport->WorkSize.y * 0.45f),
-                                ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+        overlayPlacingFrames_ = 3;
         ImGui::SetNextWindowFocus();
         overlayAppearing_ = false;
     }
+    if (overlayPlacingFrames_ > 0) {
+        --overlayPlacingFrames_;
+        ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + viewport->WorkSize.x * 0.5f,
+                                       viewport->WorkPos.y + viewport->WorkSize.y * 0.5f),
+                                ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+    }
     ImGui::SetNextWindowBgAlpha(0.88f);
-    ImGui::SetNextWindowSizeConstraints(ImVec2(ImGui::GetFontSize() * 26, 0),
-                                        ImVec2(ImGui::GetFontSize() * 40, viewport->WorkSize.y * 0.85f));
+    ImGui::SetNextWindowSizeConstraints(ImVec2(ImGui::GetFontSize() * 26, 0), ImVec2(ImGui::GetFontSize() * 40, FLT_MAX));
     ImGui::PushStyleColor(ImGuiCol_WindowBg, ImGui::ColorConvertU32ToFloat4(Theme::kPanelHeader));
     ImGui::PushStyleColor(ImGuiCol_TitleBg, ImGui::ColorConvertU32ToFloat4(Theme::kBorder));
     ImGui::PushStyleColor(ImGuiCol_TitleBgActive, ImGui::ColorConvertU32ToFloat4(Theme::kBorder));
@@ -1499,9 +1504,15 @@ void GuiApp::drawMappingOverlay(const LiveState& live) {
                            own ? ("Editing the mapping of channel " + std::to_string(live.channel + 1)).c_str()
                                : "Editing the base mapping (all channels)");
         ImGui::Spacing();
+        // The forms scroll when the window is too short; the buttons stay in view.
+        ImGui::SetNextWindowSizeConstraints(ImVec2(0, 0),
+                                            ImVec2(FLT_MAX, std::max(ImGui::GetFontSize() * 10,
+                                                                     viewport->WorkSize.y - ImGui::GetFontSize() * 9)));
+        ImGui::BeginChild("mappingbody", ImVec2(0, 0), ImGuiChildFlags_AutoResizeX | ImGuiChildFlags_AutoResizeY);
         editor_.setHumanizeChannels(settings_.humanize.channels);
         if (editor_.drawControl(spec, target, live, settings_.key))
             edited();
+        ImGui::EndChild();
 
         ImGui::Spacing();
         ImGui::Separator();

@@ -63,9 +63,15 @@ struct LoopBinding {
     friend bool operator==(const LoopBinding&, const LoopBinding&) = default;
 };
 
-// Loops of the left and right sticks, by default on CC 70/71 and 72/73.
-inline constexpr std::array<LoopBinding, 2> kDefaultLoops{{{LoopPlayback::Forward, 70, 71},
-                                                           {LoopPlayback::Forward, 72, 73}}};
+// What a loop records: a stick, or a touchpad finger in axis mode.
+enum class LoopSource : std::uint8_t { LeftStick, RightStick, Finger1, Finger2 };
+inline constexpr int kLoopSourceCount = 4;
+
+// By default on CC 70/71, 72/73 (sticks), 74/75 and 76/77 (fingers).
+inline constexpr std::array<LoopBinding, kLoopSourceCount> kDefaultLoops{{{LoopPlayback::Forward, 70, 71},
+                                                                          {LoopPlayback::Forward, 72, 73},
+                                                                          {LoopPlayback::Forward, 74, 75},
+                                                                          {LoopPlayback::Forward, 76, 77}}};
 
 enum class TouchMode : std::uint8_t { Off, Axis, Zones };
 
@@ -80,7 +86,7 @@ struct Mapping {
     std::array<TriggerBinding, kHatDirCount> dpad;
     std::array<AxisBinding, kAxisCount> axes;
     std::array<FingerBinding, kFingerCount> fingers;
-    std::array<LoopBinding, 2> loops = kDefaultLoops;  // left stick, right stick
+    std::array<LoopBinding, kLoopSourceCount> loops = kDefaultLoops;  // by LoopSource
 };
 
 struct Preset {

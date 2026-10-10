@@ -26,10 +26,11 @@ public:
     virtual void freezeChanged(int /*channel*/, std::uint8_t /*frozenAxes*/) {}
 };
 
-// What a stick's loop is doing, for display.
+// What a loop is doing, for display.
 struct LoopStatus {
     enum class State : std::uint8_t { Empty, Recording, Playing } state = State::Empty;
-    bool waiting = false;  // Record held, this stick has not moved yet
+    bool waiting = false;  // Record held, this source has not moved yet
+    bool zones = false;    // a finger in 4-pad mode: the samples are pads (0-3), not X/Y
     int length = 0;        // samples, at Engine::kLoopRateHz
     int position = 0;      // sample playing now
     int channel = 0;
@@ -74,17 +75,21 @@ public:
 
     void setHumanize(const Humanize& humanize) { humanize_ = humanize; }
 
-    // Loops, two per channel (left and right stick): a LoopRecord binding held
-    // records each stick that moves (X and Y) into its loop on the active
-    // channel; on release each recording plays in a loop on its own CCs
-    // (Mapping::loops), beside the stick. Every channel's loops play at once.
-    // A hold where no stick moves stops the loops of the active channel.
+    // Loops, one per LoopSource and channel: a LoopRecord binding held records
+    // each stick or touchpad finger that moves, X and Y, into its loop on the
+    // active channel; when a finger is lifted nothing is recorded nor, later,
+    // played. A finger in 4-pad mode records the pads it plays: the loop plays
+    // them again (as mapped), and cuts what still sounds when it starts over. On release each recording plays in a loop on its own
+    // CCs (Mapping::loops), beside the stick or finger. Every channel's loops
+    // play at once. A hold where nothing moves stops the active channel's loops.
     static constexpr int kLoopRateHz = 200;
     static constexpr int kMaxLoopSamples = 60 * kLoopRateHz;
     static constexpr float kLoopMoveThreshold = 0.06f;  // of the [0, 1] travel
-    LoopStatus loopStatus(int channel, int stick) const;
-    float loopSample(int channel, int stick, int axis, int index) const;  // [0, 1]; axis 0: X, 1: Y
-    void clearLoop(int channel, int stick);
+    LoopStatus loopStatus(int channel, int source) const;
+    // [0, 1]; axis 0: X, 1: Y (a finger's Y grows downwards); for a 4-pad
+    // loop, the pad (0-3). Negative while a finger was lifted.
+    float loopSample(int channel, int source, int axis, int index) const;
+    void clearLoop(int channel, int source);
     void stopLoops(int channel);
     void stopLoops();  // every channel
     void seedRandom(std::uint64_t seed) { random_ = seed ? seed : 0x9E3779B97F4A7C15ull; }
@@ -133,7 +138,7 @@ private:
     const TriggerBinding& bindingFor(int slot) const;
     void press(int slot);
     void release(int slot);
-    Sounding soundingFor(const TriggerBinding& binding);
+    Sounding soundingFor(const TriggerBinding& binding, int channel);
     void start(const Sounding& s);
     void stop(const Sounding& s);
     void sendCc(int channel, int cc, int value);
@@ -145,6 +150,8 @@ private:
     void endRecordHold();
     void runLoops();
     void sendLoopSample(std::size_t loop);
+    void playLoopPads(std::size_t loop);
+    void silenceLoop(std::size_t loop);
     // Sends `message` at `at` (now if it is not later); in time order.
     void sendAt(std::uint64_t at, const MidiMessage& message);
     void sendNow(const MidiMessage& message);
@@ -183,18 +190,35 @@ private:
 
     struct Loop {
         LoopStatus::State state = LoopStatus::State::Empty;
-        std::vector<std::uint16_t> x, y;  // kMaxLoopSamples each, allocated once; [0, 1] as 0-65535
+        // kMaxLoopSamples each, allocated once; [0, 1] as 0-65534, kLifted
+        // when the finger was off the touchpad.
+        std::vector<std::uint16_t> x, y;
         int length = 0, position = 0, direction = 1;
         std::uint64_t nextAt = 0;
         int sentX = -1, sentY = -1;
+        // 4-pad loops: the pad playing at the previous step, and what the loop
+        // has on, held (momentary) or latched (toggle) per pad.
+        bool zones = false;
+        int lastPad = -1;
+        Sounding held;
+        std::array<Sounding, kZoneCount> latched{};
     };
-    static constexpr std::size_t loopIndex(int channel, int stick) { return static_cast<std::size_t>(channel * 2 + stick); }
-    std::array<Loop, kChannelCount * 2> loops_;  // loopIndex(channel, stick)
-    // The hold of a LoopRecord binding: on which channel, which sticks may
+    static constexpr std::uint16_t kLifted = 0xFFFF;
+    static constexpr std::size_t loopIndex(int channel, int source) {
+        return static_cast<std::size_t>(channel * kLoopSourceCount + source);
+    }
+    std::array<Loop, kChannelCount * kLoopSourceCount> loops_;  // loopIndex(channel, source)
+    // Where a source is now: X, Y in [0, 1]; false for a lifted finger.
+    bool sourcePosition(int source, float& x, float& y) const;
+    // The hold of a LoopRecord binding: on which channel, which sources may
     // still start recording, and where they were when it began.
     int holdChannel_ = 0;
-    std::array<bool, 2> waiting_{};
-    std::array<float, 4> holdStart_{};
+    std::array<bool, kLoopSourceCount> waiting_{};
+    std::array<std::array<float, 2>, kLoopSourceCount> holdStart_{};
+    std::array<bool, kLoopSourceCount> holdStartOn_{};
+    std::array<int, kFingerCount> holdStartPad_{};  // -1: none
+    std::array<std::array<float, 2>, kFingerCount> fingerPosition_{};  // raw touchpad X, Y
+    std::array<bool, kFingerCount> fingerDown_{};
     std::array<float, 4> stickPosition_{0.5f, 0.5f, 0.5f, 0.5f};  // [0, 1], LeftX..RightY
     std::bitset<kSlotCount> recordHolders_;
     bool recordedThisHold_ = false;

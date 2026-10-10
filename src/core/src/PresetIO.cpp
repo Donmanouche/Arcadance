@@ -324,11 +324,11 @@ Mapping mappingFromJson(const Json& j, const std::string& where) {
     if (j.contains("loops")) {
         for (const auto& [key, value] : requireObject(j["loops"], where + ".loops").items()) {
             const std::string at = where + ".loops." + key;
-            const int stick = key == "left" ? 0 : key == "right" ? 1 : -1;
-            if (stick < 0)
-                fail(at, "expected \"left\" or \"right\"");
+            const int source = key == "left" ? 0 : key == "right" ? 1 : key == "finger1" ? 2 : key == "finger2" ? 3 : -1;
+            if (source < 0)
+                fail(at, "expected \"left\", \"right\", \"finger1\" or \"finger2\"");
             requireObject(value, at);
-            LoopBinding& loop = m.loops[static_cast<std::size_t>(stick)];
+            LoopBinding& loop = m.loops[static_cast<std::size_t>(source)];
             const std::string playback = readString(value, "playback", "forward", at);
             if (playback == "forward")
                 loop.playback = LoopPlayback::Forward;
@@ -405,7 +405,8 @@ Json mappingToJson(const Mapping& m) {
                                                                   : "back_and_forth";
         lj["cc_x"] = loop.ccX;
         lj["cc_y"] = loop.ccY;
-        loops[s == 0 ? "left" : "right"] = lj;
+        static constexpr const char* kKeys[] = {"left", "right", "finger1", "finger2"};
+        loops[kKeys[s]] = lj;
     }
     if (!loops.empty())
         j["loops"] = loops;

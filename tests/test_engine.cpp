@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <functional>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -691,4 +692,126 @@ TEST_CASE_FIXTURE(LoopFixture, "each channel has its own loops, and they all pla
 
     engine.stopLoops();  // Panic: every channel
     CHECK(engine.loopStatus(0, 0).state == LoopStatus::State::Empty);
+}
+
+namespace {
+
+struct FingerLoopFixture : LoopFixture {
+    explicit FingerLoopFixture(TouchMode mode = TouchMode::Axis) {
+        Preset p = engine.preset();
+        FingerBinding& f = p.base.fingers[0];
+        f.mode = mode;
+        f.x = axisCc(60);
+        f.y = axisCc(61);
+        load(p);
+    }
+};
+
+struct ZonesFixture : FingerLoopFixture {
+    ZonesFixture() : FingerLoopFixture(TouchMode::Zones) {}
+};
+
+}  // namespace
+
+TEST_CASE_FIXTURE(FingerLoopFixture, "a finger is recorded with the moments it was lifted, which play nothing") {
+    engine.tick(t);
+    engine.buttonChanged(Button::South, true);
+    engine.touchMoved(0, 1.0f, 0.0f);  // lands: that is a movement
+    step();
+    engine.touchReleased(0);
+    step();
+    engine.touchMoved(0, 0.0f, 1.0f);
+    step();
+    engine.buttonChanged(Button::South, false);
+    sink.take();
+    CHECK(engine.loopStatus(0, 2).state == LoopStatus::State::Playing);
+    CHECK(engine.loopStatus(0, 2).length == 3);
+    CHECK(engine.loopSample(0, 2, 0, 1) < 0.0f);  // lifted
+    // Finger loop CCs 74 (X) and 75 (Y, upwards): right/top, nothing, left/bottom.
+    const auto x = played(74, 6);
+    REQUIRE(x.size() >= 4);
+    CHECK(std::vector(x.begin(), x.begin() + 4) == std::vector<int>{127, 0, 127, 0});
+    CHECK(engine.loopStatus(0, 0).state == LoopStatus::State::Empty);  // the sticks did not move
+}
+
+TEST_CASE_FIXTURE(FingerLoopFixture, "a stick and a finger moved together get a loop each") {
+    engine.tick(t);
+    engine.buttonChanged(Button::South, true);
+    engine.axisMoved(Axis::LeftX, 1.0f);
+    engine.touchMoved(0, 0.2f, 0.2f);
+    step();
+    engine.axisMoved(Axis::LeftX, -1.0f);
+    engine.touchMoved(0, 0.8f, 0.8f);
+    step();
+    engine.buttonChanged(Button::South, false);
+    CHECK(engine.loopStatus(0, 0).state == LoopStatus::State::Playing);
+    CHECK(engine.loopStatus(0, 2).state == LoopStatus::State::Playing);
+}
+
+namespace {
+
+// The notes sent over `steps` loop steps, as "+60" (on) and "-60" (off).
+std::vector<std::string> notesOver(LoopFixture& fx, int steps) {
+    std::vector<std::string> out;
+    for (int i = 0; i < steps; ++i) {
+        fx.step();
+        for (const auto& m : fx.sink.take()) {
+            const int kind = m.bytes[0] & 0xF0;
+            if (kind == 0x90 || kind == 0x80)
+                out.push_back((kind == 0x90 ? "+" : "-") + std::to_string(m.bytes[1]));
+        }
+    }
+    return out;
+}
+
+}  // namespace
+
+TEST_CASE_FIXTURE(ZonesFixture, "a finger in 4-pad mode records the pads and plays them again") {
+    Preset p = engine.preset();
+    p.base.fingers[0].zones[static_cast<std::size_t>(Zone::TopLeft)] = note(60);
+    p.base.fingers[0].zones[static_cast<std::size_t>(Zone::BottomRight)] = note(64);
+    load(p);
+
+    engine.tick(t);
+    engine.buttonChanged(Button::South, true);
+    engine.touchMoved(0, 0.2f, 0.2f);  // top left
+    step();
+    engine.touchMoved(0, 0.8f, 0.8f);  // bottom right
+    step();
+    engine.touchReleased(0);
+    step();
+    engine.buttonChanged(Button::South, false);
+    sink.take();
+    REQUIRE(engine.loopStatus(0, 2).state == LoopStatus::State::Playing);
+    CHECK(engine.loopStatus(0, 2).zones);
+    CHECK(engine.loopSample(0, 2, 0, 1) == doctest::Approx(3.0));  // the bottom right pad
+    const auto notes = notesOver(*this, 6);
+    REQUIRE(notes.size() >= 6);
+    CHECK(std::vector(notes.begin(), notes.begin() + 6) == std::vector<std::string>{"+60", "-60", "+64", "-64", "+60", "-60"});
+}
+
+TEST_CASE_FIXTURE(ZonesFixture, "a toggled pad of a loop is cut when the loop starts over") {
+    Preset p = engine.preset();
+    p.base.fingers[0].zones[static_cast<std::size_t>(Zone::TopLeft)] = note(60, Mode::Toggle);
+    load(p);
+
+    engine.tick(t);
+    engine.buttonChanged(Button::South, true);
+    engine.touchMoved(0, 0.2f, 0.2f);
+    step();
+    step();
+    engine.touchReleased(0);
+    step();
+    engine.buttonChanged(Button::South, false);
+    sink.take();
+    // Latched on, then cut as the loop starts over, then on again.
+    const auto notes = notesOver(*this, 5);
+    REQUIRE(notes.size() >= 3);
+    CHECK(std::vector(notes.begin(), notes.begin() + 3) == std::vector<std::string>{"+60", "-60", "+60"});
+
+    // Panic while it is on turns it off.
+    for (int i = 0; i < 10 && notesOver(*this, 1) != std::vector<std::string>{"+60"}; ++i) {
+    }
+    engine.stopLoops();
+    CHECK(sink.take() == Messages{off(0, 60)});
 }

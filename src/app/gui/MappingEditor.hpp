@@ -23,7 +23,7 @@ public:
     // Humanize checkbox of notes and chords.
     void setHumanizeChannels(std::uint16_t channels) { humanizeChannels_ = channels; }
 
-    // A stick whose loop the user asked to clear (0: left, 1: right), once.
+    // A loop the user asked to clear (a LoopSource), once.
     std::optional<int> takeClearLoopRequest() { return std::exchange(clearLoopRequest_, std::nullopt); }
 
     // A title for that control: "Cross", "D-pad: Up", "Left stick X"...
@@ -41,7 +41,7 @@ private:
     bool drawChordFields(midipad::TriggerBinding& b);
     bool drawNoteField(std::uint8_t& note);
     bool drawHumanizeCheckbox(midipad::TriggerBinding& b);
-    bool drawLoopForm(int stick, midipad::Mapping& m);
+    bool drawLoopForm(int source, midipad::Mapping& m);
     bool drawAxisForm(const char* id, midipad::AxisBinding& a, float position);
     bool drawFingerForm(int finger, midipad::FingerBinding& f, const LiveState& live);
     const std::vector<midipad::KeyChord>& keyChords();

@@ -798,54 +798,219 @@ void PerformanceView::drawTouchpad(const Mapping& m, const LiveState& live, floa
     if (hoverButton("##touchscreen", s.a, s.b))
         click("fingers");
 
-    // Per finger: X/Y knobs or the four zones.
-    float sectionY = s.b.y + px(18);
-    const float block = std::min(px(146), (y + h - sectionY) / 2.0f);
-    for (int f = 0; f < kFingerCount; ++f, sectionY += block) {
+    // Per finger, what it sends: its CCs in axis mode, its four zones.
+    float rowY = s.b.y + px(18);
+    section(dl, x, w, rowY, "MIDI");
+    rowY += px(12);
+    for (int f = 0; f < kFingerCount; ++f) {
         const FingerBinding& fb = m.fingers[static_cast<std::size_t>(f)];
         const auto& finger = live.fingers[static_cast<std::size_t>(f)];
-        const std::string title = std::string(f == 0 ? "FINGER 1" : "FINGER 2") +
-                                  (fb.mode != TouchMode::Off && !finger.down ? "  ·  not touching" : "");
-        section(dl, x, w, sectionY, title);
-        const ImVec2 areaA(x + px(8), sectionY + px(8)), areaB(x + w - px(8), sectionY + block - px(6));
+        const float rowH = fb.mode == TouchMode::Zones ? px(46) : px(28);
+        const float midY = rowY + rowH * 0.5f;
+        const ImU32 col = fingerColors[f];
+        text(dl, gBold, px(11), x + px(12), midY, fb.mode != TouchMode::Off && finger.down ? T::kLabel : T::kDim,
+             f == 0 ? "FINGER 1" : "FINGER 2", H::Left, V::Middle);
+        const float cx0 = x + px(80), cx1 = x + w - px(12);
         if (fb.mode == TouchMode::Axis) {
-            const float r = std::min(w * 0.11f, px(22));
-            const float kc = sectionY + px(46);
-            auto touchKnob = [&](float cx, const AxisBinding& b, float pos, const char* name, int id) {
-                const int value = ccValue(b, pos);
-                knob(dl, ImVec2(cx, kc), r, smooth(id, finger.down ? static_cast<float>(value) / 127.0f : 0.0f, 16.0f),
-                     fingerColors[f], b.enabled);
-                text(dl, gBold, px(12), cx, kc - r * 1.37f - px(8), fingerColors[f], name, H::Center, V::Middle);
-                text(dl, gBold, px(15), cx, kc + r * 1.3f, finger.down && b.enabled ? T::kText : T::kDim,
-                     finger.down && b.enabled ? std::to_string(value) : "-", H::Center);
-                if (b.enabled)
-                    badge(dl, gCondensed, px(14), cx, kc + r * 1.3f + px(20), px(22), "CC " + std::to_string(b.cc), T::kText,
-                          alpha(fingerColors[f], 0.22f), fingerColors[f]);
-            };
-            touchKnob(x + w * 0.28f, fb.x, finger.x, "X", 50 + f * 2);
-            touchKnob(x + w * 0.72f, fb.y, 1.0f - finger.y, "Y", 51 + f * 2);
-            if (hoverButton(f == 0 ? "##f1" : "##f2", areaA, areaB))
-                click(f == 0 ? "finger:1" : "finger:2");
+            const float cw = (cx1 - cx0 - px(6)) * 0.5f;
+            const AxisBinding* axes[] = {&fb.x, &fb.y};
+            for (int k = 0; k < 2; ++k) {
+                const AxisBinding& b = *axes[k];
+                const std::string label = std::string(k == 0 ? "X  " : "Y  ") + (b.enabled ? "CC " + std::to_string(b.cc) : "-");
+                badge(dl, gCondensed, px(13), cx0 + cw * 0.5f + static_cast<float>(k) * (cw + px(6)), midY - px(10), px(20), label,
+                      T::kText, alpha(col, finger.down ? 0.30f : 0.16f), b.enabled ? col : T::kDim);
+            }
         } else if (fb.mode == TouchMode::Zones) {
-            const float cw = (areaB.x - areaA.x - px(6)) / 2.0f, ch = (areaB.y - areaA.y - px(6)) / 2.0f;
+            const float cw = (cx1 - cx0 - px(4)) * 0.5f, ch = (rowH - px(4)) * 0.5f;
             for (int z = 0; z < kZoneCount; ++z) {
-                const ImVec2 a(areaA.x + static_cast<float>(z % 2) * (cw + px(6)), areaA.y + static_cast<float>(z / 2) * (ch + px(6)));
-                const ImVec2 b(a.x + cw, a.y + ch);
+                const ImVec2 za(cx0 + static_cast<float>(z % 2) * (cw + px(4)), rowY + static_cast<float>(z / 2) * (ch + px(4)));
+                const ImVec2 zb(za.x + cw, za.y + ch);
                 const bool on = live.isSounding(Engine::slotOf(f, static_cast<Zone>(z)));
-                row(dl, a.x, a.y, cw, ch, on ? alpha(fingerColors[f], 0.35f) : T::kRow, on ? fingerColors[f] : T::kRowBorder);
-                text(dl, gCondensed, px(15), (a.x + b.x) * 0.5f, (a.y + b.y) * 0.5f, on ? T::kText : T::kLabel,
-                     fit(gCondensed, px(15), compact(fb.zones[static_cast<std::size_t>(z)], flats_), cw - px(8)), H::Center,
+                row(dl, za.x, za.y, cw, ch, on ? alpha(col, 0.35f) : T::kRow, on ? col : T::kRowBorder);
+                text(dl, gCondensed, px(12), (za.x + zb.x) * 0.5f, (za.y + zb.y) * 0.5f, on ? T::kText : T::kLabel,
+                     fit(gCondensed, px(12), compact(fb.zones[static_cast<std::size_t>(z)], flats_), cw - px(6)), H::Center,
                      V::Middle);
                 const std::string spec = "zone:" + std::to_string(f + 1) + ":" + std::string(toString(static_cast<Zone>(z)));
-                if (hoverButton(("##" + spec).c_str(), a, b))
+                if (hoverButton(("##" + spec).c_str(), za, zb))
                     click(spec);
             }
         } else {
-            text(dl, gMedium, px(13), x + w * 0.5f, (areaA.y + areaB.y) * 0.5f, T::kDim, "off", H::Center, V::Middle);
-            if (hoverButton(f == 0 ? "##f1off" : "##f2off", areaA, areaB))
-                click(f == 0 ? "finger:1" : "finger:2");
+            text(dl, gMedium, px(12), cx0, midY, T::kDim, "off", H::Left, V::Middle);
+        }
+        if (fb.mode != TouchMode::Zones && hoverButton(f == 0 ? "##f1" : "##f2", ImVec2(x + px(8), rowY), ImVec2(x + w - px(8), rowY + rowH)))
+            click(f == 0 ? "finger:1" : "finger:2");
+        rowY += rowH + px(4);
+    }
+
+    // Loop: the finger movements a Loop record button captured, drawn as the
+    // paths they took on the touchpad, with a timeline of when each touched.
+    const float loopY = rowY + px(14);
+    const float timelineH = px(22);
+    const float boxTop = loopY + px(10), boxBottom = y + h - px(10) - timelineH;
+    if (boxBottom - boxTop < px(40))
+        return;
+    const LiveState::Loop* loops[] = {&live.loops[2], &live.loops[3]};
+    auto state = [&](int f) { return loops[f]->status.state; };
+    const bool recording = state(0) == LoopStatus::State::Recording || state(1) == LoopStatus::State::Recording;
+    const bool waiting = loops[0]->status.waiting || loops[1]->status.waiting;
+    const int shown = state(0) == LoopStatus::State::Playing ? 0 : state(1) == LoopStatus::State::Playing ? 1 : -1;
+    const bool anyOn = m.fingers[0].mode != TouchMode::Off || m.fingers[1].mode != TouchMode::Off;
+
+    std::string status;
+    ImU32 statusColor = T::kDim;
+    char secondsText[16];
+    if (recording) {
+        const int f = state(0) == LoopStatus::State::Recording ? 0 : 1;
+        std::snprintf(secondsText, sizeof secondsText, "%.1f s",
+                      static_cast<double>(loops[f]->status.length) / Engine::kLoopRateHz);
+        status = std::string("REC  ") + secondsText;
+        statusColor = T::kRed;
+    } else if (waiting) {
+        status = "REC  \xC2\xB7  touch to record";
+        statusColor = T::kRed;
+    } else if (shown >= 0) {
+        const LoopPlayback pb = m.loops[static_cast<std::size_t>(2 + shown)].playback;
+        std::snprintf(secondsText, sizeof secondsText, "%.1f s",
+                      static_cast<double>(loops[shown]->status.length) / Engine::kLoopRateHz);
+        status = std::string(pb == LoopPlayback::Forward ? "FWD" : pb == LoopPlayback::Reverse ? "REV" : "BACK & FORTH") +
+                 "  \xC2\xB7  " + secondsText;
+        statusColor = fingerColors[shown];
+    }
+    text(dl, gBold, px(11), x + px(12), loopY, T::kDim, "LOOP", H::Left, V::Middle);
+    const float statusX = x + w - px(12) - textWidth(gBold, px(10), status);
+    if (!status.empty())
+        text(dl, gBold, px(10), statusX, loopY, statusColor, status, H::Left, V::Middle);
+    if (recording || waiting)
+        dl->AddCircleFilled(ImVec2(statusX - px(9), loopY), px(3.5f), alpha(T::kRed, recording ? 1.0f : 0.6f));
+    const float ruleEnd = status.empty() ? x + w - px(12) : statusX - px(recording || waiting ? 18 : 8);
+    const float ruleStart = x + px(16) + textWidth(gBold, px(11), "LOOP");
+    if (ruleEnd > ruleStart)
+        dl->AddLine(ImVec2(ruleStart, loopY), ImVec2(ruleEnd, loopY), IM_COL32(0x40, 0x44, 0x4B, 255), px(1));
+
+    const ImVec2 ga(x + px(12), boxTop), gb(x + w - px(12), boxBottom);
+    dl->AddRectFilled(ga, gb, kGraph, px(4));
+    const ImU32 border = recording ? T::kRed : waiting ? alpha(T::kRed, 0.5f) : shown >= 0 ? alpha(fingerColors[shown], 0.45f) : kGraph;
+    dl->AddRect(ga, gb, border, px(4), px(1.3f));
+    const ImVec2 pa(ga.x + px(6), ga.y + px(6)), pb(gb.x - px(6), gb.y - px(6));
+    // 4-pad loops: one lane per pad, a block while a pad played. Otherwise the
+    // paths, over a small touchpad.
+    bool lanes = false;
+    for (int f = 0; f < kFingerCount; ++f)
+        lanes |= state(f) != LoopStatus::State::Empty && loops[f]->status.zones && loops[f]->points > 1;
+    if (!lanes) {
+        for (float gx = pa.x + px(6); gx < pb.x; gx += px(12))
+            for (float gy = pa.y + px(6); gy < pb.y; gy += px(12))
+                dl->AddCircleFilled(ImVec2(gx, gy), 1.0f, IM_COL32(255, 255, 255, 22));
+        dl->AddLine(ImVec2((pa.x + pb.x) * 0.5f, pa.y), ImVec2((pa.x + pb.x) * 0.5f, pb.y), IM_COL32(255, 255, 255, 30));
+        dl->AddLine(ImVec2(pa.x, (pa.y + pb.y) * 0.5f), ImVec2(pb.x, (pa.y + pb.y) * 0.5f), IM_COL32(255, 255, 255, 30));
+    }
+    bool drewAny = false;
+    if (lanes) {
+        static constexpr const char* kPadNames[] = {"TL", "TR", "BL", "BR"};
+        const float laneH = (pb.y - pa.y) / kZoneCount;
+        const float lx0 = pa.x + px(18), lx1 = pb.x;
+        for (int z = 0; z < kZoneCount; ++z) {
+            const float ly = pa.y + laneH * static_cast<float>(z);
+            text(dl, gBold, px(9), pa.x, ly + laneH * 0.5f, T::kDim, kPadNames[z], H::Left, V::Middle);
+            if (z > 0)
+                dl->AddLine(ImVec2(lx0, ly), ImVec2(lx1, ly), IM_COL32(255, 255, 255, 18));
+        }
+        for (int f = 0; f < kFingerCount; ++f) {
+            const LiveState::Loop& L = *loops[f];
+            if (state(f) == LoopStatus::State::Empty || !L.status.zones || L.points < 2)
+                continue;
+            drewAny = true;
+            const bool both = loops[1 - f]->status.zones && state(1 - f) != LoopStatus::State::Empty;
+            const float span = state(f) == LoopStatus::State::Recording
+                                   ? std::min(1.0f, static_cast<float>(L.status.length) / (4.0f * Engine::kLoopRateHz))
+                                   : 1.0f;
+            auto xAt = [&](int i) { return lx0 + (lx1 - lx0) * span * static_cast<float>(i) / static_cast<float>(L.points - 1); };
+            int start = -1, pad = -1;
+            for (int i = 0; i <= L.points; ++i) {
+                const int p = i < L.points && L.on[static_cast<std::size_t>(i)] ? L.x[static_cast<std::size_t>(i)] : -1;
+                if (p == pad)
+                    continue;
+                if (pad >= 0 && pad < kZoneCount) {
+                    float blockTop = pa.y + laneH * static_cast<float>(pad) + px(2), blockBottom = blockTop + laneH - px(4);
+                    if (both)  // finger 1 above, finger 2 below, within the lane
+                        (f == 0 ? blockBottom : blockTop) = (blockTop + blockBottom) * 0.5f;
+                    dl->AddRectFilled(ImVec2(xAt(start), blockTop), ImVec2(std::max(xAt(i - 1), xAt(start) + px(2)), blockBottom),
+                                      alpha(fingerColors[f], 0.75f), px(2));
+                }
+                pad = p;
+                start = i;
+            }
+            const float hx = state(f) == LoopStatus::State::Recording
+                                 ? xAt(L.points - 1)
+                                 : lx0 + (lx1 - lx0) * (L.status.length > 1 ? static_cast<float>(L.status.position) /
+                                                                                 static_cast<float>(L.status.length - 1)
+                                                                            : 0.0f);
+            dl->AddLine(ImVec2(hx, pa.y), ImVec2(hx, pb.y),
+                        state(f) == LoopStatus::State::Recording ? alpha(T::kRed, 0.8f) : alpha(fingerColors[f], 0.9f), px(1.3f));
         }
     }
+    for (int f = 0; f < kFingerCount; ++f) {
+        const LiveState::Loop& L = *loops[f];
+        if (lanes || state(f) == LoopStatus::State::Empty || L.points < 2)
+            continue;
+        drewAny = true;
+        auto at = [&](int i) {
+            return ImVec2(pa.x + static_cast<float>(L.x[static_cast<std::size_t>(i)]) / 255.0f * (pb.x - pa.x),
+                          pa.y + static_cast<float>(L.y[static_cast<std::size_t>(i)]) / 255.0f * (pb.y - pa.y));
+        };
+        // The path, broken where the finger was lifted.
+        for (int i = 1; i < L.points; ++i)
+            if (L.on[static_cast<std::size_t>(i)] && L.on[static_cast<std::size_t>(i - 1)])
+                dl->AddLine(at(i - 1), at(i), alpha(fingerColors[f], 0.6f), px(1.6f));
+        // Where it plays now (or the newest point while recording).
+        const int i = state(f) == LoopStatus::State::Recording
+                          ? L.points - 1
+                          : std::clamp(L.status.length > 1 ? static_cast<int>(std::lround(static_cast<float>(L.status.position) /
+                                                                                              static_cast<float>(L.status.length - 1) *
+                                                                                              static_cast<float>(L.points - 1)))
+                                                           : 0,
+                                       0, L.points - 1);
+        if (L.on[static_cast<std::size_t>(i)]) {
+            const ImVec2 c = at(i);
+            dl->AddCircleFilled(c, px(8), alpha(fingerColors[f], 0.25f));
+            dl->AddCircleFilled(c, px(4), state(f) == LoopStatus::State::Recording ? T::kRed : fingerColors[f]);
+            text(dl, gBold, px(10), c.x + px(6), c.y - px(14), T::kText, f == 0 ? "1" : "2");
+        }
+    }
+    if (!drewAny)
+        text(dl, gMedium, px(11), (ga.x + gb.x) * 0.5f, (ga.y + gb.y) * 0.5f, waiting ? T::kLabel : T::kDim,
+             waiting ? "waiting for a finger\xE2\x80\xA6" : anyOn ? "hold Record and touch the pad" : "touchpad off",
+             H::Center, V::Middle);
+
+    // Timeline: when each finger touched, and where the loop plays.
+    for (int f = 0; f < kFingerCount; ++f) {
+        const LiveState::Loop& L = *loops[f];
+        if (state(f) == LoopStatus::State::Empty || L.points < 2)
+            continue;
+        const float ty = gb.y + px(7) + static_cast<float>(f) * px(8);
+        const float tx0 = ga.x + px(2), tx1 = gb.x - px(2);
+        const float span = state(f) == LoopStatus::State::Recording
+                               ? std::min(1.0f, static_cast<float>(L.status.length) / (4.0f * Engine::kLoopRateHz))
+                               : 1.0f;
+        int start = -1;
+        for (int i = 0; i <= L.points; ++i) {
+            const bool on = i < L.points && L.on[static_cast<std::size_t>(i)];
+            if (on && start < 0)
+                start = i;
+            if (!on && start >= 0) {
+                const float a = tx0 + (tx1 - tx0) * span * static_cast<float>(start) / static_cast<float>(L.points - 1);
+                const float b = tx0 + (tx1 - tx0) * span * static_cast<float>(std::max(i - 1, start)) / static_cast<float>(L.points - 1);
+                dl->AddRectFilled(ImVec2(a, ty - px(2.5f)), ImVec2(std::max(b, a + px(2)), ty + px(2.5f)), fingerColors[f], px(2));
+                start = -1;
+            }
+        }
+        if (state(f) == LoopStatus::State::Playing && L.status.length > 1) {
+            const float hx = tx0 + (tx1 - tx0) * static_cast<float>(L.status.position) / static_cast<float>(L.status.length - 1);
+            dl->AddLine(ImVec2(hx, ty - px(4)), ImVec2(hx, ty + px(4)), IM_COL32_WHITE, px(1.5f));
+        }
+    }
+    if (hoverButton("##touchloop", ImVec2(ga.x, loopY - px(6)), ImVec2(gb.x, gb.y + timelineH)))
+        click("fingers");
 }
 
 void PerformanceView::drawButtons(const Mapping& m, const LiveState& live, float x, float y, float w, float h) {
