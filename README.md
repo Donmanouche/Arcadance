@@ -176,13 +176,16 @@ Les contrôles portent les noms de l'API gamepad de SDL3 (`south`, `left_x`,
   `root_below` : 1 ou 2).
 - **Boucles (Loop record)** : tant qu'un bouton « Loop record » est maintenu,
   MidiPad enregistre ce qui bouge : un stick (au-delà d'environ 12 % de
-  course) ou un doigt sur le touchpad, plusieurs à la fois si besoin ; au relâchement, chaque mouvement X/Y tourne en boucle,
+  course), un doigt sur le touchpad ou les gâchettes (leur course, pas les
+  notes qu'elles jouent comme boutons), plusieurs à la fois si besoin ; au relâchement, chaque mouvement X/Y tourne en boucle,
   comme un LFO, sur le canal où il a été enregistré. Les moments où un doigt
   était levé sont enregistrés aussi et ne jouent rien. La boucle joue à côté
-  du stick ou du doigt, qui reste libre : elle a ses propres CC (70/71 et
-  72/73 pour les sticks, 74/75 et 76/77 pour les doigts par défaut) et son
-  mode de lecture (avant, arrière, aller-retour), réglés dans la fenêtre du
-  stick ou du touchpad (champ `loops` du preset). En mode 4 pads, un doigt
+  du stick, du doigt ou des gâchettes, qui restent libres : elle a ses propres
+  CC (70/71 et 72/73 pour les sticks, 74/75 et 76/77 pour les doigts, 78/79
+  pour L2/R2 par défaut) et son mode de lecture (avant, arrière, aller-retour),
+  réglés dans la fenêtre du stick, du touchpad ou des gâchettes (champ `loops`
+  du preset). Le module TRIGGERS montre les CC et les notes de L2 et R2, et un
+  écran LOOP avec leurs deux courbes. En mode 4 pads, un doigt
   enregistre les pads qu'il joue : la boucle les rejoue tels qu'ils sont
   mappés (notes, accords, CC, momentanés ou en bascule), et coupe ce qui sonne
   encore quand elle repart du début. Le module TOUCHPAD montre les CC (ou les

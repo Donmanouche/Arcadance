@@ -815,3 +815,32 @@ TEST_CASE_FIXTURE(ZonesFixture, "a toggled pad of a loop is cut when the loop st
     engine.stopLoops();
     CHECK(sink.take() == Messages{off(0, 60)});
 }
+
+TEST_CASE_FIXTURE(LoopFixture, "the triggers' travel is recorded and loops on its own CCs, without the button notes") {
+    Preset p = engine.preset();
+    button(p, Button::LeftTrigger) = note(60);  // the digital L2 plays a note: the loop must not
+    load(p);
+    engine.tick(t);
+    engine.buttonChanged(Button::South, true);
+    for (float v : {1.0f, 0.5f, 0.0f}) {
+        engine.axisMoved(Axis::LeftTrigger, v);
+        step();
+    }
+    engine.buttonChanged(Button::South, false);
+    sink.take();
+    CHECK(engine.loopStatus(0, static_cast<int>(LoopSource::Triggers)).state == LoopStatus::State::Playing);
+    CHECK(engine.loopStatus(0, 0).state == LoopStatus::State::Empty);
+    bool notes = false;
+    std::vector<int> l2;
+    for (int i = 0; i < 6; ++i) {
+        step();
+        for (const auto& m : sink.take()) {
+            notes |= (m.bytes[0] & 0xF0) == 0x90;
+            if ((m.bytes[0] & 0xF0) == 0xB0 && m.bytes[1] == 78)
+                l2.push_back(m.bytes[2]);
+        }
+    }
+    CHECK_FALSE(notes);
+    REQUIRE(l2.size() >= 3);
+    CHECK(std::vector(l2.begin(), l2.begin() + 3) == std::vector<int>{127, 64, 0});
+}

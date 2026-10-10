@@ -193,10 +193,12 @@ bool MappingEditor::drawControl(const std::string& spec, Mapping& m, const LiveS
                 ImGui::SeparatorText(label(*a).c_str());
             changed |= drawAxisForm(p[i].c_str(), m.axes[static_cast<std::size_t>(*a)], axisPosition(live, *a));
         }
-        // A whole stick: its loop too.
+        // A whole stick, or both triggers: their loop too.
         if (p.size() == 3) {
             if (const auto a = parseAxis(p[1]); a && (*a == Axis::LeftX || *a == Axis::RightX))
                 changed |= drawLoopForm(*a == Axis::LeftX ? 0 : 1, m);
+            else if (a && *a == Axis::LeftTrigger)
+                changed |= drawLoopForm(static_cast<int>(LoopSource::Triggers), m);
         }
     } else if (p.size() == 2 && p[0] == "finger" && (p[1] == "1" || p[1] == "2")) {
         const int finger = p[1][0] - '1';
@@ -219,7 +221,8 @@ bool MappingEditor::drawControl(const std::string& spec, Mapping& m, const LiveS
 // LoopSource): how it plays, and on which CCs, beside the source's own.
 bool MappingEditor::drawLoopForm(int source, Mapping& m) {
     static constexpr const char* kTitles[] = {"Left stick loop (recorded movement)", "Right stick loop (recorded movement)",
-                                              "Finger 1 loop (recorded movement)", "Finger 2 loop (recorded movement)"};
+                                              "Finger 1 loop (recorded movement)", "Finger 2 loop (recorded movement)",
+                                              "Triggers loop (recorded travel)"};
     bool changed = false;
     LoopBinding& loop = m.loops[static_cast<std::size_t>(source)];
     ImGui::PushID(source);
@@ -236,7 +239,8 @@ bool MappingEditor::drawLoopForm(int source, Mapping& m) {
         }
     }
     // What the source itself sends.
-    const bool finger = source >= 2;
+    const bool finger = source == 2 || source == 3;
+    const bool triggers = source == static_cast<int>(LoopSource::Triggers);
     const FingerBinding* f = finger ? &m.fingers[static_cast<std::size_t>(source - 2)] : nullptr;
     if (finger && f->mode != TouchMode::Axis) {
         ImGui::PushStyleColor(ImGuiCol_Text, kHintColor);
@@ -250,10 +254,12 @@ bool MappingEditor::drawLoopForm(int source, Mapping& m) {
         ImGui::PopID();
         return changed;
     }
-    changed |= inputU7("Loop CC for X", loop.ccX);
-    changed |= inputU7("Loop CC for Y", loop.ccY);
-    const AxisBinding& own = finger ? f->x : m.axes[static_cast<std::size_t>(source == 0 ? Axis::LeftX : Axis::RightX)];
-    const AxisBinding& ownY = finger ? f->y : m.axes[static_cast<std::size_t>(source == 0 ? Axis::LeftY : Axis::RightY)];
+    changed |= inputU7(triggers ? "Loop CC for L2" : "Loop CC for X", loop.ccX);
+    changed |= inputU7(triggers ? "Loop CC for R2" : "Loop CC for Y", loop.ccY);
+    const Axis axisX = triggers ? Axis::LeftTrigger : source == 0 ? Axis::LeftX : Axis::RightX;
+    const Axis axisY = triggers ? Axis::RightTrigger : source == 0 ? Axis::LeftY : Axis::RightY;
+    const AxisBinding& own = finger ? f->x : m.axes[static_cast<std::size_t>(axisX)];
+    const AxisBinding& ownY = finger ? f->y : m.axes[static_cast<std::size_t>(axisY)];
 
     // The loop plays beside the sticks and fingers: a CC they send too would fight.
     std::string clash;
@@ -276,8 +282,9 @@ bool MappingEditor::drawLoopForm(int source, Mapping& m) {
         ImGui::PopStyleColor();
     } else {
         ImGui::PushStyleColor(ImGuiCol_Text, kHintColor);
-        ImGui::TextWrapped("The loop plays beside the %s, on its own CCs (the %s sends %s and %s).",
-                           finger ? "finger" : "stick", finger ? "finger" : "stick",
+        const char* what = finger ? "finger" : triggers ? "triggers" : "stick";
+        ImGui::TextWrapped("The loop plays beside the %s, on its own CCs (the %s %s %s and %s).", what, what,
+                           triggers ? "send" : "sends",
                            own.enabled ? ("CC " + std::to_string(own.cc)).c_str() : "nothing",
                            ownY.enabled ? ("CC " + std::to_string(ownY.cc)).c_str() : "nothing");
         ImGui::PopStyleColor();

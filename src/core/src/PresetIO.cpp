@@ -4,7 +4,10 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <cstdlib>
+#include <iterator>
+#include <string_view>
 #include <fstream>
 #include <string>
 
@@ -324,9 +327,11 @@ Mapping mappingFromJson(const Json& j, const std::string& where) {
     if (j.contains("loops")) {
         for (const auto& [key, value] : requireObject(j["loops"], where + ".loops").items()) {
             const std::string at = where + ".loops." + key;
-            const int source = key == "left" ? 0 : key == "right" ? 1 : key == "finger1" ? 2 : key == "finger2" ? 3 : -1;
-            if (source < 0)
-                fail(at, "expected \"left\", \"right\", \"finger1\" or \"finger2\"");
+            static constexpr std::string_view kKeys[] = {"left", "right", "finger1", "finger2", "triggers"};
+            const auto found = std::find(std::begin(kKeys), std::end(kKeys), key);
+            if (found == std::end(kKeys))
+                fail(at, "expected \"left\", \"right\", \"finger1\", \"finger2\" or \"triggers\"");
+            const auto source = found - std::begin(kKeys);
             requireObject(value, at);
             LoopBinding& loop = m.loops[static_cast<std::size_t>(source)];
             const std::string playback = readString(value, "playback", "forward", at);
@@ -405,7 +410,7 @@ Json mappingToJson(const Mapping& m) {
                                                                   : "back_and_forth";
         lj["cc_x"] = loop.ccX;
         lj["cc_y"] = loop.ccY;
-        static constexpr const char* kKeys[] = {"left", "right", "finger1", "finger2"};
+        static constexpr const char* kKeys[] = {"left", "right", "finger1", "finger2", "triggers"};
         loops[kKeys[s]] = lj;
     }
     if (!loops.empty())

@@ -114,7 +114,8 @@ TEST_CASE("a note or chord can opt out of humanization") {
 TEST_CASE("loop record buttons and stick loops survive a round trip") {
     const Json j = minimal({{"buttons", {{"south", {{"type", "loop_record"}}}}},
                             {"loops", {{"right", {{"playback", "back_and_forth"}, {"cc_x", 80}, {"cc_y", 81}}},
-                                       {"finger2", {{"playback", "reverse"}}}}}});
+                                       {"finger2", {{"playback", "reverse"}}},
+                                       {"triggers", {{"cc_x", 90}}}}}});
     const Preset p = presetFromJson(j);
     CHECK(p.base.buttons[static_cast<std::size_t>(Button::South)].type == ActionType::LoopRecord);
     CHECK(p.base.loops[0] == kDefaultLoops[0]);
@@ -125,6 +126,8 @@ TEST_CASE("loop record buttons and stick loops survive a round trip") {
     CHECK(saved["base"]["loops"]["right"]["playback"] == "back_and_forth");
     CHECK(p.base.loops[3] == LoopBinding{LoopPlayback::Reverse, 76, 77});
     CHECK(saved["base"]["loops"]["finger2"]["playback"] == "reverse");
+    CHECK(p.base.loops[4] == LoopBinding{LoopPlayback::Forward, 90, 79});
+    CHECK(saved["base"]["loops"]["triggers"]["cc_x"] == 90);
     CHECK(errorFor(minimal({{"loops", {{"left", {{"playback", "sideways"}}}}}})) ==
           "base.loops.left.playback: expected \"forward\", \"reverse\" or \"back_and_forth\"");
 }

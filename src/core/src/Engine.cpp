@@ -168,7 +168,9 @@ void Engine::axisMoved(Axis axis, float value) {
     if (axis >= Axis::Count || std::isnan(value))
         return;
     const float position = std::clamp(isTrigger(axis) ? value : (value + 1.0f) * 0.5f, 0.0f, 1.0f);
-    if (!isTrigger(axis))
+    if (isTrigger(axis))
+        triggerPosition_[axis == Axis::LeftTrigger ? 0 : 1] = position;
+    else
         stickPosition_[static_cast<std::size_t>(axis)] = position;
     if (isTrigger(axis))
         updateDigitalTrigger(axis, position);
@@ -429,6 +431,11 @@ bool Engine::sourcePosition(int source, float& x, float& y) const {
         y = stickPosition_[static_cast<std::size_t>(source * 2 + 1)];
         return true;
     }
+    if (source == static_cast<int>(LoopSource::Triggers)) {
+        x = triggerPosition_[0];
+        y = triggerPosition_[1];
+        return true;
+    }
     const auto f = static_cast<std::size_t>(source - 2);
     x = fingerPosition_[f][0];
     y = fingerPosition_[f][1];
@@ -441,8 +448,9 @@ void Engine::beginRecordHold() {
     for (int s = 0; s < kLoopSourceCount; ++s) {
         auto& start = holdStart_[static_cast<std::size_t>(s)];
         holdStartOn_[static_cast<std::size_t>(s)] = sourcePosition(s, start[0], start[1]);
+        const bool finger = s == 2 || s == 3;
         waiting_[static_cast<std::size_t>(s)] =
-            s < 2 || preset_->forChannel(holdChannel_).fingers[static_cast<std::size_t>(s - 2)].mode != TouchMode::Off;
+            !finger || preset_->forChannel(holdChannel_).fingers[static_cast<std::size_t>(s - 2)].mode != TouchMode::Off;
     }
     for (std::size_t f = 0; f < kFingerCount; ++f)
         holdStartPad_[f] = fingerZone_[f] ? static_cast<int>(*fingerZone_[f]) : -1;
@@ -479,7 +487,8 @@ void Engine::runLoops() {
         const auto i = static_cast<std::size_t>(source);
         if (!waiting_[i])
             continue;
-        const bool pads = source >= 2 &&
+        const bool finger = source == 2 || source == 3;
+        const bool pads = finger &&
                           preset_->forChannel(holdChannel_).fingers[static_cast<std::size_t>(source - 2)].mode == TouchMode::Zones;
         float x = 0, y = 0;
         const bool on = sourcePosition(source, x, y);
@@ -488,7 +497,7 @@ void Engine::runLoops() {
             const auto& zone = fingerZone_[static_cast<std::size_t>(source - 2)];
             moved = zone && (!holdStartOn_[i] || static_cast<int>(*zone) != holdStartPad_[static_cast<std::size_t>(source - 2)]);
         } else {
-            moved = on && ((source >= 2 && !holdStartOn_[i]) || std::abs(x - holdStart_[i][0]) > kLoopMoveThreshold ||
+            moved = on && ((finger && !holdStartOn_[i]) || std::abs(x - holdStart_[i][0]) > kLoopMoveThreshold ||
                            std::abs(y - holdStart_[i][1]) > kLoopMoveThreshold);
         }
         if (!moved)
@@ -587,6 +596,9 @@ void Engine::sendLoopSample(std::size_t index) {
     if (source < 2) {
         vx = value(m.axes[static_cast<std::size_t>(source == 0 ? Axis::LeftX : Axis::RightX)], px);
         vy = value(m.axes[static_cast<std::size_t>(source == 0 ? Axis::LeftY : Axis::RightY)], py);
+    } else if (source == static_cast<int>(LoopSource::Triggers)) {
+        vx = value(m.axes[static_cast<std::size_t>(Axis::LeftTrigger)], px);
+        vy = value(m.axes[static_cast<std::size_t>(Axis::RightTrigger)], py);
     } else {
         const FingerBinding& f = m.fingers[static_cast<std::size_t>(source - 2)];
         vx = value(f.x, px);

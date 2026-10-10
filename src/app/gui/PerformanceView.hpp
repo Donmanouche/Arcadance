@@ -68,6 +68,10 @@ private:
     void drawDpad(const midipad::Mapping& m, const LiveState& live, float x, float y, float w, float h);
     void drawTouchpad(const midipad::Mapping& m, const LiveState& live, float x, float y, float w, float h);
     void drawButtons(const midipad::Mapping& m, const LiveState& live, float x, float y, float w, float h);
+    void drawLoopPanel(ImDrawList* dl, float x, float w, float loopY, float bottom, const LiveState::Loop& loop,
+                       const midipad::LoopBinding& binding, ImU32 colorX, ImU32 colorY, const char* idleHint,
+                       const char* waitStatus, const char* id, const std::string& spec, bool upward,
+                       const char* legendX = nullptr, const char* legendY = nullptr);
 
     // Smooths a displayed value towards its target; `id` names it across frames.
     float smooth(int id, float target, float speed = 14.0f);

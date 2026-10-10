@@ -220,6 +220,7 @@ private:
     std::array<std::array<float, 2>, kFingerCount> fingerPosition_{};  // raw touchpad X, Y
     std::array<bool, kFingerCount> fingerDown_{};
     std::array<float, 4> stickPosition_{0.5f, 0.5f, 0.5f, 0.5f};  // [0, 1], LeftX..RightY
+    std::array<float, 2> triggerPosition_{};                       // [0, 1], L2 and R2
     std::bitset<kSlotCount> recordHolders_;
     bool recordedThisHold_ = false;
     std::array<std::optional<Zone>, kFingerCount> fingerZone_{};

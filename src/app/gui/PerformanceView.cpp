@@ -470,12 +470,22 @@ void PerformanceView::drawStick(int index, const Mapping& m, const LiveState& li
 
     // Loop: the movement a Loop record button captured from this stick.
     const float loopY = valuesY + px(220);
-    const float gTop = loopY + px(10), gBottom = y + h - px(10);
-    if (gBottom - gTop < px(28))
+    if (y + h - px(10) - (loopY + px(10)) < px(28))
         return;
-    const LiveState::Loop& loop = live.loops[static_cast<std::size_t>(index)];
+    drawLoopPanel(dl, x, w, loopY, y + h - px(10), live.loops[static_cast<std::size_t>(index)],
+                  m.loops[static_cast<std::size_t>(index)], accent, mix(accent, T::kText, 0.5f), "hold Record and move this stick",
+                  "REC  \xC2\xB7  move a stick", index == 0 ? "##loopL" : "##loopR",
+                  index == 0 ? "axes:left_x,left_y" : "axes:right_x,right_y", false);
+}
+
+// A LOOP panel: its header (state, playback, length), and the loop's two
+// curves over time with a playhead and the CCs it sends.
+void PerformanceView::drawLoopPanel(ImDrawList* dl, float x, float w, float loopY, float bottom, const LiveState::Loop& loop,
+                                    const LoopBinding& lb, ImU32 colorX, ImU32 colorY, const char* idleHint,
+                                    const char* waitStatus, const char* id, const std::string& spec, bool upward,
+                                    const char* legendX, const char* legendY) {
+    const float gTop = loopY + px(10), gBottom = bottom;
     const LoopStatus& st = loop.status;
-    const LoopBinding& lb = m.loops[static_cast<std::size_t>(index)];
     const bool recording = st.state == LoopStatus::State::Recording;
     const bool playing = st.state == LoopStatus::State::Playing;
     const float seconds = static_cast<float>(st.length) / Engine::kLoopRateHz;
@@ -491,14 +501,14 @@ void PerformanceView::drawStick(int index, const Mapping& m, const LiveState& li
         status = std::string("REC  ") + secondsText;
         statusColor = T::kRed;
     } else if (st.waiting) {
-        status = "REC  \xC2\xB7  move a stick";
+        status = waitStatus;
         statusColor = T::kRed;
     } else if (playing) {
         status = std::string(lb.playback == LoopPlayback::Forward   ? "FWD"
                              : lb.playback == LoopPlayback::Reverse ? "REV"
                                                                     : "BACK & FORTH") +
                  "  \xC2\xB7  " + secondsText;
-        statusColor = accent;
+        statusColor = colorX;
     }
     const float statusX = x + w - px(12) - textWidth(gBold, px(10), status);
     if (!status.empty())
@@ -510,9 +520,9 @@ void PerformanceView::drawStick(int index, const Mapping& m, const LiveState& li
         auto arrow = [&](float cx, bool left) {
             const float s2 = px(3.5f);
             if (left)
-                dl->AddTriangleFilled(ImVec2(cx - s2, loopY), ImVec2(cx + s2, loopY - s2 * 1.2f), ImVec2(cx + s2, loopY + s2 * 1.2f), accent);
+                dl->AddTriangleFilled(ImVec2(cx - s2, loopY), ImVec2(cx + s2, loopY - s2 * 1.2f), ImVec2(cx + s2, loopY + s2 * 1.2f), colorX);
             else
-                dl->AddTriangleFilled(ImVec2(cx + s2, loopY), ImVec2(cx - s2, loopY - s2 * 1.2f), ImVec2(cx - s2, loopY + s2 * 1.2f), accent);
+                dl->AddTriangleFilled(ImVec2(cx + s2, loopY), ImVec2(cx - s2, loopY - s2 * 1.2f), ImVec2(cx - s2, loopY + s2 * 1.2f), colorX);
         };
         if (lb.playback == LoopPlayback::BackAndForth) {
             arrow(iconX - px(4), true);
@@ -529,12 +539,12 @@ void PerformanceView::drawStick(int index, const Mapping& m, const LiveState& li
     // The box, its border telling the state.
     const ImVec2 ga(x + px(12), gTop), gb(x + w - px(12), gBottom);
     dl->AddRectFilled(ga, gb, kGraph, px(4));
-    const ImU32 border = recording ? T::kRed : st.waiting ? alpha(T::kRed, 0.5f) : playing ? alpha(accent, 0.45f) : kGraph;
+    const ImU32 border = recording ? T::kRed : st.waiting ? alpha(T::kRed, 0.5f) : playing ? alpha(colorX, 0.45f) : kGraph;
     dl->AddRect(ga, gb, border, px(4), px(1.3f));
     const ImVec2 mid((ga.x + gb.x) * 0.5f, (ga.y + gb.y) * 0.5f);
     if (!recording && !playing) {
         text(dl, gMedium, px(11), mid.x, mid.y, st.waiting ? T::kLabel : T::kDim,
-             st.waiting ? "waiting for movement\xE2\x80\xA6" : "hold Record and move this stick", H::Center, V::Middle);
+             st.waiting ? "waiting for movement\xE2\x80\xA6" : idleHint, H::Center, V::Middle);
     } else if (loop.points > 1) {
         // While recording the curve grows over a 4-second window, then fills the box.
         const float lx0 = ga.x + px(6), lx1 = ga.x + px(6) + (gb.x - ga.x - px(12)) * (recording ? std::min(1.0f, seconds / 4.0f) : 1.0f);
@@ -542,13 +552,13 @@ void PerformanceView::drawStick(int index, const Mapping& m, const LiveState& li
         auto at = [&](int i, int axis) {
             const float t = static_cast<float>(i) / static_cast<float>(loop.points - 1);
             const float v = static_cast<float>((axis == 0 ? loop.x : loop.y)[static_cast<std::size_t>(i)]) / 255.0f;
-            return ImVec2(lx0 + t * (lx1 - lx0), ly0 + v * (ly1 - ly0));
+            return ImVec2(lx0 + t * (lx1 - lx0), upward ? ly1 - v * (ly1 - ly0) : ly0 + v * (ly1 - ly0));
         };
         for (int axis = 0; axis < 2; ++axis) {
             ImVec2 pts[LiveState::Loop::kPoints];
             for (int i = 0; i < loop.points; ++i)
                 pts[i] = at(i, axis);
-            dl->AddPolyline(pts, loop.points, axis == 0 ? accent : mix(accent, T::kText, 0.5f), px(1.8f));
+            dl->AddPolyline(pts, loop.points, axis == 0 ? colorX : colorY, px(1.8f));
         }
         if (recording) {
             dl->AddLine(ImVec2(lx1, ga.y + px(2)), ImVec2(lx1, gb.y - px(2)), alpha(T::kRed, 0.8f), px(1.3f));
@@ -560,20 +570,24 @@ void PerformanceView::drawStick(int index, const Mapping& m, const LiveState& li
             const int i = std::clamp(static_cast<int>(std::lround(t * static_cast<float>(loop.points - 1))), 0, loop.points - 1);
             for (int axis = 0; axis < 2; ++axis) {
                 const ImVec2 p(hx, at(i, axis).y);
-                dl->AddCircleFilled(p, px(3.2f), axis == 0 ? accent : mix(accent, T::kText, 0.5f));
+                dl->AddCircleFilled(p, px(3.2f), axis == 0 ? colorX : colorY);
                 dl->AddCircle(p, px(3.2f), IM_COL32_WHITE, 0, px(1));
             }
             // The CCs the loop sends.
             const std::string ccs = "CC " + std::to_string(lb.ccX) + " / " + std::to_string(lb.ccY);
             const float bw = textWidth(gCondensed, px(10), ccs) + px(10);
             const ImVec2 ba(ga.x + px(4), gb.y - px(15)), bb(ga.x + px(4) + bw, gb.y - px(4));
-            dl->AddRectFilled(ba, bb, alpha(accent, 0.2f), px(5));
-            dl->AddRect(ba, bb, alpha(accent, 0.8f), px(5), px(1));
+            dl->AddRectFilled(ba, bb, alpha(colorX, 0.2f), px(5));
+            dl->AddRect(ba, bb, alpha(colorX, 0.8f), px(5), px(1));
             text(dl, gCondensed, px(10), ba.x + px(5), (ba.y + bb.y) * 0.5f, T::kText, ccs, H::Left, V::Middle);
         }
     }
-    if (hoverButton(index == 0 ? "##loopL" : "##loopR", ImVec2(ga.x, loopY - px(6)), gb))
-        click(index == 0 ? "axes:left_x,left_y" : "axes:right_x,right_y");
+    if (legendX && playing) {  // which curve is which
+        text(dl, gBold, px(10), gb.x - px(24), gb.y - px(9), colorY, legendY, H::Right, V::Middle);
+        text(dl, gBold, px(10), gb.x - px(42), gb.y - px(9), colorX, legendX, H::Right, V::Middle);
+    }
+    if (hoverButton(id, ImVec2(ga.x, loopY - px(6)), gb))
+        click(spec);
 }
 
 void PerformanceView::drawTriggers(const Mapping& m, const LiveState& live, float x, float y, float w, float h) {
@@ -609,48 +623,39 @@ void PerformanceView::drawTriggers(const Mapping& m, const LiveState& live, floa
     if (hoverButton("##triggers", s.a, s.b))
         click("axes:left_trigger,right_trigger");
 
-    const float valuesY = s.b.y + px(18);
-    section(dl, x, w, valuesY, "CC");
-    const float r = std::min(w * 0.14f, px(28));
-    const float kc = valuesY + px(52);
-    auto trigKnob = [&](float cx, const AxisBinding& b, Axis a, const char* name, int id) {
-        const int value = ccValue(b, axisPosition01(live, a));
-        knob(dl, ImVec2(cx, kc), r, smooth(id, static_cast<float>(value) / 127.0f, 20.0f), T::kPink, b.enabled);
-        text(dl, gBold, px(13), cx, kc - r * 1.37f - px(9), T::kPink, name, H::Center, V::Middle);
-        text(dl, gBold, px(17), cx, kc + r * 1.28f, T::kText, b.enabled ? std::to_string(value) : "-", H::Center);
-        if (b.enabled)
-            badge(dl, gCondensed, px(15), cx, kc + r * 1.28f + px(24), px(23), "CC " + std::to_string(b.cc), T::kText,
-                  alpha(T::kPink, 0.22f), T::kPink);
-        const std::string spec = "axis:" + std::string(toString(a));
-        if (hoverButton(("##" + spec).c_str(), ImVec2(cx - r * 1.5f, kc - r * 1.3f - px(14)),
-                        ImVec2(cx + r * 1.5f, kc + r * 1.28f + px(50))))
-            click(spec);
-    };
-    trigKnob(x + w * 0.28f, bl, Axis::LeftTrigger, "L2", 10);
-    trigKnob(x + w * 0.72f, br, Axis::RightTrigger, "R2", 11);
-
-    // The digital L2 / R2 buttons.
-    const float buttonsY = valuesY + px(158);
-    if (buttonsY + px(90) > y + h)
-        return;
-    section(dl, x, w, buttonsY, "AS BUTTONS");
-    auto button = [&](float ry, Button b, const TriggerBinding& t, bool on) {
-        const float rh = px(34);
-        row(dl, x + px(12), ry, w - px(24), rh, on ? alpha(T::kPink, 0.32f) : T::kRow, on ? T::kPink : T::kRowBorder);
-        text(dl, gBold, px(14), x + px(24), ry + rh * 0.5f, T::kText, label(b), H::Left, V::Middle);
-        std::string action = compact(t, flats_);
-        if (t.isSet() && t.mode == Mode::Toggle)
-            toggleMark(dl, ImVec2(x + w - px(30), ry + rh * 0.5f), px(6), on ? T::kPink : T::kLabel);
-        text(dl, gCondensed, px(17), x + w - px(t.mode == Mode::Toggle && t.isSet() ? 44 : 24), ry + rh * 0.5f,
-             on ? T::kText : T::kLabel, fit(gCondensed, px(17), action, w - px(90)), H::Right, V::Middle);
-        if (hoverButton(b == Button::LeftTrigger ? "##l2" : "##r2", ImVec2(x + px(12), ry), ImVec2(x + w - px(12), ry + rh)))
+    // Per trigger: the CC it sends, and what it plays as a button (lit while it sounds).
+    float rowY = s.b.y + px(18);
+    section(dl, x, w, rowY, "MIDI");
+    rowY += px(12);
+    const ImU32 pinkLight = mix(T::kPink, T::kText, 0.5f);
+    auto triggerRow = [&](float ry, Axis a, Button b, const AxisBinding& ab, const TriggerBinding& t, bool on) {
+        const float rh = px(28), midY = ry + rh * 0.5f;
+        text(dl, gBold, px(12), x + px(12), midY, T::kLabel, a == Axis::LeftTrigger ? "L2" : "R2", H::Left, V::Middle);
+        const float ccX0 = x + px(38), ccW = px(52);
+        badge(dl, gCondensed, px(13), ccX0 + ccW * 0.5f, midY - px(10), px(20), ab.enabled ? "CC " + std::to_string(ab.cc) : "-",
+              T::kText, alpha(T::kPink, 0.22f), ab.enabled ? T::kPink : T::kDim);
+        const std::string axisSpec = "axes:left_trigger,right_trigger";
+        if (hoverButton(a == Axis::LeftTrigger ? "##l2cc" : "##r2cc", ImVec2(ccX0, ry), ImVec2(ccX0 + ccW, ry + rh)))
+            click(axisSpec);
+        const float bx0 = ccX0 + ccW + px(6), bx1 = x + w - px(12);
+        row(dl, bx0, midY - px(10), bx1 - bx0, px(20), on ? alpha(T::kPink, 0.35f) : T::kRow, on ? T::kPink : T::kRowBorder);
+        const std::string action = t.isSet() ? "button: " + compact(t, flats_) : "button: -";
+        text(dl, gCondensed, px(13), (bx0 + bx1) * 0.5f, midY, on ? T::kText : T::kLabel,
+             fit(gCondensed, px(13), action, bx1 - bx0 - px(8)), H::Center, V::Middle);
+        if (hoverButton(b == Button::LeftTrigger ? "##l2" : "##r2", ImVec2(bx0, ry), ImVec2(bx1, ry + rh)))
             click(b == Button::LeftTrigger ? "button:left_trigger" : "button:right_trigger");
     };
-    button(buttonsY + px(12), Button::LeftTrigger, dl2, soundL);
-    button(buttonsY + px(54), Button::RightTrigger, dr2, soundR);
-    const float noteY = buttonsY + px(106);
-    if (noteY + px(14) < y + h)
-        text(dl, gMedium, px(12), x + w * 0.5f, noteY, T::kLabel, "button at 25 % of travel", H::Center, V::Middle);
+    triggerRow(rowY, Axis::LeftTrigger, Button::LeftTrigger, bl, dl2, soundL);
+    triggerRow(rowY + px(30), Axis::RightTrigger, Button::RightTrigger, br, dr2, soundR);
+
+    // Loop: the triggers' travel a Loop record button captured, L2 and R2.
+    const float loopY = rowY + px(78);
+    if (y + h - px(10) - (loopY + px(10)) < px(28))
+        return;
+    drawLoopPanel(dl, x, w, loopY, y + h - px(10), live.loops[static_cast<std::size_t>(LoopSource::Triggers)],
+                  m.loops[static_cast<std::size_t>(LoopSource::Triggers)], T::kPink, pinkLight,
+                  "hold Record and press a trigger", "REC  \xC2\xB7  press a trigger", "##looptriggers",
+                  "axes:left_trigger,right_trigger", true, "L2", "R2");
 }
 
 void PerformanceView::drawDpad(const Mapping& m, const LiveState& live, float x, float y, float w, float h) {

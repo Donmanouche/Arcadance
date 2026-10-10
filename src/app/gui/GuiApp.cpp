@@ -1508,7 +1508,9 @@ void GuiApp::drawMappingOverlay(const LiveState& live) {
         ImGui::SetNextWindowSizeConstraints(ImVec2(0, 0),
                                             ImVec2(FLT_MAX, std::max(ImGui::GetFontSize() * 10,
                                                                      viewport->WorkSize.y - ImGui::GetFontSize() * 9)));
+        ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0, 0, 0, 0));
         ImGui::BeginChild("mappingbody", ImVec2(0, 0), ImGuiChildFlags_AutoResizeX | ImGuiChildFlags_AutoResizeY);
+        ImGui::PopStyleColor();
         editor_.setHumanizeChannels(settings_.humanize.channels);
         if (editor_.drawControl(spec, target, live, settings_.key))
             edited();
