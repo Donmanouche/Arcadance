@@ -489,6 +489,29 @@ ScreenBox screenBox(float x, float top, float w, float h) {
     return {ImVec2(x + pad, top + px(10)), ImVec2(x + w - pad, top + px(10) + sh)};
 }
 
+// A loop's stretch as shown: "+2.5x" lasts 2.5 times as long, "-2.5x" 2.5 times less.
+std::string stretchText(int stretch) {
+    if (stretch == 0)
+        return "1x";
+    const int halves = 2 + std::abs(stretch);  // the factor, in halves
+    char buf[16];
+    if (halves % 2 == 0)
+        std::snprintf(buf, sizeof buf, "%c%dx", stretch > 0 ? '+' : '-', halves / 2);
+    else
+        std::snprintf(buf, sizeof buf, "%c%d.5x", stretch > 0 ? '+' : '-', halves / 2);
+    return buf;
+}
+
+// A loop's length as shown, stretched: "4.0 s", "12:30 min".
+std::string durationText(double seconds) {
+    char buf[24];
+    if (seconds < 60.0)
+        std::snprintf(buf, sizeof buf, "%.1f s", seconds);
+    else
+        std::snprintf(buf, sizeof buf, "%d:%02d min", static_cast<int>(seconds) / 60, static_cast<int>(seconds) % 60);
+    return buf;
+}
+
 }  // namespace
 
 PerformanceView::PerformanceView() {
@@ -514,6 +537,80 @@ float PerformanceView::smooth(int id, float target, float speed) {
 
 void PerformanceView::click(const std::string& spec) { clicked_ = spec; }
 
+void PerformanceView::stretchWheel(std::uint8_t sources, ImVec2 a, ImVec2 b) {
+    const ImGuiIO& io = ImGui::GetIO();
+    if (!io.KeyShift || !ImGui::IsWindowHovered() || !ImGui::IsMouseHoveringRect(a, b))
+        return;
+    // Some systems turn Shift + wheel into a horizontal scroll.
+    const float wheel = io.MouseWheel != 0.0f ? io.MouseWheel : io.MouseWheelH;
+    if (wheel == 0.0f)
+        return;
+    wheelRest_ += wheel;
+    const int notches = static_cast<int>(wheelRest_);
+    if (notches == 0)
+        return;
+    wheelRest_ -= static_cast<float>(notches);
+    // Turned quickly, each notch goes further: 100x is 198 steps away.
+    wheelStreak_ = time_ - lastWheel_ < 0.12 ? wheelStreak_ + 1 : 0;
+    lastWheel_ = time_;
+    const int accel = std::min(1 + wheelStreak_ / 2, 10);
+    stretch_ = StretchRequest{sources, notches * accel};
+    for (std::size_t i = 0; i < stretchShown_.size(); ++i)
+        if (sources & (1u << i))
+            stretchShown_[i] = time_;
+}
+
+float PerformanceView::drawStretchChip(ImDrawList* dl, float right, float y, int stretch, ImU32 color) {
+    if (stretch == 0)
+        return right;
+    const std::string label = stretchText(stretch);
+    const float w = textWidth(gBold, px(10), label) + px(10);
+    const ImVec2 a(right - w, y - px(7)), b(right, y + px(7));
+    dl->AddRectFilled(a, b, alpha(color, 0.2f), px(7));
+    dl->AddRect(a, b, alpha(color, 0.8f), px(7), px(1));
+    text(dl, gBold, px(10), (a.x + b.x) * 0.5f, y, T::kText, label, H::Center, V::Middle);
+    return a.x;
+}
+
+// While the wheel turns (and a moment after), a gauge across the bottom of the
+// LOOP box: -20x on the left, 1x, +100x on the right, on a log scale.
+void PerformanceView::drawStretchGauge(ImDrawList* dl, ImVec2 ga, ImVec2 gb, std::uint8_t sources, int stretch, ImU32 color) {
+    double shownAt = -1e9;
+    for (std::size_t i = 0; i < stretchShown_.size(); ++i)
+        if (sources & (1u << i))
+            shownAt = std::max(shownAt, stretchShown_[i]);
+    const double age = time_ - shownAt;
+    if (age > 1.6)
+        return;
+    const float a = age < 1.2 ? 1.0f : static_cast<float>(1.0 - (age - 1.2) / 0.4);
+    const ImVec2 ba(ga.x + px(6), gb.y - px(34)), bb(gb.x - px(6), gb.y - px(6));
+    dl->AddRectFilled(ba, bb, IM_COL32(0x14, 0x16, 0x19, static_cast<int>(240 * a)), px(5));
+    dl->AddRect(ba, bb, alpha(IM_COL32(0x2E, 0x32, 0x38, 255), a), px(5), px(1));
+    const float x0 = ba.x + px(12), x1 = bb.x - px(12), ty = bb.y - px(9), ly = ba.y + px(9);
+    const double kLeft = std::log(20.0), kSpan = std::log(20.0) + std::log(100.0);
+    auto xAt = [&](double factor) { return x0 + (x1 - x0) * static_cast<float>((std::log(factor) + kLeft) / kSpan); };
+    const float one = xAt(1.0), at = xAt(Engine::stretchFactor(stretch));
+    dl->AddLine(ImVec2(x0, ty), ImVec2(x1, ty), alpha(IM_COL32(0x4A, 0x4F, 0x57, 255), a), px(2));
+    dl->AddLine(ImVec2(one, ty - px(4)), ImVec2(one, ty + px(4)), alpha(T::kDim, a), px(1.5f));
+    dl->AddLine(ImVec2(std::min(one, at), ty), ImVec2(std::max(one, at), ty), alpha(color, a), px(3));
+    dl->AddCircleFilled(ImVec2(at, ty), px(4.5f), alpha(color, a));
+    // The value above the marker; the fixed labels where it leaves room.
+    const std::string value = stretchText(stretch);
+    const float vw = textWidth(gBold, px(10), value);
+    const float vx = std::clamp(at, x0 + vw * 0.5f, x1 - vw * 0.5f);
+    auto fixed = [&](float x, const char* label, H align) {
+        const float w = textWidth(gMedium, px(10), label);
+        const float l = align == H::Left ? x : align == H::Right ? x - w : x - w * 0.5f;
+        if (l + w < vx - vw * 0.5f - px(4) || l > vx + vw * 0.5f + px(4))
+            text(dl, gMedium, px(10), x, ly, alpha(T::kDim, a), label, align, V::Middle);
+    };
+    fixed(x0 - px(6), "-20x", H::Left);
+    if (stretch != 0)
+        fixed(one, "1x", H::Center);
+    fixed(x1 + px(6), "+100x", H::Right);
+    text(dl, gBold, px(10), vx, ly, alpha(T::kText, a), value, H::Center, V::Middle);
+}
+
 std::optional<std::string> PerformanceView::draw(const Mapping& mapping, const LiveState& live,
                                                  const std::optional<Key>& key) {
     gMedium = fonts_.medium ? fonts_.medium : ImGui::GetFont();
@@ -523,6 +620,7 @@ std::optional<std::string> PerformanceView::draw(const Mapping& mapping, const L
     dt_ = ImGui::GetIO().DeltaTime;
     flats_ = key && prefersFlats(*key);
     clicked_.reset();
+    stretch_.reset();
     trackFrozenPositions(live);
 
     // Flash the buttons pressed since the last frame.
@@ -930,7 +1028,7 @@ void PerformanceView::drawStick(int index, const Mapping& m, const LiveState& li
     drawLoopPanel(dl, x, w, loopY, y + h - px(10), live.loops[static_cast<std::size_t>(index)],
                   m.loops[static_cast<std::size_t>(index)], accent, mix(accent, T::kText, 0.5f), artFor(live.channel, index),
                   "REC  \xC2\xB7  move a stick", index == 0 ? "##loopL" : "##loopR",
-                  index == 0 ? "axes:left_x,left_y" : "axes:right_x,right_y", false);
+                  index == 0 ? "axes:left_x,left_y" : "axes:right_x,right_y", false, index);
 }
 
 // A LOOP panel: its header (state, playback, length), and the loop's two
@@ -938,7 +1036,7 @@ void PerformanceView::drawStick(int index, const Mapping& m, const LiveState& li
 void PerformanceView::drawLoopPanel(ImDrawList* dl, float x, float w, float loopY, float bottom, const LiveState::Loop& loop,
                                     const LoopBinding& lb, ImU32 colorX, ImU32 colorY, int art,
                                     const char* waitStatus, const char* id, const std::string& spec, bool upward,
-                                    const char* legendX, const char* legendY) {
+                                    int source, const char* legendX, const char* legendY) {
     const float gTop = loopY + px(10), gBottom = bottom;
     const LoopStatus& st = loop.status;
     const bool recording = st.state == LoopStatus::State::Recording;
@@ -946,6 +1044,7 @@ void PerformanceView::drawLoopPanel(ImDrawList* dl, float x, float w, float loop
     const float seconds = static_cast<float>(st.length) / Engine::kLoopRateHz;
     char secondsText[16];
     std::snprintf(secondsText, sizeof secondsText, "%.1f s", static_cast<double>(seconds));
+    const auto sourceBit = static_cast<std::uint8_t>(1u << source);
 
     // Header: LOOP ——— status.
     const float size = px(11);
@@ -962,7 +1061,7 @@ void PerformanceView::drawLoopPanel(ImDrawList* dl, float x, float w, float loop
         status = std::string(lb.playback == LoopPlayback::Forward   ? "FWD"
                              : lb.playback == LoopPlayback::Reverse ? "REV"
                                                                     : "BACK & FORTH") +
-                 "  \xC2\xB7  " + secondsText;
+                 "  \xC2\xB7  " + durationText(seconds * Engine::stretchFactor(st.stretch));
         statusColor = colorX;
     }
     const float statusX = x + w - px(12) - textWidth(gBold, px(10), status);
@@ -986,7 +1085,9 @@ void PerformanceView::drawLoopPanel(ImDrawList* dl, float x, float w, float loop
             arrow(iconX, lb.playback == LoopPlayback::Reverse);
         }
     }
-    const float ruleEnd = status.empty() ? x + w - px(12) : iconX - px(10);
+    float ruleEnd = status.empty() ? x + w - px(12) : iconX - px(10);
+    if (playing && st.stretch != 0)  // a stretched loop says by how much
+        ruleEnd = drawStretchChip(dl, iconX - px(lb.playback == LoopPlayback::BackAndForth ? 12 : 9), loopY, st.stretch, colorX) - px(6);
     const float ruleStart = x + px(16) + textWidth(gBold, size, "LOOP");
     if (ruleEnd > ruleStart)
         dl->AddLine(ImVec2(ruleStart, loopY), ImVec2(ruleEnd, loopY), IM_COL32(0x40, 0x44, 0x4B, 255), px(1));
@@ -1040,6 +1141,9 @@ void PerformanceView::drawLoopPanel(ImDrawList* dl, float x, float w, float loop
         text(dl, gBold, px(10), gb.x - px(24), gb.y - px(9), colorY, legendY, H::Right, V::Middle);
         text(dl, gBold, px(10), gb.x - px(42), gb.y - px(9), colorX, legendX, H::Right, V::Middle);
     }
+    if (playing)
+        drawStretchGauge(dl, ga, gb, sourceBit, st.stretch, colorX);
+    stretchWheel(sourceBit, ImVec2(ga.x, loopY - px(6)), gb);
     if (hoverButton(id, ImVec2(ga.x, loopY - px(6)), gb))
         click(spec);
 }
@@ -1109,7 +1213,7 @@ void PerformanceView::drawTriggers(const Mapping& m, const LiveState& live, floa
     drawLoopPanel(dl, x, w, loopY, y + h - px(10), live.loops[static_cast<std::size_t>(LoopSource::Triggers)],
                   m.loops[static_cast<std::size_t>(LoopSource::Triggers)], T::kPink, pinkLight,
                   artFor(live.channel, 2), "REC  \xC2\xB7  press a trigger", "##looptriggers",
-                  "axes:left_trigger,right_trigger", true, "L2", "R2");
+                  "axes:left_trigger,right_trigger", true, static_cast<int>(LoopSource::Triggers), "L2", "R2");
 }
 
 void PerformanceView::drawDpad(const Mapping& m, const LiveState& live, float x, float y, float w, float h) {
@@ -1334,10 +1438,9 @@ void PerformanceView::drawTouchpad(const Mapping& m, const LiveState& live, floa
         statusColor = T::kRed;
     } else if (shown >= 0) {
         const LoopPlayback pb = m.loops[static_cast<std::size_t>(2 + shown)].playback;
-        std::snprintf(secondsText, sizeof secondsText, "%.1f s",
-                      static_cast<double>(loops[shown]->status.length) / Engine::kLoopRateHz);
+        const double seconds = static_cast<double>(loops[shown]->status.length) / Engine::kLoopRateHz;
         status = std::string(pb == LoopPlayback::Forward ? "FWD" : pb == LoopPlayback::Reverse ? "REV" : "BACK & FORTH") +
-                 "  \xC2\xB7  " + secondsText;
+                 "  \xC2\xB7  " + durationText(seconds * Engine::stretchFactor(loops[shown]->status.stretch));
         statusColor = fingerColors[shown];
     }
     text(dl, gBold, px(11), x + px(12), loopY, T::kDim, "LOOP", H::Left, V::Middle);
@@ -1346,7 +1449,9 @@ void PerformanceView::drawTouchpad(const Mapping& m, const LiveState& live, floa
         text(dl, gBold, px(10), statusX, loopY, statusColor, status, H::Left, V::Middle);
     if (recording || waiting)
         dl->AddCircleFilled(ImVec2(statusX - px(9), loopY), px(3.5f), alpha(T::kRed, recording ? 1.0f : 0.6f));
-    const float ruleEnd = status.empty() ? x + w - px(12) : statusX - px(recording || waiting ? 18 : 8);
+    float ruleEnd = status.empty() ? x + w - px(12) : statusX - px(recording || waiting ? 18 : 8);
+    if (!recording && !waiting && shown >= 0 && loops[shown]->status.stretch != 0)
+        ruleEnd = drawStretchChip(dl, statusX - px(6), loopY, loops[shown]->status.stretch, fingerColors[shown]) - px(6);
     const float ruleStart = x + px(16) + textWidth(gBold, px(11), "LOOP");
     if (ruleEnd > ruleStart)
         dl->AddLine(ImVec2(ruleStart, loopY), ImVec2(ruleEnd, loopY), IM_COL32(0x40, 0x44, 0x4B, 255), px(1));
@@ -1421,6 +1526,10 @@ void PerformanceView::drawTouchpad(const Mapping& m, const LiveState& live, floa
             dl->AddLine(ImVec2(hx, ty - px(4)), ImVec2(hx, ty + px(4)), IM_COL32_WHITE, px(1.5f));
         }
     }
+    constexpr auto kFingerLoops = static_cast<std::uint8_t>((1u << 2) | (1u << 3));
+    if (shown >= 0 && !recording)
+        drawStretchGauge(dl, ga, gb, kFingerLoops, loops[shown]->status.stretch, fingerColors[shown]);
+    stretchWheel(kFingerLoops, ImVec2(ga.x, loopY - px(6)), gb);
     if (hoverButton("##touchloop", ImVec2(ga.x, loopY - px(6)), gb))
         click("fingers");
 }

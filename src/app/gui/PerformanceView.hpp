@@ -11,6 +11,7 @@
 #include <deque>
 #include <optional>
 #include <string>
+#include <utility>
 
 // The animated view: one module per part of the controller (sticks, triggers,
 // D-pad, touchpad) with a live "screen" and knobs showing the CCs sent, and a
@@ -59,6 +60,14 @@ public:
     // "dpad:up", "zone:1:top_left", "axis:left_x", "finger:1"...).
     std::optional<std::string> draw(const midipad::Mapping& mapping, const LiveState& live,
                                     const std::optional<midipad::Key>& key);
+    // Shift + mouse wheel over a movement loop's LOOP panel, during the last
+    // draw(): the loops to stretch (a bit per LoopSource) and by how many steps
+    // (see Engine::stretchLoop; up stretches, down compresses).
+    struct StretchRequest {
+        std::uint8_t sources = 0;
+        int steps = 0;
+    };
+    std::optional<StretchRequest> takeStretchRequest() { return std::exchange(stretch_, std::nullopt); }
 
 private:
     struct Trail {
@@ -81,8 +90,14 @@ private:
     void drawPianoRoll(const midipad::Mapping& m, const LiveState& live, float x, float y, float w, float h);
     void drawLoopPanel(ImDrawList* dl, float x, float w, float loopY, float bottom, const LiveState::Loop& loop,
                        const midipad::LoopBinding& binding, ImU32 colorX, ImU32 colorY, int idleArt,
-                       const char* waitStatus, const char* id, const std::string& spec, bool upward,
+                       const char* waitStatus, const char* id, const std::string& spec, bool upward, int source,
                        const char* legendX = nullptr, const char* legendY = nullptr);
+    // Stretching loops: reads Shift + wheel over a LOOP panel (a, b), for the
+    // loops in `sources`; draws the gauge of `stretch` at the bottom of the box
+    // while the wheel turns; the header chip and length text for a stretch.
+    void stretchWheel(std::uint8_t sources, ImVec2 a, ImVec2 b);
+    void drawStretchGauge(ImDrawList* dl, ImVec2 ga, ImVec2 gb, std::uint8_t sources, int stretch, ImU32 color);
+    float drawStretchChip(ImDrawList* dl, float right, float y, int stretch, ImU32 color);  // returns its left edge
 
     // Smooths a displayed value towards its target; `id` names it across frames.
     float smooth(int id, float target, float speed = 14.0f);
@@ -93,6 +108,15 @@ private:
     float dt_ = 0;
     bool flats_ = false;
     std::optional<std::string> clicked_;
+    std::optional<StretchRequest> stretch_;
+    float wheelRest_ = 0;           // a partial wheel notch (touchpads scroll by fractions)
+    double lastWheel_ = -1e9;       // when the last notch turned, for the acceleration
+    int wheelStreak_ = 0;           // notches turned in a quick row
+    std::array<double, 8> stretchShown_ = [] {  // per LoopSource: when its stretch last changed
+        std::array<double, 8> never{};
+        never.fill(-1e9);
+        return never;
+    }();
     std::array<float, 64> smoothed_{};
     std::array<bool, 64> smoothedInit_{};
     std::array<double, 32> lastPress_ = [] {  // per SDL button, for the flash

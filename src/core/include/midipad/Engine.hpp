@@ -44,6 +44,7 @@ struct LoopStatus {
     int position = 0;      // sample playing now
     int direction = 1;     // 1 forwards, -1 backwards
     int channel = 0;
+    int stretch = 0;       // movement loops: see Engine::stretchFactor
 };
 
 // Turns controller events into MIDI according to the active preset.
@@ -106,6 +107,15 @@ public:
     // finger was lifted.
     float loopSample(int channel, int source, int axis, int index) const;
     void clearLoop(int channel, int source);
+    // A movement loop (not the note loop) played slower or faster, in steps
+    // of a half: stretch > 0 lasts 1 + stretch / 2 times as long (up to 100),
+    // stretch < 0 1 + |stretch| / 2 times less (down to 20). It plays on from
+    // the same point of the loop, smoothed: between samples when slower,
+    // averaged over the samples it skips when faster. Recording a loop again
+    // puts it back to 0. Moving across 0 stops there, so 1x is easy to reach.
+    static constexpr int kMaxStretch = 198, kMinStretch = -38;
+    static double stretchFactor(int stretch);  // how many times longer it lasts
+    void stretchLoop(int channel, int source, int steps);
     // The notes of a channel's note loop, at most `max`; returns how many.
     int noteLoopIntervals(int channel, NoteInterval* out, int max) const;
     static constexpr int kMaxNoteEvents = 4096;  // per note loop
@@ -179,7 +189,8 @@ private:
     void beginRecordHold();
     void endRecordHold();
     void runLoops();
-    void sendLoopSample(std::size_t loop);
+    void playMovementLoop(std::size_t loop, LoopPlayback playback);
+    void sendLoopValue(std::size_t loop, float x, float y);
     void playLoopNotes(std::size_t loop);
     void recordNote(int channel, int note, int velocity, std::uint64_t at);
     void overdubNote(int channel, int note, int velocity, std::uint64_t at);
@@ -229,6 +240,8 @@ private:
         // when the finger was off the touchpad.
         std::vector<std::uint16_t> x, y;
         int length = 0, position = 0, direction = 1;
+        double phase = 0;  // movement loops: the position, between samples
+        int stretch = 0;
         std::uint64_t nextAt = 0;
         int sentX = -1, sentY = -1;
     };

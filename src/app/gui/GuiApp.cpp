@@ -1194,6 +1194,10 @@ void GuiApp::drawPerformance(const LiveState& live) {
     ImGui::PushStyleColor(ImGuiCol_ChildBg, color(Theme::kBackground));
     ImGui::BeginChild("modules", ImVec2(0, -statusH), ImGuiChildFlags_None, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
     const auto clicked = performance_.draw(preset_.forChannel(live.channel), live, settings_.key);
+    if (const auto stretch = performance_.takeStretchRequest())  // Shift + wheel over a LOOP panel
+        for (int source = 0; source < kLoopSourceCount; ++source)
+            if (stretch->sources & (1u << source))
+                runtime_->stretchLoop(source, stretch->steps);
     ImGui::EndChild();
     ImGui::PopStyleColor();
     drawPerformanceStatus(live, statusH);

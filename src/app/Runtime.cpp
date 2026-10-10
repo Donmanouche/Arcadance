@@ -136,6 +136,8 @@ void Runtime::panic() { commands_.push({Command::Kind::Panic}); }
 
 void Runtime::clearLoop(int source) { commands_.push({Command::Kind::ClearLoop, source}); }
 
+void Runtime::stretchLoop(int source, int steps) { commands_.push({Command::Kind::StretchLoop, source, steps}); }
+
 void Runtime::pauseLoops() { commands_.push({Command::Kind::PauseLoops}); }
 
 void Runtime::playLoops() { commands_.push({Command::Kind::PlayLoops}); }
@@ -302,6 +304,8 @@ void Runtime::run(std::stop_token stop, Options options, std::shared_ptr<const P
                 engine.setChannel(command->channel);
             } else if (command->kind == Command::Kind::ClearLoop) {
                 engine.clearLoop(engine.channel(), command->channel);  // `channel` holds the source
+            } else if (command->kind == Command::Kind::StretchLoop) {
+                engine.stretchLoop(engine.channel(), command->channel, command->value);  // `channel` holds the source
             } else if (command->kind == Command::Kind::PauseLoops) {
                 engine.pauseLoops();
             } else if (command->kind == Command::Kind::PlayLoops) {

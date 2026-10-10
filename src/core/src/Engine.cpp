@@ -555,6 +555,7 @@ void Engine::endRecordHold() {
             loop.state = LoopStatus::State::Playing;
             const LoopPlayback playback = preset_->forChannel(channel).loops[static_cast<std::size_t>(source)].playback;
             loop.position = playback == LoopPlayback::Reverse ? loop.length - 1 : 0;
+            loop.phase = loop.position;
             loop.direction = playback == LoopPlayback::Reverse ? -1 : 1;
             loop.nextAt = now_;
             loop.sentX = loop.sentY = -1;
@@ -595,6 +596,7 @@ void Engine::runLoops() {
         Loop& loop = loops_[index];
         loop.state = LoopStatus::State::Recording;
         loop.length = 0;
+        loop.stretch = 0;
         loop.nextAt = now_;
         recordedThisHold_ = true;
     }
@@ -629,14 +631,18 @@ void Engine::runLoops() {
                 loop.nextAt = now_ + kStep;
                 break;
             }
-            fromLoop_ = true;
-            if (source == static_cast<int>(LoopSource::Notes))
-                playLoopNotes(i);
-            else
-                sendLoopSample(i);
-            fromLoop_ = false;
-            // Then step, as the playback asks now (it can change while playing).
+            // The playback as it is now: it can change while playing.
             const LoopPlayback playback = preset_->forChannel(channel).loops[static_cast<std::size_t>(source)].playback;
+            if (source != static_cast<int>(LoopSource::Notes)) {
+                fromLoop_ = true;
+                playMovementLoop(i, playback);
+                fromLoop_ = false;
+                continue;
+            }
+            fromLoop_ = true;
+            playLoopNotes(i);
+            fromLoop_ = false;
+            // Then step.
             bool startsOver = false;
             if (playback == LoopPlayback::Forward) {
                 loop.direction = 1;
@@ -666,13 +672,127 @@ void Engine::runLoops() {
     }
 }
 
-// Sends a loop's current sample on its CCs and channel, scaled like the axes
-// it was recorded from. Nothing while a recorded finger was lifted.
-void Engine::sendLoopSample(std::size_t index) {
-    Loop& loop = loops_[index];
-    const auto i = static_cast<std::size_t>(loop.position);
-    if (loop.x[i] == kLifted)
+namespace {
+
+// The sample `k` of a loop of `length` samples, `k` possibly outside it: wrapped
+// around for a loop playing in one direction, mirrored for one going back and forth.
+int loopSampleIndex(int k, int length, LoopPlayback playback) {
+    if (playback != LoopPlayback::BackAndForth)
+        return (k % length + length) % length;
+    const int last = length - 1;
+    if (last == 0)
+        return 0;
+    const int period = 2 * last;
+    k = (k % period + period) % period;
+    return k <= last ? k : period - k;
+}
+
+// Monotone cubic interpolation (Fritsch-Butland) between p1 and p2 at f in
+// [0, 1), p0 and p3 around them: smooth, and never beyond its neighbours, so a
+// stretched gesture keeps its shape without overshooting what was recorded.
+float monotoneCubic(float p0, float p1, float p2, float p3, float f) {
+    auto slope = [](float a, float b) { return a * b <= 0.0f ? 0.0f : 2.0f * a * b / (a + b); };
+    const float m1 = slope(p1 - p0, p2 - p1), m2 = slope(p2 - p1, p3 - p2);
+    const float f2 = f * f, f3 = f2 * f;
+    return (2 * f3 - 3 * f2 + 1) * p1 + (f3 - 2 * f2 + f) * m1 + (-2 * f3 + 3 * f2) * p2 + (f3 - f2) * m2;
+}
+
+}  // namespace
+
+double Engine::stretchFactor(int stretch) {
+    const double k = 1.0 + 0.5 * std::abs(std::clamp(stretch, kMinStretch, kMaxStretch));
+    return stretch >= 0 ? k : 1.0 / k;
+}
+
+void Engine::stretchLoop(int channel, int source, int steps) {
+    if (source < 0 || source >= kLoopSourceCount || source == static_cast<int>(LoopSource::Notes))
         return;
+    Loop& loop = loops_[loopIndex(std::clamp(channel, 0, kChannelCount - 1), source)];
+    if (loop.state != LoopStatus::State::Playing)
+        return;
+    int next = loop.stretch + steps;
+    if ((loop.stretch > 0 && next < 0) || (loop.stretch < 0 && next > 0))
+        next = 0;  // stop at 1x on the way
+    loop.stretch = std::clamp(next, kMinStretch, kMaxStretch);
+}
+
+// Plays one step of a movement loop: sends its value at the current point,
+// then moves on by one sample, divided by the stretch factor. Slower than
+// recorded, the value is interpolated between samples; faster, it is the
+// average of the samples passed over, so nothing flickers.
+void Engine::playMovementLoop(std::size_t index, LoopPlayback playback) {
+    Loop& loop = loops_[index];
+    const int length = loop.length;
+    const double step = 1.0 / stretchFactor(loop.stretch);
+    auto at = [&](const std::vector<std::uint16_t>& v, int k) { return v[static_cast<std::size_t>(loopSampleIndex(k, length, playback))]; };
+    auto value = [](std::uint16_t v) { return static_cast<float>(v) / 65534.0f; };
+
+    const int i = static_cast<int>(std::floor(loop.phase));
+    if (step <= 1.0) {
+        // Between samples i and i + 1 in the loop's own order.
+        const float f = static_cast<float>(loop.phase - i);
+        if (at(loop.x, i) != kLifted) {  // nothing while a recorded finger was lifted
+            const bool nextOn = at(loop.x, i + 1) != kLifted;
+            auto interpolate = [&](const std::vector<std::uint16_t>& v) {
+                const float p1 = value(at(v, i));
+                if (!nextOn)
+                    return p1;  // hold up to the lift
+                const float p2 = value(at(v, i + 1));
+                const float p0 = at(v, i - 1) == kLifted ? p1 : value(at(v, i - 1));
+                const float p3 = at(v, i + 2) == kLifted ? p2 : value(at(v, i + 2));
+                return std::clamp(monotoneCubic(p0, p1, p2, p3, f), 0.0f, 1.0f);
+            };
+            sendLoopValue(index, interpolate(loop.x), interpolate(loop.y));
+        }
+    } else {
+        // The samples this step passes over, in the playing direction.
+        const int count = static_cast<int>(std::ceil(step));
+        const int dir = playback == LoopPlayback::Reverse ? -1 : (playback == LoopPlayback::Forward ? 1 : loop.direction);
+        float sx = 0, sy = 0;
+        int on = 0;
+        for (int j = 0; j < count; ++j) {
+            const int k = i + dir * j;
+            if (at(loop.x, k) == kLifted)
+                continue;
+            sx += value(at(loop.x, k));
+            sy += value(at(loop.y, k));
+            ++on;
+        }
+        if (on > 0)
+            sendLoopValue(index, sx / static_cast<float>(on), sy / static_cast<float>(on));
+    }
+
+    // Move on.
+    if (length < 2) {
+        loop.phase = 0;
+    } else if (playback == LoopPlayback::Forward) {
+        loop.direction = 1;
+        loop.phase = std::fmod(loop.phase + step, static_cast<double>(length));
+    } else if (playback == LoopPlayback::Reverse) {
+        loop.direction = -1;
+        loop.phase -= step;
+        while (loop.phase < 0)
+            loop.phase += length;
+    } else {
+        const double last = length - 1;
+        loop.phase += loop.direction * step;
+        while (loop.phase > last || loop.phase < 0) {
+            if (loop.phase > last) {
+                loop.phase = 2 * last - loop.phase;
+                loop.direction = -1;
+            } else {
+                loop.phase = -loop.phase;
+                loop.direction = 1;
+            }
+        }
+    }
+    loop.position = std::clamp(static_cast<int>(loop.phase), 0, std::max(0, length - 1));
+}
+
+// Sends a movement loop's X, Y in [0, 1] on its CCs and channel, scaled like
+// the axes it was recorded from.
+void Engine::sendLoopValue(std::size_t index, float px, float py) {
+    Loop& loop = loops_[index];
     const auto channel = static_cast<int>(index / kLoopSourceCount);
     const auto source = static_cast<int>(index % kLoopSourceCount);
     const Mapping& m = preset_->forChannel(channel);
@@ -683,7 +803,6 @@ void Engine::sendLoopSample(std::size_t index) {
         const int lo = a.enabled ? a.min : 0, hi = a.enabled ? a.max : 127;
         return lo + static_cast<int>(std::lround(position * static_cast<float>(hi - lo)));
     };
-    const float px = static_cast<float>(loop.x[i]) / 65534.0f, py = static_cast<float>(loop.y[i]) / 65534.0f;
     int vx = 0, vy = 0;
     if (source < 2) {
         vx = value(m.axes[static_cast<std::size_t>(source == 0 ? Axis::LeftX : Axis::RightX)], px);
@@ -837,7 +956,7 @@ LoopStatus Engine::loopStatus(int channel, int source) const {
     const Loop& loop = loops_[loopIndex(channel, source)];
     const bool waiting = waiting_[static_cast<std::size_t>(source)] && holdChannel_ == channel;
     const bool overdub = source == static_cast<int>(LoopSource::Notes) && overdubChannel_ == channel;
-    return {loop.state, waiting, overdub, loop.length, loop.position, loop.direction, channel};
+    return {loop.state, waiting, overdub, loop.length, loop.position, loop.direction, channel, loop.stretch};
 }
 
 float Engine::loopSample(int channel, int source, int axis, int index) const {
@@ -853,6 +972,7 @@ void Engine::clearLoop(int channel, int source) {
     Loop& loop = loops_[index];
     loop.state = LoopStatus::State::Empty;
     loop.length = 0;
+    loop.stretch = 0;
     if (index % kLoopSourceCount == static_cast<std::size_t>(LoopSource::Notes) &&
         overdubChannel_ == static_cast<int>(index / kLoopSourceCount))
         overdubChannel_ = -1;
@@ -887,6 +1007,7 @@ void Engine::playLoops() {
             fromLoop_ = false;
             const bool reverse = preset_->forChannel(channel).loops[static_cast<std::size_t>(source)].playback == LoopPlayback::Reverse;
             loop.position = reverse ? loop.length - 1 : 0;
+            loop.phase = loop.position;
             loop.direction = reverse ? -1 : 1;
             loop.nextAt = now_;
             loop.sentX = loop.sentY = -1;
