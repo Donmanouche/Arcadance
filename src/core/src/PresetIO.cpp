@@ -168,6 +168,8 @@ TriggerBinding triggerFromJson(const Json& j, const std::string& where) {
             b.bankLsb = readU7(j, "bank_lsb", 0, where);
     } else if (type == "loop_record") {
         b.type = ActionType::LoopRecord;
+    } else if (type == "loop_stretch") {
+        b.type = ActionType::LoopStretch;
     } else if (type == "freeze") {
         b.type = ActionType::Freeze;
         if (!j.contains("axes"))
@@ -231,6 +233,9 @@ Json triggerToJson(const TriggerBinding& b) {
         return j;
     case ActionType::LoopRecord:
         j["type"] = "loop_record";
+        return j;
+    case ActionType::LoopStretch:
+        j["type"] = "loop_stretch";
         return j;
     case ActionType::ProgramChange:
         j["type"] = "program";

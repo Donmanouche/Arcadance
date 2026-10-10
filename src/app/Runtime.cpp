@@ -157,6 +157,7 @@ LiveState Runtime::live() const {
     s.sounding = sounding_.load(std::memory_order_relaxed);
     s.loopChannels = loopChannels_.load(std::memory_order_relaxed);
     s.loopsPaused = loopsPaused_.load(std::memory_order_relaxed);
+    s.stretchHeld = stretchHeld_.load(std::memory_order_relaxed);
     {
         std::lock_guard lock(loopsMutex_);
         s.loops = loops_;
@@ -225,6 +226,7 @@ void Runtime::publish(const GamepadInput& gamepad, const Engine& engine) {
     sounding_.store(engine.soundingSlots(), std::memory_order_relaxed);
     loopChannels_.store(engine.channelsWithLoops(), std::memory_order_relaxed);
     loopsPaused_.store(engine.loopsPaused(), std::memory_order_relaxed);
+    stretchHeld_.store(engine.stretchHeld(), std::memory_order_relaxed);
 
     // The loops, if the main thread is not reading them right now.
     std::unique_lock lock(loopsMutex_, std::try_to_lock);

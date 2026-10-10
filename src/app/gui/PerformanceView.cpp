@@ -116,6 +116,7 @@ std::string compact(const TriggerBinding& b, bool flats) {
     case ActionType::ChannelStep: return std::string("Ch ") + (b.channelStep > 0 ? "+" : "") + std::to_string(b.channelStep);
     case ActionType::Freeze: return "Freeze";
     case ActionType::LoopRecord: return "Rec";
+    case ActionType::LoopStretch: return "Stretch";
     case ActionType::ProgramChange:
         return b.programStep != 0 ? std::string("PC ") + (b.programStep > 0 ? "+1" : "-1") : "PC " + std::to_string(b.number + 1);
     }
@@ -622,6 +623,15 @@ std::optional<std::string> PerformanceView::draw(const Mapping& mapping, const L
     clicked_.reset();
     stretch_.reset();
     trackFrozenPositions(live);
+    // A stretch that changed, from the wheel or the controller, shows its gauge.
+    for (int source = 0; source < kLoopSourceCount; ++source) {
+        const int now = live.loops[static_cast<std::size_t>(source)].status.stretch;
+        auto& before = lastStretch_[static_cast<std::size_t>(source)];
+        if (now != before && live.channel == lastStretchChannel_)
+            stretchShown_[static_cast<std::size_t>(source)] = time_;
+        before = now;
+    }
+    lastStretchChannel_ = live.channel;
 
     // Flash the buttons pressed since the last frame.
     const std::uint32_t pressed = live.buttons & ~previousButtons_;
@@ -984,6 +994,12 @@ void PerformanceView::drawStick(int index, const Mapping& m, const LiveState& li
         if (frozen)
             badge(dl, gBold, px(12), c.x, s.b.y - px(30), px(22), away ? "FROZEN  \xC2\xB7  find the spot" : "FROZEN",
                   T::kIce, alpha(T::kIce, 0.16f), T::kIce);
+        if (live.stretchHeld) {  // the stick stretches its loop instead of playing
+            const LoopStatus& ls = live.loops[static_cast<std::size_t>(index)].status;
+            const std::string label = ls.state == LoopStatus::State::Playing ? "STRETCH  \xC2\xB7  " + stretchText(ls.stretch)
+                                                                             : std::string("STRETCH  \xC2\xB7  no loop");
+            badge(dl, gBold, px(12), c.x, s.a.y + px(22), px(22), label, accent, IM_COL32(0x16, 0x18, 0x1C, 235), accent);
+        }
     });
     if (hoverButton(index == 0 ? "##stickL" : "##stickR", s.a, s.b))
         click(index == 0 ? "axes:left_x,left_y" : "axes:right_x,right_y");
@@ -1357,6 +1373,13 @@ void PerformanceView::drawTouchpad(const Mapping& m, const LiveState& live, floa
         if (!live.hasTouchpad && live.connected)
             text(dl, gMedium, px(13), (s.a.x + s.b.x) * 0.5f, s.a.y + Hh * 0.45f, T::kLabel, "touchpad not detected",
                  H::Center, V::Middle);
+        if (live.stretchHeld && m.fingers[0].mode != TouchMode::Zones && m.fingers[1].mode != TouchMode::Zones) {
+            const auto& l1 = live.loops[static_cast<std::size_t>(LoopSource::Finger1)].status;
+            const auto& l2 = live.loops[static_cast<std::size_t>(LoopSource::Finger2)].status;
+            const LoopStatus* ls = l1.state == LoopStatus::State::Playing ? &l1 : l2.state == LoopStatus::State::Playing ? &l2 : nullptr;
+            const std::string label = ls ? "STRETCH  \xC2\xB7  " + stretchText(ls->stretch) : std::string("STRETCH  \xC2\xB7  no loop");
+            badge(dl, gBold, px(12), (s.a.x + s.b.x) * 0.5f, s.a.y + px(22), px(22), label, T::kCyan, IM_COL32(0x16, 0x18, 0x1C, 235), T::kCyan);
+        }
     });
     if (hoverButton("##touchscreen", s.a, s.b))
         click("fingers");

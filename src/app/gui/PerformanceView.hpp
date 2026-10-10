@@ -112,6 +112,8 @@ private:
     float wheelRest_ = 0;           // a partial wheel notch (touchpads scroll by fractions)
     double lastWheel_ = -1e9;       // when the last notch turned, for the acceleration
     int wheelStreak_ = 0;           // notches turned in a quick row
+    std::array<int, 8> lastStretch_{};  // per LoopSource, on lastStretchChannel_
+    int lastStretchChannel_ = -1;
     std::array<double, 8> stretchShown_ = [] {  // per LoopSource: when its stretch last changed
         std::array<double, 8> never{};
         never.fill(-1e9);

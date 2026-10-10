@@ -15,7 +15,7 @@ enum class Mode : std::uint8_t {
     Toggle,     // press to latch, press again to release
 };
 
-enum class ActionType : std::uint8_t { None, Note, ControlChange, Chord, Transport, ChannelStep, Freeze, LoopRecord, ProgramChange };
+enum class ActionType : std::uint8_t { None, Note, ControlChange, Chord, Transport, ChannelStep, Freeze, LoopRecord, ProgramChange, LoopStretch };
 
 enum class TransportCommand : std::uint8_t { Start, Stop, Continue };
 

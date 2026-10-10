@@ -116,6 +116,18 @@ public:
     static constexpr int kMaxStretch = 198, kMinStretch = -38;
     static double stretchFactor(int stretch);  // how many times longer it lasts
     void stretchLoop(int channel, int source, int steps);
+    // While a LoopStretch binding is held, the X axis of a stick or of a
+    // finger on the touchpad (in axis mode) stretches its loops on the active
+    // channel, as Shift + wheel does: a stick works as a wheel kept turning,
+    // faster the further it is pushed (kStretchMinRate to kStretchMaxRate steps
+    // a second beyond kStretchDeadZone); a finger counts a step every
+    // kStretchTouchStep of its slide. Meanwhile they send no CC and start no
+    // recording. Reaching 1x it waits kStretchPauseMs before going on.
+    static constexpr float kStretchDeadZone = 0.25f;       // of the stick's half travel
+    static constexpr double kStretchMinRate = 2, kStretchMaxRate = 40;
+    static constexpr float kStretchTouchStep = 0.03f;      // of the touchpad's width
+    static constexpr int kStretchPauseMs = 400;
+    bool stretchHeld() const { return stretchHolders_.any(); }
     // The notes of a channel's note loop, at most `max`; returns how many.
     int noteLoopIntervals(int channel, NoteInterval* out, int max) const;
     static constexpr int kMaxNoteEvents = 4096;  // per note loop
@@ -286,6 +298,16 @@ private:
     std::array<float, 4> stickPosition_{0.5f, 0.5f, 0.5f, 0.5f};  // [0, 1], LeftX..RightY
     std::array<float, 2> triggerPosition_{};                       // [0, 1], L2 and R2
     std::bitset<kSlotCount> recordHolders_;
+    // LoopStretch: who holds it, the stick turns not yet a whole step, the
+    // finger sliding and where it last counted, when 1x was reached per source.
+    std::bitset<kSlotCount> stretchHolders_;
+    std::array<double, 2> stickStretchRest_{};
+    int stretchFinger_ = -1;
+    float stretchFingerX_ = 0;
+    std::array<std::uint64_t, kLoopSourceCount> stretchPausedUntil_{};
+    std::uint64_t lastStretchTick_ = 0;
+    void stretchFromControls();
+    void stretchPausing(int source, int steps);
     bool recordedThisHold_ = false;
     std::array<std::optional<Zone>, kFingerCount> fingerZone_{};
     std::array<bool, 2> triggerDown_{};

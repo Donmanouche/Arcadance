@@ -65,6 +65,7 @@ struct LiveState {
     std::uint64_t sounding = 0;   // Engine::soundingSlots()
     std::uint16_t loopChannels = 0;  // Engine::channelsWithLoops()
     bool loopsPaused = false;
+    bool stretchHeld = false;  // a LoopStretch binding is held
 
     bool isDown(midipad::Button b) const { return (buttons >> static_cast<int>(b)) & 1u; }
     bool isSounding(int slot) const { return (sounding >> slot) & 1u; }
@@ -166,6 +167,7 @@ private:
     std::atomic<std::uint64_t> sounding_{0};
     std::atomic<std::uint16_t> loopChannels_{0};
     std::atomic<bool> loopsPaused_{false};
+    std::atomic<bool> stretchHeld_{false};
     mutable std::mutex loopsMutex_;  // the input thread only try_locks it
     std::array<LiveState::Loop, midipad::kLoopSourceCount> loops_{};
     std::array<midipad::NoteInterval, LiveState::kMaxNoteLoopNotes> noteLoop_{};

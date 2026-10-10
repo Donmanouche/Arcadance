@@ -108,6 +108,7 @@ void Engine::tick(std::uint64_t nowNs) {
         setHatDir(dir);
     }
     runLoops();
+    stretchFromControls();
     // Programs chosen by axes, once settled.
     for (std::size_t k = 0; k < pendingProgram_.size(); ++k) {
         const int program = pendingProgram_[k];
@@ -205,6 +206,8 @@ void Engine::axisMoved(Axis axis, float value) {
     if (isTrigger(axis))
         updateDigitalTrigger(axis, position);
 
+    if (stretchHeld() && !isTrigger(axis))
+        return;  // the stick stretches its loop (tick()), it does not play
     const AxisBinding& binding = mapping_->axes[static_cast<std::size_t>(axis)];
     const bool atRest = isTrigger(axis) ? position < 0.04f : std::abs(position - 0.5f) < 0.06f;
     if (binding.enabled && !isFrozen(axis))
@@ -220,6 +223,22 @@ void Engine::touchMoved(int finger, float x, float y) {
     fingerDown_[static_cast<std::size_t>(finger)] = true;
     const FingerBinding& binding = mapping_->fingers[static_cast<std::size_t>(finger)];
 
+    if (stretchHeld() && binding.mode == TouchMode::Axis) {
+        // The finger stretches the finger loops: a step per kStretchTouchStep of
+        // its slide, right stretches. One finger at a time, from where it lands.
+        if (stretchFinger_ < 0) {
+            stretchFinger_ = finger;
+            stretchFingerX_ = x;
+        } else if (stretchFinger_ == finger) {
+            const int steps = static_cast<int>((x - stretchFingerX_) / kStretchTouchStep);
+            if (steps != 0) {
+                stretchFingerX_ += static_cast<float>(steps) * kStretchTouchStep;
+                stretchPausing(static_cast<int>(LoopSource::Finger1), steps);
+                stretchPausing(static_cast<int>(LoopSource::Finger2), steps);
+            }
+        }
+        return;
+    }
     if (binding.mode == TouchMode::Axis) {
         if (binding.x.enabled)
             sendAxis(binding.x, x, kAxisCount + finger * 2, false);  // a finger rests by lifting
@@ -243,6 +262,8 @@ void Engine::touchReleased(int finger) {
     if (finger < 0 || finger >= kFingerCount)
         return;
     fingerDown_[static_cast<std::size_t>(finger)] = false;
+    if (stretchFinger_ == finger)
+        stretchFinger_ = -1;
     auto& current = fingerZone_[static_cast<std::size_t>(finger)];
     if (current)
         release(kZoneSlotBase + finger * kZoneCount + static_cast<int>(*current));
@@ -289,6 +310,7 @@ void Engine::reset() {
     }
     releaseAll();
     pressed_.reset();
+    stretchHolders_.reset();
     dpadBits_ = 0;
     hatDir_.reset();
     pendingHatDir_.reset();
@@ -342,6 +364,14 @@ void Engine::press(int slot) {
             beginRecordHold();
         recordHolders_.set(static_cast<std::size_t>(slot));
         return;
+    case ActionType::LoopStretch:
+        if (stretchHolders_.none()) {
+            stickStretchRest_ = {};
+            stretchFinger_ = -1;
+            lastStretchTick_ = now_;
+        }
+        stretchHolders_.set(static_cast<std::size_t>(slot));
+        return;
     case ActionType::Note:
     case ActionType::Chord:
     case ActionType::ControlChange:
@@ -386,6 +416,7 @@ void Engine::release(int slot) {
         if (recordHolders_.none())
             endRecordHold();
     }
+    stretchHolders_.reset(static_cast<std::size_t>(slot));  // the stretch stays as it is
     Sounding& s = held_[static_cast<std::size_t>(slot)];
     if (s.active())
         stop(s);
@@ -581,6 +612,8 @@ void Engine::runLoops() {
         const auto i = static_cast<std::size_t>(source);
         if (!waiting_[i] || source == static_cast<int>(LoopSource::Notes))  // notes start when one plays
             continue;
+        if (stretchHeld() && source != static_cast<int>(LoopSource::Triggers))
+            continue;  // a stick or finger stretching is not a movement to record
         const bool finger = source == 2 || source == 3;
         float x = 0, y = 0;
         const bool on = sourcePosition(source, x, y);
@@ -714,6 +747,45 @@ void Engine::stretchLoop(int channel, int source, int steps) {
     if ((loop.stretch > 0 && next < 0) || (loop.stretch < 0 && next > 0))
         next = 0;  // stop at 1x on the way
     loop.stretch = std::clamp(next, kMinStretch, kMaxStretch);
+}
+
+// Stretches a loop of the active channel, waiting kStretchPauseMs at 1x when it
+// gets there, so a stick held over makes it easy to stop on.
+void Engine::stretchPausing(int source, int steps) {
+    const auto i = static_cast<std::size_t>(source);
+    if (now_ < stretchPausedUntil_[i])
+        return;
+    const Loop& loop = loops_[loopIndex(channel_, source)];
+    const int before = loop.stretch;
+    stretchLoop(channel_, source, steps);
+    if (before != 0 && loop.stretch == 0)
+        stretchPausedUntil_[i] = now_ + static_cast<std::uint64_t>(kStretchPauseMs) * 1'000'000u;
+}
+
+// While LoopStretch is held, each stick's X turns its loop's stretch like a
+// wheel kept turning: nothing in the dead zone, then faster the further out.
+void Engine::stretchFromControls() {
+    const double dt = std::min(static_cast<double>(now_ - lastStretchTick_) * 1e-9, 0.05);
+    lastStretchTick_ = now_;
+    if (!stretchHeld())
+        return;
+    for (int source = 0; source < 2; ++source) {
+        auto& rest = stickStretchRest_[static_cast<std::size_t>(source)];
+        const float d = (stickPosition_[static_cast<std::size_t>(source * 2)] - 0.5f) * 2.0f;  // -1 left .. 1 right
+        const float out = std::abs(d);
+        if (out <= kStretchDeadZone) {
+            rest = 0;
+            continue;
+        }
+        const double t = static_cast<double>((out - kStretchDeadZone) / (1.0f - kStretchDeadZone));
+        const double rate = kStretchMinRate + (kStretchMaxRate - kStretchMinRate) * t * t;
+        rest += (d > 0 ? rate : -rate) * dt;
+        const int steps = static_cast<int>(rest);
+        if (steps != 0) {
+            rest -= steps;
+            stretchPausing(source, steps);
+        }
+    }
 }
 
 // Plays one step of a movement loop: sends its value at the current point,

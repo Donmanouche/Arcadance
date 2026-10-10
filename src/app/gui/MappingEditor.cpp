@@ -383,7 +383,7 @@ bool MappingEditor::drawLoopForm(int source, Mapping& m) {
 bool MappingEditor::drawTriggerEditor(TriggerBinding& b) {
     bool changed = false;
     static const char* kTypes[] = {"No action", "Note", "CC", "Chord", "Transport", "Channel change", "Axis freeze",
-                                   "Loop record", "Program change"};
+                                   "Loop record", "Program change", "Loop stretch"};
     int type = static_cast<int>(b.type);
     ImGui::SetNextItemWidth(ImGui::GetFontSize() * 14);
     if (ImGui::Combo("Action", &type, kTypes, IM_ARRAYSIZE(kTypes)) && type != static_cast<int>(b.type)) {
@@ -492,6 +492,14 @@ bool MappingEditor::drawTriggerEditor(TriggerBinding& b) {
         ImGui::PopStyleColor();
         break;
     }
+    case ActionType::LoopStretch:
+        ImGui::PushStyleColor(ImGuiCol_Text, kHintColor);
+        ImGui::TextWrapped("Hold, then move a stick or a finger on the touchpad left or right to stretch or compress "
+                           "its loop, as Shift + mouse wheel over its LOOP panel does. A stick pushed further turns "
+                           "faster; on the touchpad, each slide of the finger counts. Meanwhile they send no CC. The "
+                           "stretch stays when you release.");
+        ImGui::PopStyleColor();
+        break;
     case ActionType::LoopRecord:
         ImGui::PushStyleColor(ImGuiCol_Text, kHintColor);
         ImGui::TextWrapped("Hold to record the stick that moves (left or right, or both); release to play it in a "
