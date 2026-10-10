@@ -112,6 +112,10 @@ std::string describe(const TriggerBinding& b, bool flats) {
         return std::string("Channel ") + (b.channelStep > 0 ? "+" : "") + std::to_string(b.channelStep);
     case ActionType::LoopRecord:
         return "Loop record";
+    case ActionType::ProgramChange:
+        if (b.programStep != 0)
+            return std::string("Program ") + (b.programStep > 0 ? "+1" : "-1");
+        return "Program " + std::to_string(b.number + 1);
     case ActionType::Freeze: {
         std::string s = "Freeze:";
         bool first = true;

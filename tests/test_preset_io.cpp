@@ -135,6 +135,25 @@ TEST_CASE("loop record buttons and stick loops survive a round trip") {
           "base.loops.left.playback: expected \"forward\", \"reverse\" or \"back_and_forth\"");
 }
 
+TEST_CASE("program changes survive a round trip") {
+    const Json j = minimal({{"buttons", {{"south", {{"type", "program"}, {"program", 11}, {"bank_msb", 2}}},
+                                         {"east", {{"type", "program"}, {"step", -1}, {"wrap", false}}}}},
+                            {"axes", {{"left_x", {{"program", true}, {"min", 0}, {"max", 15}, {"bank_lsb", 3}}}}}});
+    const Preset p = presetFromJson(j);
+    const TriggerBinding& fixed = p.base.buttons[static_cast<std::size_t>(Button::South)];
+    CHECK(fixed.type == ActionType::ProgramChange);
+    CHECK(fixed.number == 11);
+    CHECK(fixed.bankMsb == 2);
+    CHECK(fixed.bankLsb == -1);
+    CHECK(p.base.buttons[static_cast<std::size_t>(Button::East)].programStep == -1);
+    CHECK_FALSE(p.base.buttons[static_cast<std::size_t>(Button::East)].programWrap);
+    CHECK(p.base.axes[static_cast<std::size_t>(Axis::LeftX)].program);
+    CHECK(p.base.axes[static_cast<std::size_t>(Axis::LeftX)].bankMsb == -1);
+    CHECK(p.base.axes[static_cast<std::size_t>(Axis::LeftX)].bankLsb == 3);
+    CHECK(presetToJson(p) == presetToJson(presetFromJson(presetToJson(p))));
+    CHECK(presetToJson(p)["base"]["axes"]["left_x"]["program"] == true);
+}
+
 TEST_CASE("errors name the faulty entry") {
     CHECK(errorFor(minimal({{"buttons", {{"south", {{"type", "notes"}}}}}})) ==
           "base.buttons.south.type: unknown type \"notes\"");

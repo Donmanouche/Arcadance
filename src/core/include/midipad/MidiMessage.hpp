@@ -21,6 +21,9 @@ struct MidiMessage {
     static constexpr MidiMessage controlChange(int channel, int controller, int value) {
         return {{status(0xB0, channel), data(controller), data(value)}, 3};
     }
+    static constexpr MidiMessage programChange(int channel, int program) {
+        return {{status(0xC0, channel), data(program), 0}, 2};
+    }
     static constexpr MidiMessage realtime(std::uint8_t statusByte) { return {{statusByte, 0, 0}, 1}; }
 
     friend constexpr bool operator==(const MidiMessage&, const MidiMessage&) = default;

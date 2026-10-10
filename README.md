@@ -66,8 +66,9 @@ accords, un menu « Chord of the key » listant par degré tous les accords dont
 les notes appartiennent à la gamme ; la saisie libre reste possible, et une
 note ou un accord hors gamme est signalé. « None » : tout est proposé.
 
-**Options** (menu ☰) : interface MIDI (avec le nom sous lequel chaque port est
-vu, création des ports VirMIDI), délai de la croix directionnelle,
+**Options** (menu ☰) : interface MIDI (menu déroulant avec le nom sous lequel
+chaque port est vu, la sortie enregistrée signalée en rouge si elle est
+absente ; création des ports VirMIDI), délai de la croix directionnelle,
 humanisation et dossier des presets.
 
 Chaque modification s'entend tout de suite ; elle n'est écrite sur le disque
@@ -247,6 +248,24 @@ Les contrôles portent les noms de l'API gamepad de SDL3 (`south`, `left_x`,
   jusqu'au dégel, pour y revenir avant de dégeler.
 - **Inversion d'axe** (`axis_invert`) : inverse le sens du CC envoyé.
 - **Gâchettes L2/R2** : utilisables à la fois comme axe (CC) et comme bouton.
+- **Program Change par bouton** : action « Program change », soit un
+  programme fixe (1 à 128), soit « Next (+1) » / « Previous (-1) », qui part
+  du dernier programme envoyé sur le canal (le premier envoi donne 1). « Wrap
+  around » fait passer de 128 à 1 et inversement ; sinon le pas s'arrête aux
+  bornes. « Bank select » envoie d'abord CC 0 (MSB) et/ou CC 32 (LSB). Dans le
+  preset : `"type": "program"` avec `"program"` (0 à 127) ou `"step"` (1 ou
+  -1) et `"wrap"`, plus `"bank_msb"` / `"bank_lsb"` facultatifs.
+- **Program Change par axe** : un axe (stick, gâchette, doigt du touchpad)
+  peut choisir un programme dans une plage (« From » / « To ») au lieu
+  d'envoyer un CC. Le programme n'est envoyé qu'après 150 ms de stabilité,
+  pour ne pas balayer tous ceux du chemin, et rien n'est envoyé quand l'axe
+  revient au repos : on vise, on attend, on relâche. « Bank select » (MSB,
+  LSB) fixe la banque propre à l'axe, envoyée avant chaque programme : pour
+  un instrument Arturia, MSB = playlist, LSB = song, programme = preset ;
+  deux axes peuvent ainsi parcourir deux banques différentes. Dans le
+  preset : `"program": true` à la place de `"cc"`, plus `"bank_msb"` /
+  `"bank_lsb"` facultatifs. Les pastilles affichent « PC 1-16 »
+  et les boutons « PC 12 » ou « PC +1 ».
 - **Transport** : `stop` et `continue` fonctionnent aussi sur les boutons.
 - **Notes collées** : une note est toujours éteinte sur le canal où elle a
   démarré, même après un changement de canal ou de preset en cours de jeu.
@@ -264,6 +283,6 @@ Les contrôles portent les noms de l'API gamepad de SDL3 (`south`, `left_x`,
 - **Toggle exclusif** : les notes et accords en mode toggle s'excluent au sein
   d'une même famille de contrôles (boutons, croix directionnelle, chaque doigt
   du touchpad). Les CC en toggle sont toujours indépendants.
-- **Touchpad en mode axe** : CC uniquement.
+- **Touchpad en mode axe** : CC ou Program Change, axe par axe.
 - **Seuil des gâchettes** : en mode bouton, appui à 25 % de la course,
   relâchement à 15 %.

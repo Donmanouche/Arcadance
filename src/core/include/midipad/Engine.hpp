@@ -169,7 +169,10 @@ private:
     void start(const Sounding& s);
     void stop(const Sounding& s);
     void sendCc(int channel, int cc, int value);
-    void sendAxis(const AxisBinding& binding, float position);
+    // `key` names the control (an Axis, then 6 + finger * 2 + 0/1 for X/Y);
+    // `atRest`: a stick back at its center, a trigger released.
+    void sendAxis(const AxisBinding& binding, float position, int key, bool atRest);
+    void sendProgram(int channel, int program, int bankMsb, int bankLsb);
     void toggleFreeze(std::uint8_t axes);
     void updateDigitalTrigger(Axis axis, float position);
     void setHatDir(std::optional<HatDir> dir);
@@ -255,6 +258,15 @@ private:
     std::uint64_t noteRecordStart_ = 0;
     int overdubChannel_ = -1;        // the channel whose note loop takes new notes
     bool loopsPaused_ = false;
+    // Program Change: the last one sent per channel (-1: none yet), and for
+    // axes choosing one, the program waiting to settle, its bank and since when.
+    std::array<int, kChannelCount> program_{};
+    static constexpr int kProgramControls = kAxisCount + kFingerCount * 2;
+    static constexpr std::uint64_t kProgramSettleNs = 150'000'000;
+    std::array<int, kProgramControls> pendingProgram_{};
+    std::array<std::array<std::int16_t, 2>, kProgramControls> pendingBank_{};  // MSB, LSB
+    std::array<int, kProgramControls> axisProgram_{};  // the last one an axis sent
+    std::array<std::uint64_t, kProgramControls> pendingSince_{};
     std::uint64_t holdStartedAt_ = 0;  // when Record went down
     std::array<std::array<float, 2>, kFingerCount> fingerPosition_{};  // raw touchpad X, Y
     std::array<bool, kFingerCount> fingerDown_{};

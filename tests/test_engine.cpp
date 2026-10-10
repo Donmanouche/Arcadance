@@ -1086,3 +1086,88 @@ TEST_CASE_FIXTURE(NoteLoopFixture, "recording while the loops are stopped plays 
     CHECK_FALSE(engine.loopsPaused());
     CHECK_FALSE(played(70, 4).empty());  // channel 1's loop plays again
 }
+
+namespace {
+
+TriggerBinding program(int number, int step = 0, bool wrap = true) {
+    TriggerBinding b;
+    b.type = ActionType::ProgramChange;
+    b.number = static_cast<std::uint8_t>(number);
+    b.programStep = static_cast<std::int8_t>(step);
+    b.programWrap = wrap;
+    return b;
+}
+
+constexpr auto pc = MidiMessage::programChange;
+
+}  // namespace
+
+TEST_CASE_FIXTURE(Fixture, "a button sends a Program Change, after a Bank Select when set") {
+    Preset p;
+    button(p, Button::South) = program(11);
+    button(p, Button::South).bankMsb = 2;
+    button(p, Button::South).bankLsb = 5;
+    load(p);
+    tap(Button::South);
+    CHECK(sink.take() == Messages{cc(0, 0, 2), cc(0, 32, 5), pc(0, 11)});
+}
+
+TEST_CASE_FIXTURE(Fixture, "Next and Previous step from the last program sent, wrapping or not") {
+    Preset p;
+    button(p, Button::East) = program(0, 1);
+    button(p, Button::West) = program(0, -1);
+    button(p, Button::North) = program(0, -1, false);
+    load(p);
+    tap(Button::East);  // none sent yet: program 1 (0)
+    tap(Button::East);
+    CHECK(sink.take() == Messages{pc(0, 0), pc(0, 1)});
+    tap(Button::West);
+    tap(Button::West);  // 0 -> 127, wrapping
+    CHECK(sink.take() == Messages{pc(0, 0), pc(0, 127)});
+    tap(Button::East);  // 127 -> 0
+    tap(Button::North); // stops at 0
+    CHECK(sink.take() == Messages{pc(0, 0), pc(0, 0)});
+}
+
+TEST_CASE_FIXTURE(Fixture, "an axis picks a program once it stays on it, not when it springs back") {
+    Preset p;
+    AxisBinding& a = p.base.axes[static_cast<std::size_t>(Axis::LeftX)];
+    a.enabled = true;
+    a.program = true;
+    a.min = 0;
+    a.max = 15;
+    load(p);
+    std::uint64_t t = 0;
+    engine.tick(t);
+    engine.axisMoved(Axis::LeftX, 1.0f);  // program 16 (15)
+    engine.tick(t += 100'000'000);
+    CHECK(sink.take().empty());  // not settled yet
+    engine.tick(t += 60'000'000);
+    CHECK(sink.take() == Messages{pc(0, 15)});
+    engine.axisMoved(Axis::LeftX, 0.0f);  // back to the center: nothing
+    engine.tick(t += 500'000'000);
+    CHECK(sink.take().empty());
+}
+
+TEST_CASE_FIXTURE(Fixture, "each axis picks its program in its own bank") {
+    Preset p;
+    AxisBinding& left = p.base.axes[static_cast<std::size_t>(Axis::LeftX)];
+    left.enabled = true;
+    left.program = true;
+    left.max = 3;
+    left.bankMsb = 1;
+    left.bankLsb = 1;
+    AxisBinding& right = p.base.axes[static_cast<std::size_t>(Axis::RightX)];
+    right = left;
+    right.bankLsb = 2;
+    load(p);
+    std::uint64_t t = 0;
+    engine.tick(t);
+    engine.axisMoved(Axis::LeftX, 1.0f);
+    engine.tick(t += 200'000'000);
+    CHECK(sink.take() == Messages{cc(0, 0, 1), cc(0, 32, 1), pc(0, 3)});
+    engine.axisMoved(Axis::LeftX, 0.0f);
+    engine.axisMoved(Axis::RightX, 1.0f);  // same program, other bank: sent
+    engine.tick(t += 200'000'000);
+    CHECK(sink.take() == Messages{cc(0, 0, 1), cc(0, 32, 2), pc(0, 3)});
+}

@@ -50,6 +50,9 @@ Engine::Engine(MidiSink& sink) : sink_(sink) {
     }
     for (auto& events : noteEvents_)
         events.reserve(kMaxNoteEvents);
+    program_.fill(-1);
+    pendingProgram_.fill(-1);
+    axisProgram_.fill(-1);
     for (auto& channel : lastCc_)
         channel.fill(-1);
     setPreset(nullptr);
@@ -105,6 +108,20 @@ void Engine::tick(std::uint64_t nowNs) {
         setHatDir(dir);
     }
     runLoops();
+    // Programs chosen by axes, once settled.
+    for (std::size_t k = 0; k < pendingProgram_.size(); ++k) {
+        const int program = pendingProgram_[k];
+        if (program < 0 || now_ - pendingSince_[k] < kProgramSettleNs)
+            continue;
+        pendingProgram_[k] = -1;
+        const auto ch = static_cast<std::size_t>(channel_);
+        const int msb = pendingBank_[k][0], lsb = pendingBank_[k][1];
+        const bool bankChanged = (msb >= 0 && lastCc_[ch][0] != msb) || (lsb >= 0 && lastCc_[ch][32] != lsb);
+        if (program != axisProgram_[k] || program != program_[ch] || bankChanged) {
+            axisProgram_[k] = program;
+            sendProgram(channel_, program, msb, lsb);
+        }
+    }
     // Humanized notes now due, oldest first.
     while (delayedCount_ > 0) {
         std::size_t next = delayedCount_;
@@ -189,8 +206,9 @@ void Engine::axisMoved(Axis axis, float value) {
         updateDigitalTrigger(axis, position);
 
     const AxisBinding& binding = mapping_->axes[static_cast<std::size_t>(axis)];
+    const bool atRest = isTrigger(axis) ? position < 0.04f : std::abs(position - 0.5f) < 0.06f;
     if (binding.enabled && !isFrozen(axis))
-        sendAxis(binding, position);
+        sendAxis(binding, position, static_cast<int>(axis), atRest);
 }
 
 void Engine::touchMoved(int finger, float x, float y) {
@@ -204,9 +222,9 @@ void Engine::touchMoved(int finger, float x, float y) {
 
     if (binding.mode == TouchMode::Axis) {
         if (binding.x.enabled)
-            sendAxis(binding.x, x);
+            sendAxis(binding.x, x, kAxisCount + finger * 2, false);  // a finger rests by lifting
         if (binding.y.enabled)
-            sendAxis(binding.y, 1.0f - y);
+            sendAxis(binding.y, 1.0f - y, kAxisCount + finger * 2 + 1, false);
     } else if (binding.mode == TouchMode::Zones) {
         const Zone zone = y < 0.5f ? (x < 0.5f ? Zone::TopLeft : Zone::TopRight)
                                    : (x < 0.5f ? Zone::BottomLeft : Zone::BottomRight);
@@ -309,6 +327,16 @@ void Engine::press(int slot) {
     case ActionType::Freeze:
         toggleFreeze(binding.freezeAxes);
         return;
+    case ActionType::ProgramChange: {
+        const int last = program_[static_cast<std::size_t>(channel_)];
+        int program = binding.number;
+        if (binding.programStep != 0) {
+            program = last < 0 ? 0 : last + binding.programStep;
+            program = binding.programWrap ? (program + 128) % 128 : std::clamp(program, 0, 127);
+        }
+        sendProgram(channel_, program, binding.bankMsb, binding.bankLsb);
+        return;
+    }
     case ActionType::LoopRecord:
         if (recordHolders_.none())
             beginRecordHold();
@@ -429,15 +457,36 @@ void Engine::sendCc(int channel, int cc, int value) {
     sink_.send(MidiMessage::controlChange(channel, cc, value));
 }
 
-void Engine::sendAxis(const AxisBinding& binding, float position) {
+void Engine::sendAxis(const AxisBinding& binding, float position, int key, bool atRest) {
     if (binding.invert)
         position = 1.0f - position;
     const int span = binding.max - binding.min;
     const int value = binding.min + static_cast<int>(std::lround(position * static_cast<float>(span)));
+    if (binding.program) {
+        // Chosen once the control stays on it (tick() sends it), never on the way back to rest.
+        auto& pending = pendingProgram_[static_cast<std::size_t>(key)];
+        if (atRest) {
+            pending = -1;
+        } else if (value != pending) {
+            pending = value;
+            pendingBank_[static_cast<std::size_t>(key)] = {binding.bankMsb, binding.bankLsb};
+            pendingSince_[static_cast<std::size_t>(key)] = now_;
+        }
+        return;
+    }
     // Controllers report far more steps than a 7-bit CC has: skip repeats.
     if (lastCc_[static_cast<std::size_t>(channel_)][binding.cc & 0x7F] == value)
         return;
     sendCc(channel_, binding.cc, value);
+}
+
+void Engine::sendProgram(int channel, int program, int bankMsb, int bankLsb) {
+    if (bankMsb >= 0)
+        sendCc(channel, 0, bankMsb);
+    if (bankLsb >= 0)
+        sendCc(channel, 32, bankLsb);
+    sink_.send(MidiMessage::programChange(channel, program));
+    program_[static_cast<std::size_t>(channel)] = program;
 }
 
 // --- Loops --------------------------------------------------------------------

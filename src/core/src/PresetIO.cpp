@@ -145,6 +145,27 @@ TriggerBinding triggerFromJson(const Json& j, const std::string& where) {
         if (!step.is_number_integer() || step.get<int>() == 0 || std::abs(step.get<int>()) > 15)
             fail(where + ".step", "expected a non-zero integer from -15 to 15");
         b.channelStep = step.get<std::int8_t>();
+    } else if (type == "program") {
+        b.type = ActionType::ProgramChange;
+        if (j.contains("step")) {
+            const Json step = j["step"];
+            if (!step.is_number_integer() || (step.get<int>() != 1 && step.get<int>() != -1))
+                fail(where + ".step", "expected 1 or -1");
+            b.programStep = step.get<std::int8_t>();
+            if (j.contains("wrap")) {
+                if (!j["wrap"].is_boolean())
+                    fail(where + ".wrap", "expected true or false");
+                b.programWrap = j["wrap"].get<bool>();
+            }
+        } else {
+            if (!j.contains("program"))
+                fail(where, "missing \"program\" (0-127) or \"step\" (1 or -1)");
+            b.number = readU7(j, "program", 0, where);
+        }
+        if (j.contains("bank_msb"))
+            b.bankMsb = readU7(j, "bank_msb", 0, where);
+        if (j.contains("bank_lsb"))
+            b.bankLsb = readU7(j, "bank_lsb", 0, where);
     } else if (type == "loop_record") {
         b.type = ActionType::LoopRecord;
     } else if (type == "freeze") {
@@ -211,6 +232,20 @@ Json triggerToJson(const TriggerBinding& b) {
     case ActionType::LoopRecord:
         j["type"] = "loop_record";
         return j;
+    case ActionType::ProgramChange:
+        j["type"] = "program";
+        if (b.programStep != 0) {
+            j["step"] = b.programStep;
+            if (!b.programWrap)
+                j["wrap"] = false;
+        } else {
+            j["program"] = b.number;
+        }
+        if (b.bankMsb >= 0)
+            j["bank_msb"] = b.bankMsb;
+        if (b.bankLsb >= 0)
+            j["bank_lsb"] = b.bankLsb;
+        return j;
     case ActionType::Freeze: {
         j["type"] = "freeze";
         Json axes = Json::array();
@@ -228,10 +263,15 @@ Json triggerToJson(const TriggerBinding& b) {
 AxisBinding axisFromJson(const Json& j, const std::string& where) {
     if (!j.is_object())
         fail(where, "expected an object");
-    if (!j.contains("cc"))
-        fail(where, "missing \"cc\"");
     AxisBinding a;
     a.enabled = true;
+    if (j.contains("program")) {
+        if (!j["program"].is_boolean())
+            fail(where + ".program", "expected true or false");
+        a.program = j["program"].get<bool>();
+    }
+    if (!a.program && !j.contains("cc"))
+        fail(where, "missing \"cc\"");
     a.cc = readU7(j, "cc", 0, where);
     a.min = readU7(j, "min", 0, where);
     a.max = readU7(j, "max", 127, where);
@@ -240,12 +280,26 @@ AxisBinding axisFromJson(const Json& j, const std::string& where) {
             fail(where + ".invert", "expected true or false");
         a.invert = j["invert"].get<bool>();
     }
+    if (a.program) {
+        if (j.contains("bank_msb"))
+            a.bankMsb = readU7(j, "bank_msb", 0, where);
+        if (j.contains("bank_lsb"))
+            a.bankLsb = readU7(j, "bank_lsb", 0, where);
+    }
     return a;
 }
 
 Json axisToJson(const AxisBinding& a) {
     Json j;
-    j["cc"] = a.cc;
+    if (a.program) {
+        j["program"] = true;
+        if (a.bankMsb >= 0)
+            j["bank_msb"] = a.bankMsb;
+        if (a.bankLsb >= 0)
+            j["bank_lsb"] = a.bankLsb;
+    } else {
+        j["cc"] = a.cc;
+    }
     if (a.min != 0)
         j["min"] = a.min;
     if (a.max != 127)

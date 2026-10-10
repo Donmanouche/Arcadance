@@ -1252,57 +1252,114 @@ void GuiApp::drawOptionsOverlay() {
         ImGui::TextColored(color(Theme::kLabel), "Where MidiPad sends its MIDI. Some programs only see the VirMIDI ports.");
         ImGui::PopFont();
         ImGui::Spacing();
-        struct Choice {
-            std::string port;  // empty: the virtual port
-            std::string name, hint;
-            bool selected;
-        };
-        std::vector<Choice> choices;
-        const bool virtualSelected = settings_.output == AppSettings::Output::VirtualPort;
-        choices.push_back({"", "Virtual port \"" + settings_.virtualPortName + "\"", "software port", virtualSelected});
-        for (const auto& port : ports_) {
-            const auto bw = rawMidiName(port);
-            const bool selected = !virtualSelected && (port == outputLabel_ ||
-                                                       MidiOutput::stablePortName(port) == settings_.existingPortName);
-            choices.push_back({port, shortPortName(port), bw.empty() ? "" : "seen as " + bw, selected});
-        }
-        for (std::size_t i = 0; i < choices.size(); ++i) {
-            const Choice& c = choices[i];
-            const ImVec2 a = ImGui::GetCursorScreenPos();
-            const float w = ImGui::GetContentRegionAvail().x, h = px(36);
-            const bool clicked = ImGui::InvisibleButton(("##out" + std::to_string(i)).c_str(), ImVec2(w, h));
-            const bool hovered = ImGui::IsItemHovered();
-            const ImU32 fill = c.selected ? (Theme::kBlue & ~IM_COL32_A_MASK) | IM_COL32(0, 0, 0, 55)
-                                          : hovered ? IM_COL32(0x38, 0x3C, 0x43, 235) : IM_COL32(0x2B, 0x2E, 0x33, 230);
-            dl->AddRectFilled(a, ImVec2(a.x + w, a.y + h), fill, px(6));
-            dl->AddRect(a, ImVec2(a.x + w, a.y + h), c.selected ? Theme::kBlue : IM_COL32(0x45, 0x4A, 0x52, 255), px(6), px(1.3f));
-            const ImVec2 dot(a.x + px(20), a.y + h * 0.5f);
-            dl->AddCircle(dot, px(7), c.selected ? Theme::kBlue : Theme::kLabel, 0, px(2));
-            if (c.selected)
-                dl->AddCircleFilled(dot, px(3.5f), Theme::kBlue);
-            ImFont* nameFont = c.selected ? bold : medium;
-            const ImVec2 nsz = nameFont->CalcTextSizeA(px(14), FLT_MAX, 0, c.name.c_str());
-            dl->AddText(nameFont, px(14), ImVec2(a.x + px(38), a.y + (h - nsz.y) * 0.5f), Theme::kText, c.name.c_str());
-            if (!c.hint.empty()) {
-                const ImVec2 hsz = medium->CalcTextSizeA(px(12), FLT_MAX, 0, c.hint.c_str());
-                dl->AddText(medium, px(12), ImVec2(a.x + w - px(14) - hsz.x, a.y + (h - hsz.y) * 0.5f),
-                            c.selected ? Theme::kText : Theme::kLabel, c.hint.c_str());
+        {  // the output drop-down
+            struct Choice {
+                std::string port;  // empty: the virtual port
+                std::string name, hint;
+                bool selected;
+                bool missing = false;  // the saved port, not plugged in
+            };
+            std::vector<Choice> choices;
+            const bool virtualSelected = settings_.output == AppSettings::Output::VirtualPort;
+            choices.push_back({"", "Virtual port \"" + settings_.virtualPortName + "\"", "software port", virtualSelected});
+            for (const auto& port : ports_) {
+                const auto bw = rawMidiName(port);
+                const bool selected = !virtualSelected && (port == outputLabel_ ||
+                                                           MidiOutput::stablePortName(port) == settings_.existingPortName);
+                choices.push_back({port, shortPortName(port), bw.empty() ? "" : "seen as " + bw, selected});
             }
-            if (clicked && !c.selected)
-                useOutput(c.port.empty() ? AppSettings::Output::VirtualPort : AppSettings::Output::ExistingPort, c.port);
-            ImGui::Dummy(ImVec2(0, px(2)));
-        }
-        if (ports_.empty()) {
-            ImGui::PushFont(medium, 12.0f);
-            ImGui::TextColored(color(Theme::kLabel), "No MIDI port found: create VirMIDI ports below.");
+            const Choice* current = nullptr;
+            for (const auto& c : choices)
+                if (c.selected)
+                    current = &c;
+            Choice missing{"", shortPortName(settings_.existingPortName) + " (not found)", "", true, true};
+            if (!current)
+                current = &missing;
+
+            // A row: radio dot, name, and the hint on the right before `right`.
+            const float h = px(36);
+            auto drawRow = [&](ImDrawList* d, const Choice& c, ImVec2 a, float w, float right, bool dot) {
+                float x = a.x + px(14);
+                if (dot) {
+                    const ImVec2 at(a.x + px(20), a.y + h * 0.5f);
+                    d->AddCircle(at, px(7), c.selected ? Theme::kBlue : Theme::kLabel, 0, px(2));
+                    if (c.selected)
+                        d->AddCircleFilled(at, px(3.5f), Theme::kBlue);
+                    x = a.x + px(38);
+                }
+                ImFont* nameFont = c.selected ? bold : medium;
+                const ImVec2 nsz = nameFont->CalcTextSizeA(px(14), FLT_MAX, 0, c.name.c_str());
+                d->AddText(nameFont, px(14), ImVec2(x, a.y + (h - nsz.y) * 0.5f), c.missing ? Theme::kRed : Theme::kText,
+                           c.name.c_str());
+                if (!c.hint.empty()) {
+                    const ImVec2 hsz = medium->CalcTextSizeA(px(12), FLT_MAX, 0, c.hint.c_str());
+                    d->AddText(medium, px(12), ImVec2(a.x + w - right - hsz.x, a.y + (h - hsz.y) * 0.5f),
+                               c.selected ? Theme::kText : Theme::kLabel, c.hint.c_str());
+                }
+            };
+
+            // The current output in a drop-down, Refresh beside it.
+            ImGui::PushFont(bold, 13.0f);
+            const float refreshW = ImGui::CalcTextSize("Refresh").x + ImGui::GetStyle().FramePadding.x * 2;
             ImGui::PopFont();
+            const float spacing = ImGui::GetStyle().ItemSpacing.x;
+            const ImVec2 a = ImGui::GetCursorScreenPos();
+            const float w = ImGui::GetContentRegionAvail().x - refreshW - spacing;
+            if (ImGui::InvisibleButton("##output", ImVec2(w, h)))
+                ImGui::OpenPopup("##outputs");
+            const bool hovered = ImGui::IsItemHovered();
+            const bool listOpen = ImGui::IsPopupOpen("##outputs");
+            dl->AddRectFilled(a, ImVec2(a.x + w, a.y + h),
+                              hovered || listOpen ? IM_COL32(0x38, 0x3C, 0x43, 235) : IM_COL32(0x2B, 0x2E, 0x33, 230), px(6));
+            dl->AddRect(a, ImVec2(a.x + w, a.y + h), current->missing ? Theme::kRed : Theme::kBlue, px(6), px(1.3f));
+            drawRow(dl, *current, a, w, px(40), false);
+            const ImVec2 chevron(a.x + w - px(20), a.y + h * 0.5f);
+            const float cs = px(5);
+            dl->AddTriangleFilled(ImVec2(chevron.x - cs, chevron.y - cs * 0.5f), ImVec2(chevron.x + cs, chevron.y - cs * 0.5f),
+                                  ImVec2(chevron.x, chevron.y + cs * 0.6f), Theme::kLabel);
+            ImGui::SameLine();
+            ImGui::PushFont(bold, 13.0f);
+            if (ImGui::Button("Refresh", ImVec2(refreshW, h))) {
+                refreshPorts();
+                virmidiStatus_ = virmidi::status();
+            }
+            ImGui::PopFont();
+
+            ImGui::SetNextWindowPos(ImVec2(a.x, a.y + h + px(4)));
+            ImGui::SetNextWindowSize(ImVec2(w, 0));
+            ImGui::PushStyleColor(ImGuiCol_PopupBg, color(IM_COL32(0x24, 0x27, 0x2B, 250)));
+            ImGui::PushStyleColor(ImGuiCol_Border, color(IM_COL32(0x45, 0x4A, 0x52, 255)));
+            ImGui::PushStyleVar(ImGuiStyleVar_PopupRounding, px(6));
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(px(4), px(4)));
+            ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0, px(2)));
+            if (ImGui::BeginPopup("##outputs")) {
+                ImDrawList* pd = ImGui::GetWindowDrawList();
+                for (std::size_t i = 0; i < choices.size(); ++i) {
+                    const Choice& c = choices[i];
+                    const ImVec2 ra = ImGui::GetCursorScreenPos();
+                    const float rw = ImGui::GetContentRegionAvail().x;
+                    const bool clicked = ImGui::InvisibleButton(("##out" + std::to_string(i)).c_str(), ImVec2(rw, h));
+                    if (c.selected)
+                        pd->AddRectFilled(ra, ImVec2(ra.x + rw, ra.y + h), (Theme::kBlue & ~IM_COL32_A_MASK) | IM_COL32(0, 0, 0, 55), px(5));
+                    else if (ImGui::IsItemHovered())
+                        pd->AddRectFilled(ra, ImVec2(ra.x + rw, ra.y + h), IM_COL32(0x38, 0x3C, 0x43, 235), px(5));
+                    drawRow(pd, c, ra, rw, px(14), true);
+                    if (clicked) {
+                        if (!c.selected)
+                            useOutput(c.port.empty() ? AppSettings::Output::VirtualPort : AppSettings::Output::ExistingPort, c.port);
+                        ImGui::CloseCurrentPopup();
+                    }
+                }
+                if (ports_.empty()) {
+                    ImGui::PushFont(medium, 12.0f);
+                    ImGui::TextColored(color(Theme::kLabel), "  No MIDI port found: create VirMIDI ports below.");
+                    ImGui::PopFont();
+                }
+                ImGui::EndPopup();
+            }
+            ImGui::PopStyleVar(3);
+            ImGui::PopStyleColor(2);
         }
-        ImGui::PushFont(bold, 13.0f);
-        if (ImGui::Button("Refresh")) {
-            refreshPorts();
-            virmidiStatus_ = virmidi::status();
-        }
-        ImGui::PopFont();
         if (virmidi::supported())
             drawVirMidiSection(false);
         endCard();

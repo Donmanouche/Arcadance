@@ -37,6 +37,19 @@ bool inputU7(const char* label, std::uint8_t& value, int min = 0, int max = 127)
     return true;
 }
 
+// A program number, shown 1-128 as on synths, kept 0-127.
+bool inputProgram(const char* label, std::uint8_t& value) {
+    int v = value + 1;
+    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 7);
+    if (!ImGui::InputInt(label, &v))
+        return false;
+    v = std::clamp(v, 1, 128);
+    if (v - 1 == value)
+        return false;
+    value = static_cast<std::uint8_t>(v - 1);
+    return true;
+}
+
 bool sliderU7(const char* label, std::uint8_t& value, int min = 0, int max = 127) {
     int v = value;
     ImGui::SetNextItemWidth(ImGui::GetFontSize() * 12);
@@ -88,6 +101,40 @@ std::vector<std::string> splitSpec(const std::string& spec) {
     return parts;
 }
 
+// Bank Select before a Program Change: MSB (CC 0) and LSB (CC 32), each -1 when not sent.
+bool inputBankSelect(std::int16_t& msb, std::int16_t& lsb) {
+    bool changed = false;
+    bool bank = msb >= 0 || lsb >= 0;
+    if (ImGui::Checkbox("Bank select", &bank)) {
+        msb = static_cast<std::int16_t>(bank ? 0 : -1);
+        lsb = -1;
+        changed = true;
+    }
+    if (!bank)
+        return changed;
+    auto bankField = [&](const char* label, std::int16_t& v) {
+        bool on = v >= 0;
+        ImGui::SameLine();
+        if (ImGui::Checkbox(label, &on)) {
+            v = static_cast<std::int16_t>(on ? 0 : -1);
+            changed = true;
+        }
+        if (on) {
+            ImGui::SameLine();
+            std::uint8_t value = static_cast<std::uint8_t>(v);
+            ImGui::PushID(label);
+            if (inputU7("##value", value)) {
+                v = value;
+                changed = true;
+            }
+            ImGui::PopID();
+        }
+    };
+    bankField("MSB (CC 0)", msb);
+    bankField("LSB (CC 32)", lsb);
+    return changed;
+}
+
 }  // namespace
 
 std::string MappingEditor::controlTitle(const std::string& spec) {
@@ -125,13 +172,38 @@ bool MappingEditor::drawAxisForm(const char* id, AxisBinding& a, float position)
     ImGui::PushID(id);
     changed |= ImGui::Checkbox("Enabled", &a.enabled);
     ImGui::BeginDisabled(!a.enabled);
-    changed |= inputU7("CC", a.cc);
-    changed |= inputU7("Min", a.min);
+    ImGui::SameLine(0, ImGui::GetFontSize() * 2);
+    if (ImGui::RadioButton("CC", !a.program) && a.program) {
+        a.program = false;
+        changed = true;
+    }
     ImGui::SameLine();
-    changed |= inputU7("Max", a.max);
-    changed |= ImGui::Checkbox("Invert", &a.invert);
+    if (ImGui::RadioButton("Program change", a.program) && !a.program) {
+        a.program = true;
+        a.min = 0;
+        a.max = 15;
+        changed = true;
+    }
+    if (a.program) {
+        changed |= inputProgram("From", a.min);
+        ImGui::SameLine();
+        changed |= inputProgram("To", a.max);
+        changed |= ImGui::Checkbox("Invert", &a.invert);
+        changed |= inputBankSelect(a.bankMsb, a.bankLsb);
+        ImGui::PushStyleColor(ImGuiCol_Text, kHintColor);
+        ImGui::TextWrapped("The travel picks a program in this range, in the bank set above; it is sent once the "
+                           "control stays on it a moment, never when it springs back to rest.");
+        ImGui::PopStyleColor();
+    } else {
+        changed |= inputU7("CC", a.cc);
+        changed |= inputU7("Min", a.min);
+        ImGui::SameLine();
+        changed |= inputU7("Max", a.max);
+        changed |= ImGui::Checkbox("Invert", &a.invert);
+    }
     ImGui::EndDisabled();
-    axisValueBar(a, position, ImGui::GetFontSize() * 14);
+    if (!a.program)
+        axisValueBar(a, position, ImGui::GetFontSize() * 14);
     ImGui::PopID();
     return changed;
 }
@@ -311,7 +383,7 @@ bool MappingEditor::drawLoopForm(int source, Mapping& m) {
 bool MappingEditor::drawTriggerEditor(TriggerBinding& b) {
     bool changed = false;
     static const char* kTypes[] = {"No action", "Note", "CC", "Chord", "Transport", "Channel change", "Axis freeze",
-                                   "Loop record"};
+                                   "Loop record", "Program change"};
     int type = static_cast<int>(b.type);
     ImGui::SetNextItemWidth(ImGui::GetFontSize() * 14);
     if (ImGui::Combo("Action", &type, kTypes, IM_ARRAYSIZE(kTypes)) && type != static_cast<int>(b.type)) {
@@ -397,6 +469,26 @@ bool MappingEditor::drawTriggerEditor(TriggerBinding& b) {
         }
         ImGui::PushStyleColor(ImGuiCol_Text, kHintColor);
         ImGui::TextWrapped("One press freezes, the next one releases.");
+        ImGui::PopStyleColor();
+        break;
+    }
+    case ActionType::ProgramChange: {
+        const std::pair<int, const char*> kinds[] = {{0, "Program"}, {1, "Next (+1)"}, {-1, "Previous (-1)"}};
+        for (auto [step, text] : kinds) {
+            if (step != 0)
+                ImGui::SameLine();
+            if (ImGui::RadioButton(text, b.programStep == step) && b.programStep != step) {
+                b.programStep = static_cast<std::int8_t>(step);
+                changed = true;
+            }
+        }
+        if (b.programStep == 0)
+            changed |= inputProgram("Program", b.number);
+        else
+            changed |= ImGui::Checkbox("Wrap around (128 -> 1)", &b.programWrap);
+        changed |= inputBankSelect(b.bankMsb, b.bankLsb);
+        ImGui::PushStyleColor(ImGuiCol_Text, kHintColor);
+        ImGui::TextWrapped("Sent on the active channel. Next and Previous step from the last program sent there.");
         ImGui::PopStyleColor();
         break;
     }

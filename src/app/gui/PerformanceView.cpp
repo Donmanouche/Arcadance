@@ -116,8 +116,19 @@ std::string compact(const TriggerBinding& b, bool flats) {
     case ActionType::ChannelStep: return std::string("Ch ") + (b.channelStep > 0 ? "+" : "") + std::to_string(b.channelStep);
     case ActionType::Freeze: return "Freeze";
     case ActionType::LoopRecord: return "Rec";
+    case ActionType::ProgramChange:
+        return b.programStep != 0 ? std::string("PC ") + (b.programStep > 0 ? "+1" : "-1") : "PC " + std::to_string(b.number + 1);
     }
     return {};
+}
+
+// What an axis sends, for its chip: "CC 40", "PC 1-16", "-".
+std::string axisTarget(const AxisBinding& b) {
+    if (!b.enabled)
+        return "-";
+    if (b.program)
+        return "PC " + std::to_string(b.min + 1) + "-" + std::to_string(b.max + 1);
+    return "CC " + std::to_string(b.cc);
 }
 
 // A small loop arrow marking toggle bindings.
@@ -885,7 +896,7 @@ void PerformanceView::drawStick(int index, const Mapping& m, const LiveState& li
     const float chipTop = midiY + px(12), chipH = px(20);
     const float cw = (w - px(30)) * 0.5f;
     auto axisChip = [&](float cx0, const AxisBinding& b, Axis a, const char* name) {
-        const std::string label = std::string(name) + "  " + (b.enabled ? "CC " + std::to_string(b.cc) : "-") + (b.invert ? "  inv" : "");
+        const std::string label = std::string(name) + "  " + axisTarget(b) + (b.invert ? "  inv" : "");
         badge(dl, gCondensed, px(13), cx0 + cw * 0.5f, chipTop, chipH, label, T::kText, alpha(frozen ? T::kIce : accent, 0.22f),
               b.enabled ? (frozen ? T::kIce : accent) : T::kDim);
         const std::string spec = "axis:" + std::string(toString(a));
@@ -1075,7 +1086,7 @@ void PerformanceView::drawTriggers(const Mapping& m, const LiveState& live, floa
         const float rh = px(28), midY = ry + rh * 0.5f;
         text(dl, gBold, px(12), x + px(12), midY, T::kLabel, a == Axis::LeftTrigger ? "L2" : "R2", H::Left, V::Middle);
         const float ccX0 = x + px(38), ccW = px(52);
-        badge(dl, gCondensed, px(13), ccX0 + ccW * 0.5f, midY - px(10), px(20), ab.enabled ? "CC " + std::to_string(ab.cc) : "-",
+        badge(dl, gCondensed, px(13), ccX0 + ccW * 0.5f, midY - px(10), px(20), axisTarget(ab),
               T::kText, alpha(T::kPink, 0.22f), ab.enabled ? T::kPink : T::kDim);
         const std::string axisSpec = "axes:left_trigger,right_trigger";
         if (hoverButton(a == Axis::LeftTrigger ? "##l2cc" : "##r2cc", ImVec2(ccX0, ry), ImVec2(ccX0 + ccW, ry + rh)))
@@ -1264,7 +1275,7 @@ void PerformanceView::drawTouchpad(const Mapping& m, const LiveState& live, floa
             const AxisBinding* axes[] = {&fb.x, &fb.y};
             for (int k = 0; k < 2; ++k) {
                 const AxisBinding& b = *axes[k];
-                const std::string label = std::string(k == 0 ? "X  " : "Y  ") + (b.enabled ? "CC " + std::to_string(b.cc) : "-");
+                const std::string label = std::string(k == 0 ? "X  " : "Y  ") + axisTarget(b);
                 badge(dl, gCondensed, px(13), cx0 + cw * 0.5f + static_cast<float>(k) * (cw + px(6)), midY - px(10), px(20), label,
                       T::kText, alpha(col, finger.down ? 0.30f : 0.16f), b.enabled ? col : T::kDim);
             }

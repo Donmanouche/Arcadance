@@ -15,7 +15,7 @@ enum class Mode : std::uint8_t {
     Toggle,     // press to latch, press again to release
 };
 
-enum class ActionType : std::uint8_t { None, Note, ControlChange, Chord, Transport, ChannelStep, Freeze, LoopRecord };
+enum class ActionType : std::uint8_t { None, Note, ControlChange, Chord, Transport, ChannelStep, Freeze, LoopRecord, ProgramChange };
 
 enum class TransportCommand : std::uint8_t { Start, Stop, Continue };
 
@@ -40,17 +40,28 @@ struct TriggerBinding {
     TransportCommand transport = TransportCommand::Start;
     std::int8_t channelStep = 1;
     std::uint8_t freezeAxes = 0; // one bit per Axis
+    // ProgramChange: `number` when programStep is 0, else one up (+1) or down
+    // (-1) from the last program sent on the channel, wrapping or stopping at
+    // the ends; preceded by a Bank Select (CC 0, CC 32) when set.
+    std::int8_t programStep = 0;
+    bool programWrap = true;
+    std::int16_t bankMsb = -1, bankLsb = -1;  // -1: none
 
     bool isSet() const { return type != ActionType::None; }
 };
 
-// A continuous control sent as a CC, scaled to [min, max] (min > max reverses it).
+// A continuous control sent as a CC, scaled to [min, max] (min > max reverses
+// it); or, with `program`, choosing a Program Change among min..max, sent once
+// the control has stayed on it a moment, never on the way back to rest, and
+// preceded by a Bank Select (CC 0, CC 32) when set.
 struct AxisBinding {
     bool enabled = false;
     std::uint8_t cc = 0;
     std::uint8_t min = 0;
     std::uint8_t max = 127;
     bool invert = false;
+    bool program = false;
+    std::int16_t bankMsb = -1, bankLsb = -1;  // -1: none
 };
 
 // A stick movement recorded by a LoopRecord button and played back in a loop,
