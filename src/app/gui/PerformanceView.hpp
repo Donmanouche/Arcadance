@@ -17,6 +17,8 @@
 // strip of pads for the buttons. Everything follows the gamepad.
 class PerformanceView {
 public:
+    PerformanceView();  // picks the idle animations, at random
+
     // Colors of the view, shared with the chrome GuiApp draws around it.
     struct Theme {
         static constexpr ImU32 kBackground = IM_COL32(0x1C, 0x1E, 0x21, 255);
@@ -78,7 +80,7 @@ private:
                       float boxTop, float boxBottom, float timelineH);
     void drawPianoRoll(const midipad::Mapping& m, const LiveState& live, float x, float y, float w, float h);
     void drawLoopPanel(ImDrawList* dl, float x, float w, float loopY, float bottom, const LiveState::Loop& loop,
-                       const midipad::LoopBinding& binding, ImU32 colorX, ImU32 colorY, const char* idleHint,
+                       const midipad::LoopBinding& binding, ImU32 colorX, ImU32 colorY, int idleArt,
                        const char* waitStatus, const char* id, const std::string& spec, bool upward,
                        const char* legendX = nullptr, const char* legendY = nullptr);
 
@@ -108,6 +110,12 @@ private:
         bool sounding = true;
     };
     std::deque<RollNote> rollNotes_;
+    // The animation of each empty LOOP box (sticks, triggers, touchpad), per
+    // channel: drawn at random at startup, all different within a channel.
+    std::array<std::array<std::uint8_t, 4>, 16> idleArt_{};
+    int artFor(int channel, int box) const {
+        return idleArt_[static_cast<std::size_t>(std::clamp(channel, 0, 15))][static_cast<std::size_t>(box)];
+    }
     // Stick positions (-1..1) at the moment each axis froze, per channel; a bit
     // of frozenKnown_ per stick axis once recorded.
     std::array<std::array<float, 4>, 16> frozenAt_{};

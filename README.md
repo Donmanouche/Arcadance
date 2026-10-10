@@ -219,6 +219,11 @@ Les contrôles portent les noms de l'API gamepad de SDL3 (`south`, `left_x`,
   tête de lecture balaie dans le sens de la lecture ; ses notes s'illuminent
   quand la tête les traverse. Un clic sur le panneau règle le mode de lecture
   (champ `loops.notes` du preset).
+- **Boîtes LOOP vides** : tant qu'elles n'ont pas de boucle, elles affichent
+  une petite animation en pixels gris, façon jeux vidéo des années 80-90
+  (courbes, vaisseau, envahisseurs, Pong, chat, Snake, Asteroids,
+  casse-briques, mangeur de pastilles…), tirée au hasard au démarrage,
+  différente pour chaque boîte d'un même canal. Le piano roll vide reste vide.
 - **Play / Stop** : les boutons ▶ et ■ de la barre du haut pilotent les
   boucles de tous les canaux. ■ les met en pause sans les effacer (ce qu'elles
   font sonner s'arrête) ; ▶ les relance toutes depuis leur début, et s'allume

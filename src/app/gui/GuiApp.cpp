@@ -1218,18 +1218,36 @@ void GuiApp::drawOptionsOverlay() {
         ImGui::SetNextWindowSizeConstraints(ImVec2(0, 0), ImVec2(FLT_MAX, std::max(px(200), viewport->WorkSize.y - px(150))));
         ImGui::BeginChild("optionsbody", ImVec2(0, 0), ImGuiChildFlags_AutoResizeY);
         ImDrawList* dl = ImGui::GetWindowDrawList();
-        auto section = [&](const char* title) {
-            ImGui::Spacing();
-            const ImVec2 p = ImGui::GetCursorScreenPos();
-            const float w = ImGui::GetContentRegionAvail().x;
-            const ImVec2 sz = bold->CalcTextSizeA(px(12), FLT_MAX, 0, title);
-            dl->AddText(bold, px(12), p, Theme::kDim, title);
-            dl->AddLine(ImVec2(p.x + sz.x + px(8), p.y + sz.y * 0.5f), ImVec2(p.x + w, p.y + sz.y * 0.5f), IM_COL32(0x40, 0x44, 0x4B, 255));
-            ImGui::Dummy(ImVec2(w, sz.y + px(4)));
+        // Each section in a card: its own background, a colored bar on the left
+        // and a title of the same color.
+        ImU32 cardColor = 0;
+        auto beginCard = [&](const char* id, const char* title, ImU32 accent) {
+            cardColor = accent;
+            ImGui::PushStyleColor(ImGuiCol_ChildBg, color(IM_COL32(0x2B, 0x2E, 0x33, 255)));
+            ImGui::PushStyleColor(ImGuiCol_Border, color(IM_COL32(0x40, 0x44, 0x4B, 255)));
+            ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, px(8));
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(px(16), px(10)));
+            ImGui::BeginChild(id, ImVec2(0, 0), ImGuiChildFlags_AutoResizeY | ImGuiChildFlags_Borders | ImGuiChildFlags_AlwaysUseWindowPadding);
+            dl = ImGui::GetWindowDrawList();
+            ImGui::PushFont(bold, 12.5f);
+            ImGui::TextColored(color(accent), "%s", title);
+            ImGui::PopFont();
+        };
+        auto endCard = [&] {
+            // The bar, inside the card so its background does not cover it.
+            const ImVec2 a = ImGui::GetWindowPos(), size = ImGui::GetWindowSize();
+            dl->PushClipRect(a, ImVec2(a.x + size.x, a.y + size.y), false);
+            dl->AddRectFilled(a, ImVec2(a.x + px(5), a.y + size.y), cardColor, px(8), ImDrawFlags_RoundCornersLeft);
+            dl->PopClipRect();
+            ImGui::EndChild();
+            ImGui::PopStyleVar(2);
+            ImGui::PopStyleColor(2);
+            dl = ImGui::GetWindowDrawList();
+            ImGui::Dummy(ImVec2(0, px(6)));
         };
 
         // MIDI interface: every output, the current one selected.
-        section("MIDI INTERFACE");
+        beginCard("##cardmidi", "MIDI INTERFACE", Theme::kBlue);
         ImGui::PushFont(medium, 12.0f);
         ImGui::TextColored(color(Theme::kLabel), "Where MidiPad sends its MIDI. Some programs only see the VirMIDI ports.");
         ImGui::PopFont();
@@ -1287,10 +1305,10 @@ void GuiApp::drawOptionsOverlay() {
         ImGui::PopFont();
         if (virmidi::supported())
             drawVirMidiSection(false);
+        endCard();
 
         // D-pad: how long a direction must hold before it plays.
-        ImGui::Spacing();
-        section("D-PAD");
+        beginCard("##carddpad", "D-PAD", Theme::kRed);
         ImGui::PushFont(medium, 12.0f);
         ImGui::TextColored(color(Theme::kLabel),
                            "A new direction plays once held this long, so the one crossed while\n"
@@ -1312,9 +1330,10 @@ void GuiApp::drawOptionsOverlay() {
         settleSlider("Delay on release", "##settlerelease", settings_.dpadSettleReleaseMs);
         ImGui::PopFont();
 
+        endCard();
+
         // Humanization: which channels, and how much.
-        ImGui::Spacing();
-        section("HUMANIZE");
+        beginCard("##cardhumanize", "HUMANIZE", IM_COL32(0xB0, 0x8C, 0xFF, 255));
         ImGui::PushFont(medium, 12.0f);
         ImGui::TextColored(color(Theme::kLabel),
                            "Random velocity and timing for the notes and chords of the chosen channels;\n"
@@ -1400,9 +1419,10 @@ void GuiApp::drawOptionsOverlay() {
                 persistSettings();
         }
 
-        // Presets: folder and import.
-        ImGui::Spacing();
-        section("PRESETS");
+        endCard();
+
+        // Presets: the folder.
+        beginCard("##cardpresets", "PRESETS", Theme::kOrange);
         ImGui::PushFont(medium, 13.0f);
         ImGui::AlignTextToFramePadding();
         ImGui::TextColored(color(Theme::kLabel), "Folder");
@@ -1422,7 +1442,7 @@ void GuiApp::drawOptionsOverlay() {
         if (ImGui::Button("Change…", ImVec2(-FLT_MIN, 0)))
             browseFolder(FolderTarget::Presets, settings_.presetsDir);
         ImGui::PopFont();
-        ImGui::Spacing();
+        endCard();
         ImGui::EndChild();
         ImGui::Spacing();
         ImGui::PushFont(bold, 13.0f);
@@ -1497,6 +1517,8 @@ void GuiApp::drawVirMidiSection(bool inOutputDialog) {
     const bool canRemove = !inOutputDialog && (virmidiStatus_.loaded || virmidiStatus_.atStartup);
     const float buttonsW = createW + (canRemove ? px(98) : 0);
     ImGui::SameLine();
+    if (ImGui::GetContentRegionAvail().x < buttonsW + px(10))  // no room left: on the next line, to the right
+        ImGui::NewLine();
     ImGui::SetCursorPosX(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x - buttonsW);
     ImGui::BeginDisabled(!changed);
     if (ImGui::Button(createLabel, ImVec2(createW, 0)))
