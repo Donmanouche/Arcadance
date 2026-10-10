@@ -32,13 +32,13 @@ public:
 struct NoteInterval {
     std::int32_t start = 0, end = 0;
     std::uint8_t note = 0, velocity = 0;
+    bool open = false;  // not released yet (being recorded): `end` is the loop's end
 };
 
 // What a loop is doing, for display.
 struct LoopStatus {
     enum class State : std::uint8_t { Empty, Recording, Playing } state = State::Empty;
     bool waiting = false;  // Record held, this source has not moved yet
-    bool zones = false;    // a finger in 4-pad mode: the samples are pads (0-3), not X/Y
     bool overdub = false;  // a note loop taking the notes played on top of it
     int length = 0;        // samples, at Engine::kLoopRateHz
     int position = 0;      // sample playing now
@@ -85,13 +85,14 @@ public:
 
     void setHumanize(const Humanize& humanize) { humanize_ = humanize; }
 
-    // Loops, one per LoopSource and channel: a LoopRecord binding held records
-    // each stick or touchpad finger that moves, X and Y, into its loop on the
-    // active channel; when a finger is lifted nothing is recorded nor, later,
-    // played. A finger in 4-pad mode records the pads it plays: the loop plays
-    // them again (as mapped), and cuts what still sounds when it starts over. On release each recording plays in a loop on its own
-    // CCs (Mapping::loops), beside the stick or finger. Every channel's loops
-    // play at once.
+    // Loops, one per LoopSource and channel. A LoopRecord binding held records,
+    // on the active channel, each stick, touchpad finger (axis mode) or the
+    // triggers that move, X and Y, into their loops (when a finger is lifted
+    // nothing is recorded nor, later, played), and the notes played (buttons,
+    // D-pad, triggers as buttons, touchpad pads) into the note loop, which cuts
+    // what still sounds when it starts over. On release each recording plays
+    // in a loop: on its own CCs (Mapping::loops) beside its source, or the
+    // notes. Every channel's loops play at once.
     // A press where nothing moves: short (under kLoopTapMs) while the active
     // channel's note loop plays, it turns overdub on or off: the notes then
     // played (buttons, D-pad, triggers, pads) join the loop where it plays;
@@ -101,8 +102,8 @@ public:
     static constexpr float kLoopMoveThreshold = 0.06f;  // of the [0, 1] travel
     static constexpr int kLoopTapMs = 500;
     LoopStatus loopStatus(int channel, int source) const;
-    // [0, 1]; axis 0: X, 1: Y (a finger's Y grows downwards); for a 4-pad
-    // loop, the pad (0-3). Negative while a finger was lifted.
+    // [0, 1]; axis 0: X, 1: Y (a finger's Y grows downwards). Negative while a
+    // finger was lifted.
     float loopSample(int channel, int source, int axis, int index) const;
     void clearLoop(int channel, int source);
     // The notes of a channel's note loop, at most `max`; returns how many.
@@ -150,7 +151,6 @@ private:
         std::uint8_t cc = 0, onValue = 0, offValue = 0;
         ChordNotes notes;
         bool humanized = false;
-        bool recordable = false;  // a button, D-pad or trigger note: a note loop may record it
         std::array<std::uint16_t, 9> delayMs{};  // per note, humanized: the release is delayed alike
 
         bool active() const { return type != ActionType::None; }
@@ -171,7 +171,6 @@ private:
     void endRecordHold();
     void runLoops();
     void sendLoopSample(std::size_t loop);
-    void playLoopPads(std::size_t loop);
     void playLoopNotes(std::size_t loop);
     void recordNote(int channel, int note, int velocity, std::uint64_t at);
     void overdubNote(int channel, int note, int velocity, std::uint64_t at);
@@ -223,12 +222,6 @@ private:
         int length = 0, position = 0, direction = 1;
         std::uint64_t nextAt = 0;
         int sentX = -1, sentY = -1;
-        // 4-pad loops: the pad playing at the previous step, and what the loop
-        // has on, held (momentary) or latched (toggle) per pad.
-        bool zones = false;
-        int lastPad = -1;
-        Sounding held;
-        std::array<Sounding, kZoneCount> latched{};
     };
     static constexpr std::uint16_t kLifted = 0xFFFF;
     static constexpr std::size_t loopIndex(int channel, int source) {
@@ -243,7 +236,6 @@ private:
     std::array<bool, kLoopSourceCount> waiting_{};
     std::array<std::array<float, 2>, kLoopSourceCount> holdStart_{};
     std::array<bool, kLoopSourceCount> holdStartOn_{};
-    std::array<int, kFingerCount> holdStartPad_{};  // -1: none
     // Note loops: the notes recorded per channel, sorted by `at` once recorded,
     // and the notes each loop has on.
     struct NoteEvent {

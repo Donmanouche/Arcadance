@@ -320,9 +320,7 @@ void Engine::press(int slot) {
         break;
     }
 
-    Sounding sounding = soundingFor(binding, channel_);
-    // The pads have their own loops, except when overdubbing notes.
-    sounding.recordable = slot < kZoneSlotBase || (overdubChannel_ == channel_ && recordHolders_.none());
+    const Sounding sounding = soundingFor(binding, channel_);
     if (binding.mode == Mode::Momentary) {
         start(sounding);
         held_[static_cast<std::size_t>(slot)] = sounding;
@@ -403,8 +401,7 @@ void Engine::start(const Sounding& s) {
             velocity = std::clamp((s.velocity * percent + 50) / 100, 1, 127);
             at += static_cast<std::uint64_t>(s.delayMs[i]) * 1'000'000u;
         }
-        if (s.recordable)
-            recordNote(s.channel, s.notes.notes[i], velocity, at);
+        recordNote(s.channel, s.notes.notes[i], velocity, at);  // into the note loop, if it records
         sendAt(at, MidiMessage::noteOn(s.channel, s.notes.notes[i], velocity));
     }
 }
@@ -418,8 +415,7 @@ void Engine::stop(const Sounding& s) {
         const MidiMessage off = MidiMessage::noteOff(s.channel, s.notes.notes[i]);
         const bool late = !immediate_ && s.humanized;
         const std::uint64_t at = late ? now_ + static_cast<std::uint64_t>(s.delayMs[i]) * 1'000'000u : now_;
-        if (s.recordable)
-            recordNote(s.channel, s.notes.notes[i], 0, at);
+        recordNote(s.channel, s.notes.notes[i], 0, at);
         if (late)
             sendAt(at, off);
         else
@@ -474,12 +470,12 @@ void Engine::beginRecordHold() {
     for (int s = 0; s < kLoopSourceCount; ++s) {
         auto& start = holdStart_[static_cast<std::size_t>(s)];
         holdStartOn_[static_cast<std::size_t>(s)] = sourcePosition(s, start[0], start[1]);
+        // A finger records its X/Y in axis mode; in 4-pad mode its pads play
+        // notes, which the note loop records.
         const bool finger = s == 2 || s == 3;
         waiting_[static_cast<std::size_t>(s)] =
-            !finger || preset_->forChannel(holdChannel_).fingers[static_cast<std::size_t>(s - 2)].mode != TouchMode::Off;
+            !finger || preset_->forChannel(holdChannel_).fingers[static_cast<std::size_t>(s - 2)].mode == TouchMode::Axis;
     }
-    for (std::size_t f = 0; f < kFingerCount; ++f)
-        holdStartPad_[f] = fingerZone_[f] ? static_cast<int>(*fingerZone_[f]) : -1;
 }
 
 void Engine::endRecordHold() {
@@ -530,24 +526,16 @@ void Engine::endRecordHold() {
 void Engine::runLoops() {
     constexpr std::uint64_t kStep = 1'000'000'000ull / kLoopRateHz;
     // A source that moves during the hold starts recording into its loop: a
-    // stick leaving its spot, a finger landing, sliding or reaching another pad.
+    // stick leaving its spot, a finger landing or sliding.
     for (int source = 0; source < kLoopSourceCount; ++source) {
         const auto i = static_cast<std::size_t>(source);
         if (!waiting_[i] || source == static_cast<int>(LoopSource::Notes))  // notes start when one plays
             continue;
         const bool finger = source == 2 || source == 3;
-        const bool pads = finger &&
-                          preset_->forChannel(holdChannel_).fingers[static_cast<std::size_t>(source - 2)].mode == TouchMode::Zones;
         float x = 0, y = 0;
         const bool on = sourcePosition(source, x, y);
-        bool moved = false;
-        if (pads) {
-            const auto& zone = fingerZone_[static_cast<std::size_t>(source - 2)];
-            moved = zone && (!holdStartOn_[i] || static_cast<int>(*zone) != holdStartPad_[static_cast<std::size_t>(source - 2)]);
-        } else {
-            moved = on && ((finger && !holdStartOn_[i]) || std::abs(x - holdStart_[i][0]) > kLoopMoveThreshold ||
-                           std::abs(y - holdStart_[i][1]) > kLoopMoveThreshold);
-        }
+        const bool moved = on && ((finger && !holdStartOn_[i]) || std::abs(x - holdStart_[i][0]) > kLoopMoveThreshold ||
+                                  std::abs(y - holdStart_[i][1]) > kLoopMoveThreshold);
         if (!moved)
             continue;
         waiting_[i] = false;
@@ -555,7 +543,6 @@ void Engine::runLoops() {
         silenceLoop(index);
         Loop& loop = loops_[index];
         loop.state = LoopStatus::State::Recording;
-        loop.zones = pads;
         loop.length = 0;
         loop.nextAt = now_;
         recordedThisHold_ = true;
@@ -578,17 +565,11 @@ void Engine::runLoops() {
                 }
                 if (loop.length < kMaxLoopSamples) {
                     const auto at = static_cast<std::size_t>(loop.length);
-                    if (loop.zones) {  // the pad under the finger, if any
-                        const auto& zone = fingerZone_[static_cast<std::size_t>(source - 2)];
-                        loop.x[at] = zone ? static_cast<std::uint16_t>(*zone) : kLifted;
-                        loop.y[at] = loop.x[at];
-                    } else {
-                        float x = 0, y = 0;
-                        const bool on = sourcePosition(source, x, y);
-                        auto sample = [](float v) { return static_cast<std::uint16_t>(std::lround(std::clamp(v, 0.0f, 1.0f) * 65534.0f)); };
-                        loop.x[at] = on ? sample(x) : kLifted;
-                        loop.y[at] = on ? sample(y) : kLifted;
-                    }
+                    float x = 0, y = 0;
+                    const bool on = sourcePosition(source, x, y);
+                    auto sample = [](float v) { return static_cast<std::uint16_t>(std::lround(std::clamp(v, 0.0f, 1.0f) * 65534.0f)); };
+                    loop.x[at] = on ? sample(x) : kLifted;
+                    loop.y[at] = on ? sample(y) : kLifted;
                     ++loop.length;
                 }
                 continue;
@@ -621,7 +602,7 @@ void Engine::runLoops() {
                     startsOver = true;
                 }
             }
-            if (startsOver && (loop.zones || source == static_cast<int>(LoopSource::Notes))) {
+            if (startsOver && source == static_cast<int>(LoopSource::Notes)) {
                 fromLoop_ = true;
                 silenceLoop(i);  // what still sounds stops when the loop starts over
                 fromLoop_ = false;
@@ -634,10 +615,6 @@ void Engine::runLoops() {
 // it was recorded from. Nothing while a recorded finger was lifted.
 void Engine::sendLoopSample(std::size_t index) {
     Loop& loop = loops_[index];
-    if (loop.zones) {
-        playLoopPads(index);
-        return;
-    }
     const auto i = static_cast<std::size_t>(loop.position);
     if (loop.x[i] == kLifted)
         return;
@@ -674,52 +651,8 @@ void Engine::sendLoopSample(std::size_t index) {
     }
 }
 
-// A 4-pad loop at its current step: a new pad plays as mapped, the previous
-// one's momentary sound stops, a toggled one flips.
-void Engine::playLoopPads(std::size_t index) {
-    Loop& loop = loops_[index];
-    const std::uint16_t sample = loop.x[static_cast<std::size_t>(loop.position)];
-    const int pad = sample == kLifted ? -1 : static_cast<int>(sample);
-    if (pad == loop.lastPad)
-        return;
-    if (loop.held.active())
-        stop(loop.held);
-    loop.held = {};
-    loop.lastPad = pad;
-    if (pad < 0 || pad >= kZoneCount)
-        return;
-    const auto channel = static_cast<int>(index / kLoopSourceCount);
-    const auto finger = static_cast<std::size_t>(index % kLoopSourceCount - 2);
-    const TriggerBinding& binding = preset_->forChannel(channel).fingers[finger].zones[static_cast<std::size_t>(pad)];
-    if (binding.type != ActionType::Note && binding.type != ActionType::Chord && binding.type != ActionType::ControlChange)
-        return;  // transport, channel or freeze actions do not loop
-    const Sounding sounding = soundingFor(binding, channel);
-    if (binding.mode == Mode::Momentary) {
-        start(sounding);
-        loop.held = sounding;
-        return;
-    }
-    Sounding& mine = loop.latched[static_cast<std::size_t>(pad)];
-    if (mine.active()) {
-        stop(mine);
-        mine = {};
-        return;
-    }
-    if (sounding.type != ActionType::ControlChange) {  // toggled notes replace each other, as live
-        for (Sounding& other : loop.latched) {
-            if (other.active() && other.type != ActionType::ControlChange) {
-                stop(other);
-                other = {};
-            }
-        }
-    }
-    start(sounding);
-    mine = sounding;
-}
-
-// Stops what a 4-pad or note loop has on.
+// Stops what a note loop has on.
 void Engine::silenceLoop(std::size_t index) {
-    Loop& loop = loops_[index];
     if (index % kLoopSourceCount == static_cast<std::size_t>(LoopSource::Notes)) {
         const auto channel = static_cast<int>(index / kLoopSourceCount);
         auto& on = noteLoopOn_[static_cast<std::size_t>(channel)];
@@ -728,15 +661,6 @@ void Engine::silenceLoop(std::size_t index) {
                 sendNow(MidiMessage::noteOff(channel, n));
         on.reset();
     }
-    if (loop.held.active())
-        stop(loop.held);
-    loop.held = {};
-    for (Sounding& s : loop.latched) {
-        if (s.active())
-            stop(s);
-        s = {};
-    }
-    loop.lastPad = -1;
 }
 
 // Records a note played on `channel` at `at` (velocity 0: its release) into
@@ -836,15 +760,17 @@ int Engine::noteLoopIntervals(int channel, NoteInterval* out, int max) const {
             if (count == max)
                 break;
             open[e.note] = count;
-            out[count++] = {e.at, -1, e.note, e.velocity};
+            out[count++] = {e.at, -1, e.note, e.velocity, false};
         } else if (open[e.note] >= 0) {
             out[open[e.note]].end = std::max(e.at, out[open[e.note]].start + 1);
             open[e.note] = -1;
         }
     }
     for (int i = 0; i < count; ++i)  // still on when the loop ends (or now, while recording)
-        if (out[i].end < 0)
+        if (out[i].end < 0) {
             out[i].end = std::max(loop.length, out[i].start + 1);
+            out[i].open = true;
+        }
     return count;
 }
 
@@ -854,16 +780,14 @@ LoopStatus Engine::loopStatus(int channel, int source) const {
     const Loop& loop = loops_[loopIndex(channel, source)];
     const bool waiting = waiting_[static_cast<std::size_t>(source)] && holdChannel_ == channel;
     const bool overdub = source == static_cast<int>(LoopSource::Notes) && overdubChannel_ == channel;
-    return {loop.state, waiting, loop.zones, overdub, loop.length, loop.position, loop.direction, channel};
+    return {loop.state, waiting, overdub, loop.length, loop.position, loop.direction, channel};
 }
 
 float Engine::loopSample(int channel, int source, int axis, int index) const {
     const Loop& loop = loops_[loopIndex(std::clamp(channel, 0, kChannelCount - 1), std::clamp(source, 0, kLoopSourceCount - 1))];
     const auto i = static_cast<std::size_t>(std::clamp(index, 0, kMaxLoopSamples - 1));
     const std::uint16_t v = axis == 0 ? loop.x[i] : loop.y[i];
-    if (v == kLifted)
-        return -1.0f;
-    return loop.zones ? static_cast<float>(v) : static_cast<float>(v) / 65534.0f;
+    return v == kLifted ? -1.0f : static_cast<float>(v) / 65534.0f;
 }
 
 void Engine::clearLoop(int channel, int source) {

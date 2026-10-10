@@ -766,7 +766,7 @@ std::vector<std::string> notesOver(LoopFixture& fx, int steps) {
 
 }  // namespace
 
-TEST_CASE_FIXTURE(ZonesFixture, "a finger in 4-pad mode records the pads and plays them again") {
+TEST_CASE_FIXTURE(ZonesFixture, "the pads a finger plays in 4-pad mode go into the note loop") {
     Preset p = engine.preset();
     p.base.fingers[0].zones[static_cast<std::size_t>(Zone::TopLeft)] = note(60);
     p.base.fingers[0].zones[static_cast<std::size_t>(Zone::BottomRight)] = note(64);
@@ -782,15 +782,17 @@ TEST_CASE_FIXTURE(ZonesFixture, "a finger in 4-pad mode records the pads and pla
     step();
     engine.buttonChanged(Button::South, false);
     sink.take();
-    REQUIRE(engine.loopStatus(0, 2).state == LoopStatus::State::Playing);
-    CHECK(engine.loopStatus(0, 2).zones);
-    CHECK(engine.loopSample(0, 2, 0, 1) == doctest::Approx(3.0));  // the bottom right pad
+    constexpr int kNoteLoop = static_cast<int>(LoopSource::Notes);
+    REQUIRE(engine.loopStatus(0, kNoteLoop).state == LoopStatus::State::Playing);
+    CHECK(engine.loopStatus(0, 2).state == LoopStatus::State::Empty);  // no X/Y loop for the finger
+    NoteInterval intervals[8];
+    CHECK(engine.noteLoopIntervals(0, intervals, 8) == 2);
     const auto notes = notesOver(*this, 6);
     REQUIRE(notes.size() >= 6);
     CHECK(std::vector(notes.begin(), notes.begin() + 6) == std::vector<std::string>{"+60", "-60", "+64", "-64", "+60", "-60"});
 }
 
-TEST_CASE_FIXTURE(ZonesFixture, "a toggled pad of a loop is cut when the loop starts over") {
+TEST_CASE_FIXTURE(ZonesFixture, "a toggled pad of the note loop is cut when it starts over") {
     Preset p = engine.preset();
     p.base.fingers[0].zones[static_cast<std::size_t>(Zone::TopLeft)] = note(60, Mode::Toggle);
     load(p);
@@ -920,7 +922,7 @@ TEST_CASE_FIXTURE(NoteLoopFixture, "a note still on when the note loop starts ov
     CHECK(std::vector(played.begin(), played.begin() + 3) == std::vector<std::string>{"+62", "-62", "+62"});
 }
 
-TEST_CASE_FIXTURE(ZonesFixture, "pads are not recorded into the note loop") {
+TEST_CASE_FIXTURE(ZonesFixture, "pads are recorded into the note loop, with the buttons' notes") {
     Preset p = engine.preset();
     p.base.fingers[0].zones[static_cast<std::size_t>(Zone::TopLeft)] = note(60);
     load(p);
@@ -931,8 +933,8 @@ TEST_CASE_FIXTURE(ZonesFixture, "pads are not recorded into the note loop") {
     engine.touchReleased(0);
     step();
     engine.buttonChanged(Button::South, false);
-    CHECK(engine.loopStatus(0, kNotes).state == LoopStatus::State::Empty);
-    CHECK(engine.loopStatus(0, 2).state == LoopStatus::State::Playing);  // the pad loop has them
+    CHECK(engine.loopStatus(0, kNotes).state == LoopStatus::State::Playing);
+    CHECK(engine.loopStatus(0, 2).state == LoopStatus::State::Empty);
 }
 
 namespace {
@@ -1035,4 +1037,28 @@ TEST_CASE_FIXTURE(ZonesFixture, "pads played while overdubbing join the note loo
     NoteInterval notes[16];
     REQUIRE(engine.noteLoopIntervals(0, notes, 16) == 2);
     CHECK((notes[0].note == 72 || notes[1].note == 72));
+}
+
+TEST_CASE_FIXTURE(ZonesFixture, "after recording only pads, a tap of Record turns overdub on") {
+    Preset p = engine.preset();
+    p.base.fingers[0].zones[static_cast<std::size_t>(Zone::TopLeft)] = note(48);
+    p.base.fingers[0].zones[static_cast<std::size_t>(Zone::BottomRight)] = note(51);
+    load(p);
+    engine.tick(t);
+    engine.buttonChanged(Button::South, true);
+    engine.touchMoved(0, 0.2f, 0.2f);
+    step();
+    engine.touchReleased(0);
+    for (int i = 0; i < 5; ++i)
+        step();
+    engine.buttonChanged(Button::South, false);
+    engine.buttonChanged(Button::South, true);  // tap
+    step();
+    engine.buttonChanged(Button::South, false);
+    REQUIRE(engine.loopStatus(0, kNotes).overdub);
+    engine.touchMoved(0, 0.8f, 0.8f);  // another pad, added
+    step();
+    engine.touchReleased(0);
+    NoteInterval notes[8];
+    CHECK(engine.noteLoopIntervals(0, notes, 8) == 2);
 }

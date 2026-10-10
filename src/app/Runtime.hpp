@@ -54,7 +54,7 @@ struct LiveState {
         static constexpr int kPoints = 160;
         midipad::LoopStatus status;
         int points = 0;  // valid entries of x, y and on, spread over the whole loop
-        std::array<std::uint8_t, kPoints> x{}, y{};  // 0-255; the pad (0-3) for a 4-pad loop
+        std::array<std::uint8_t, kPoints> x{}, y{};  // 0-255
         std::array<bool, kPoints> on{};              // false while a finger was lifted
     };
     std::array<Loop, midipad::kLoopSourceCount> loops{};

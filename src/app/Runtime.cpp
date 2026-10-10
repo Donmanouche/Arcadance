@@ -231,7 +231,7 @@ void Runtime::publish(const GamepadInput& gamepad, const Engine& engine) {
         for (int i = 0; i < loop.points; ++i) {
             const int at = loop.points > 1 ? static_cast<int>(static_cast<long long>(i) * (length - 1) / (loop.points - 1)) : 0;
             const float x = engine.loopSample(channel, s, 0, at), y = engine.loopSample(channel, s, 1, at);
-            const float scale = loop.status.zones ? 1.0f : 255.0f;  // pads stay pad numbers
+            constexpr float scale = 255.0f;
             loop.on[static_cast<std::size_t>(i)] = x >= 0;
             loop.x[static_cast<std::size_t>(i)] = static_cast<std::uint8_t>(std::lround(std::max(x, 0.0f) * scale));
             loop.y[static_cast<std::size_t>(i)] = static_cast<std::uint8_t>(std::lround(std::max(y, 0.0f) * scale));

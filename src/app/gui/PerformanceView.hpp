@@ -74,6 +74,8 @@ private:
     void drawButtons(const midipad::Mapping& m, const LiveState& live, float x, float y, float w, float h);
     void drawScale(const std::optional<midipad::Key>& key, float x, float y, float w, float h);
     void drawChannel(const LiveState& live, float x, float y, float w, float h);
+    void drawPadLanes(ImDrawList* dl, const midipad::Mapping& m, const LiveState& live, float x, float w, float loopY,
+                      float boxTop, float boxBottom, float timelineH);
     void drawPianoRoll(const midipad::Mapping& m, const LiveState& live, float x, float y, float w, float h);
     void drawLoopPanel(ImDrawList* dl, float x, float w, float loopY, float bottom, const LiveState::Loop& loop,
                        const midipad::LoopBinding& binding, ImU32 colorX, ImU32 colorY, const char* idleHint,

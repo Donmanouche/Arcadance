@@ -260,8 +260,8 @@ bool MappingEditor::drawLoopForm(int source, Mapping& m) {
     if (finger && f->mode != TouchMode::Axis) {
         ImGui::PushStyleColor(ImGuiCol_Text, kHintColor);
         ImGui::TextWrapped(f->mode == TouchMode::Zones
-                               ? "In 4-pad mode the loop plays the pads again, as they are mapped; what still sounds "
-                                 "is cut when the loop starts over."
+                               ? "In 4-pad mode the pads play notes: Record puts them in the note loop, with the "
+                                 "buttons' notes (see the piano roll); a tap over it adds more in overdub."
                                : "The finger is off: nothing to record.");
         ImGui::PopStyleColor();
         if (ImGui::Button("Clear the loop"))

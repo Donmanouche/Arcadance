@@ -362,15 +362,17 @@ void PerformanceView::addNote(int channel, int note, int velocity, bool fromLoop
         rollNotes_.pop_front();
 }
 
-// The notes and chords sent on the active channel: the last seconds left of
-// "now", and on its right what the note loop will play next.
+// The notes and chords sent on the active channel. Without a note loop, the
+// last seconds scroll to a "now" line at the right edge. With one, the roll
+// is the loop itself, still, a playhead sweeping it: its notes light up as it
+// crosses them, and a note added in overdub sits where it lands.
 void PerformanceView::drawPianoRoll(const Mapping& m, const LiveState& live, float x, float y, float w, float h) {
     ImDrawList* dl = ImGui::GetWindowDrawList();
     constexpr auto kNotes = static_cast<std::size_t>(LoopSource::Notes);
     const LoopStatus& st = live.loops[kNotes].status;
     const LoopBinding& lb = m.loops[kNotes];
     const bool recording = st.state == LoopStatus::State::Recording;
-    const bool playing = st.state == LoopStatus::State::Playing;
+    const bool clip = st.state == LoopStatus::State::Playing && st.length > 1;
     const ImU32 kViolet = IM_COL32(0xB0, 0x8C, 0xFF, 255);
     const ImU32 kLive = IM_COL32(0xEB, 0xEE, 0xF2, 255);
     // No title bar: the roll fills its block, its state shows top right.
@@ -387,31 +389,31 @@ void PerformanceView::drawPianoRoll(const Mapping& m, const LiveState& live, flo
     } else if (st.waiting) {
         status = "REC  \xC2\xB7  play notes";
         statusColor = T::kRed;
-    } else if (playing) {
+    } else if (clip) {
         status = std::string(st.overdub ? "OVERDUB  " : "LOOP  ") +
                  (lb.playback == LoopPlayback::Forward ? "FWD" : lb.playback == LoopPlayback::Reverse ? "REV" : "BACK & FORTH") +
                  "  \xC2\xB7  " + seconds;
         statusColor = st.overdub ? T::kOrange : kViolet;
     }
 
-    // Geometry: keyboard, then the roll; "now" at two thirds.
+    // Geometry: keyboard, then the roll.
     const float ax0 = x + px(12), ay0 = y + px(10), ax1 = x + w - px(12), ay1 = y + h - px(10);
     if (ay1 - ay0 < px(30))
         return;
     const float keyW = px(20), gx0 = ax0 + keyW + px(16);
-    constexpr double kPast = 4.0, kFuture = 2.0;
-    const float nowX = gx0 + (ax1 - gx0) * static_cast<float>(kPast / (kPast + kFuture));
-    const float pxPerSec = (nowX - gx0) / static_cast<float>(kPast);
-    auto xAt = [&](double t) { return nowX + static_cast<float>(t - time_) * pxPerSec; };
+    constexpr double kWindow = 6.0;  // seconds shown while scrolling
+    const float pxPerSec = (ax1 - gx0) / static_cast<float>(kWindow);
+    auto xAtTime = [&](double t) { return ax1 + static_cast<float>(t - time_) * pxPerSec; };  // scrolling
+    auto xAtSample = [&](float sample) { return gx0 + (ax1 - gx0) * sample / static_cast<float>(st.length); };  // clip
 
     // The range: the notes in view, two octaves at least, eased.
     int lo = 127, hi = 0;
     for (const RollNote& n : rollNotes_)
-        if (n.channel == live.channel && (n.sounding || n.end > time_ - kPast)) {
+        if (n.channel == live.channel && (n.sounding || n.end > time_ - kWindow)) {
             lo = std::min<int>(lo, n.note);
             hi = std::max<int>(hi, n.note);
         }
-    if (playing || recording)
+    if (clip || recording)
         for (int i = 0; i < live.noteLoopCount; ++i) {
             lo = std::min<int>(lo, live.noteLoop[static_cast<std::size_t>(i)].note);
             hi = std::max<int>(hi, live.noteLoop[static_cast<std::size_t>(i)].note);
@@ -442,75 +444,64 @@ void PerformanceView::drawPianoRoll(const Mapping& m, const LiveState& live, flo
             text(dl, gBold, px(8), ax0 + keyW + px(2), yb - rowH * 0.5f, T::kDim, "C" + std::to_string(n / 12 - 1), H::Left, V::Middle);
         }
     }
-    // Half-second lines, scrolling with time.
-    for (double t = std::floor(time_ * 2.0) / 2.0 + 0.5 * 4; xAt(t) > gx0; t -= 0.5)
-        if (xAt(t) < ax1)
-            dl->AddLine(ImVec2(xAt(t), ay0), ImVec2(xAt(t), ay1), IM_COL32(255, 255, 255, 18));
 
-    // What was played: white, or violet from a loop; brighter when louder.
     bool any = false;
-    for (const RollNote& n : rollNotes_) {
-        if (n.channel != live.channel)
-            continue;
-        const double end = n.sounding ? time_ : n.end;
-        if (end < time_ - kPast)
-            continue;
-        any = true;
-        const float yb = yOf(n.note);
-        const float a = 0.55f + 0.45f * static_cast<float>(n.velocity) / 127.0f;
-        dl->AddRectFilled(ImVec2(std::max(xAt(n.start), gx0), yb - rowH + 0.5f), ImVec2(std::max(xAt(end), xAt(n.start) + px(2)), yb - 0.5f),
-                          alpha(n.fromLoop ? kViolet : kLive, a), px(1));
-    }
-
-    // What the note loop plays next: its steps simulated over the next seconds.
-    if (playing && st.length > 1 && live.noteLoopCount > 0) {
-        any = true;
-        constexpr int kStride = 2;
-        const int steps = static_cast<int>(kFuture * Engine::kLoopRateHz) / kStride;
-        std::array<int, LiveState::kMaxNoteLoopNotes> runStart;
-        runStart.fill(-1);
-        int p = st.position, d = st.direction;
-        auto drawRun = [&](int i, int from, int to) {
+    if (clip) {
+        // Half-second lines from the loop's start, which is marked.
+        const float halfSecond = static_cast<float>(Engine::kLoopRateHz) * 0.5f;
+        for (float s2 = halfSecond; s2 < static_cast<float>(st.length); s2 += halfSecond)
+            dl->AddLine(ImVec2(xAtSample(s2), ay0), ImVec2(xAtSample(s2), ay1), IM_COL32(255, 255, 255, 18));
+        dl->AddLine(ImVec2(gx0, ay0), ImVec2(gx0, ay1), IM_COL32(255, 255, 255, 90), px(1.2f));
+        text(dl, gMedium, px(8), gx0 + px(3), ay1 - px(6), T::kDim, "start", H::Left, V::Middle);
+        // The loop's notes; lit while the playhead crosses them; orange while
+        // being added in overdub (from their start to the playhead).
+        const auto pos = static_cast<float>(st.position);
+        for (int i = 0; i < live.noteLoopCount; ++i) {
             const NoteInterval& n = live.noteLoop[static_cast<std::size_t>(i)];
-            const float xa = nowX + static_cast<float>(from * kStride) / Engine::kLoopRateHz * pxPerSec;
-            const float xb = nowX + static_cast<float>(to * kStride) / Engine::kLoopRateHz * pxPerSec;
             const float yb = yOf(n.note);
-            dl->AddRect(ImVec2(xa, yb - rowH + 0.5f), ImVec2(std::max(xb, xa + px(2)), yb - 0.5f), alpha(kViolet, 0.85f), px(1), px(1));
-        };
-        for (int k = 0; k <= steps; ++k) {
-            for (int i = 0; i < live.noteLoopCount; ++i) {
-                const NoteInterval& n = live.noteLoop[static_cast<std::size_t>(i)];
-                const bool on = k < steps && p >= n.start && p < n.end;
-                if (on && runStart[static_cast<std::size_t>(i)] < 0)
-                    runStart[static_cast<std::size_t>(i)] = k;
-                if (!on && runStart[static_cast<std::size_t>(i)] >= 0) {
-                    drawRun(i, runStart[static_cast<std::size_t>(i)], k);
-                    runStart[static_cast<std::size_t>(i)] = -1;
-                }
+            if (n.open && st.overdub) {
+                const float xa = xAtSample(static_cast<float>(n.start));
+                const float xb = pos >= static_cast<float>(n.start) ? xAtSample(pos) : ax1;  // wraps past the end
+                dl->AddRectFilled(ImVec2(xa, yb - rowH + 0.5f), ImVec2(std::max(xb, xa + px(2)), yb - 0.5f), T::kOrange, px(1));
+                continue;
             }
-            for (int s2 = 0; s2 < kStride; ++s2) {  // as the engine steps
-                if (lb.playback == LoopPlayback::Forward) {
-                    p = (p + 1) % st.length;
-                } else if (lb.playback == LoopPlayback::Reverse) {
-                    p = (p - 1 + st.length) % st.length;
-                } else {
-                    p += d;
-                    if (p >= st.length) {
-                        d = -1;
-                        p = std::max(0, st.length - 2);
-                    } else if (p < 0) {
-                        d = 1;
-                        p = std::min(1, st.length - 1);
-                    }
-                }
-            }
+            const bool lit = pos >= static_cast<float>(n.start) && pos < static_cast<float>(n.end);
+            const ImVec2 na(xAtSample(static_cast<float>(n.start)), yb - rowH + 0.5f);
+            const ImVec2 nb(std::max(xAtSample(static_cast<float>(n.end)), na.x + px(2)), yb - 0.5f);
+            dl->AddRectFilled(na, nb, lit ? mix(kViolet, IM_COL32_WHITE, 0.45f) : alpha(kViolet, 0.6f + 0.4f * static_cast<float>(n.velocity) / 127.0f), px(1));
+            if (lit)
+                dl->AddRect(ImVec2(na.x - 1, na.y - 1), ImVec2(nb.x + 1, nb.y + 1), IM_COL32(255, 255, 255, 150), px(1), px(1));
+        }
+        any = true;
+    } else {
+        // Half-second lines, scrolling with time.
+        for (double t = std::floor(time_ * 2.0) / 2.0; xAtTime(t) > gx0; t -= 0.5)
+            dl->AddLine(ImVec2(xAtTime(t), ay0), ImVec2(xAtTime(t), ay1), IM_COL32(255, 255, 255, 18));
+        // What was played: white, or violet from a loop; brighter when louder.
+        for (const RollNote& n : rollNotes_) {
+            if (n.channel != live.channel)
+                continue;
+            const double end = n.sounding ? time_ : n.end;
+            if (end < time_ - kWindow)
+                continue;
+            any = true;
+            const float yb = yOf(n.note);
+            const float a = 0.55f + 0.45f * static_cast<float>(n.velocity) / 127.0f;
+            dl->AddRectFilled(ImVec2(std::max(xAtTime(n.start), gx0), yb - rowH + 0.5f),
+                              ImVec2(std::max(xAtTime(end), xAtTime(n.start) + px(2)), yb - 0.5f), alpha(n.fromLoop ? kViolet : kLive, a), px(1));
         }
     }
     dl->PopClipRect();
 
-    if (any || playing) {
-        dl->AddLine(ImVec2(nowX, ay0), ImVec2(nowX, ay1),
-                    recording ? alpha(T::kRed, 0.9f) : st.overdub ? T::kOrange : IM_COL32(255, 255, 255, 190), px(st.overdub ? 2.0f : 1.3f));
+    // The playhead (clip) or "now" (scrolling, at the right edge).
+    if (clip) {
+        const float hx = xAtSample(static_cast<float>(st.position));
+        const ImU32 col = st.overdub ? T::kOrange : IM_COL32(255, 255, 255, 200);
+        dl->AddLine(ImVec2(hx, ay0), ImVec2(hx, ay1), col, px(st.overdub ? 2.0f : 1.4f));
+        const float s2 = px(4), dir = static_cast<float>(st.direction);  // which way it sweeps
+        dl->AddTriangleFilled(ImVec2(hx + dir * s2, ay0 + s2), ImVec2(hx - dir * s2, ay0), ImVec2(hx - dir * s2, ay0 + s2 * 2), col);
+    } else if (any || recording) {
+        dl->AddLine(ImVec2(ax1 - px(1), ay0), ImVec2(ax1 - px(1), ay1), recording ? alpha(T::kRed, 0.9f) : IM_COL32(255, 255, 255, 120), px(1.5f));
     } else {
         text(dl, gMedium, px(11), (gx0 + ax1) * 0.5f, (ay0 + ay1) * 0.5f, st.waiting ? T::kLabel : T::kDim,
              st.waiting ? "waiting for notes\xE2\x80\xA6" : "notes played appear here  \xC2\xB7  hold Record and play to loop them",
@@ -1101,6 +1092,12 @@ void PerformanceView::drawTouchpad(const Mapping& m, const LiveState& live, floa
     const float boxTop = loopY + px(10), boxBottom = y + h - px(10);
     if (boxBottom - boxTop < px(40))
         return;
+    // In 4-pad mode the pads play notes, which the note loop records: the box
+    // shows them from it, one lane per pad.
+    if (m.fingers[0].mode == TouchMode::Zones || m.fingers[1].mode == TouchMode::Zones) {
+        drawPadLanes(dl, m, live, x, w, loopY, boxTop, boxBottom, timelineH);
+        return;
+    }
     const LiveState::Loop* loops[] = {&live.loops[2], &live.loops[3]};
     auto state = [&](int f) { return loops[f]->status.state; };
     const bool recording = state(0) == LoopStatus::State::Recording || state(1) == LoopStatus::State::Recording;
@@ -1144,66 +1141,16 @@ void PerformanceView::drawTouchpad(const Mapping& m, const LiveState& live, floa
     const ImU32 border = recording ? T::kRed : waiting ? alpha(T::kRed, 0.5f) : shown >= 0 ? alpha(fingerColors[shown], 0.45f) : kGraph;
     dl->AddRect(ga, gb, border, px(4), px(1.3f));
     const ImVec2 pa(ga.x + px(6), ga.y + px(6)), pb(gb.x - px(6), gb.y - px(6) - timelineH);
-    // 4-pad loops: one lane per pad, a block while a pad played. Otherwise the
-    // paths, over a small touchpad.
-    bool lanes = false;
-    for (int f = 0; f < kFingerCount; ++f)
-        lanes |= state(f) != LoopStatus::State::Empty && loops[f]->status.zones && loops[f]->points > 1;
-    if (!lanes) {
-        for (float gx = pa.x + px(6); gx < pb.x; gx += px(12))
-            for (float gy = pa.y + px(6); gy < pb.y; gy += px(12))
-                dl->AddCircleFilled(ImVec2(gx, gy), 1.0f, IM_COL32(255, 255, 255, 22));
-        dl->AddLine(ImVec2((pa.x + pb.x) * 0.5f, pa.y), ImVec2((pa.x + pb.x) * 0.5f, pb.y), IM_COL32(255, 255, 255, 30));
-        dl->AddLine(ImVec2(pa.x, (pa.y + pb.y) * 0.5f), ImVec2(pb.x, (pa.y + pb.y) * 0.5f), IM_COL32(255, 255, 255, 30));
-    }
+    // The paths, over a small touchpad.
+    for (float gx = pa.x + px(6); gx < pb.x; gx += px(12))
+        for (float gy = pa.y + px(6); gy < pb.y; gy += px(12))
+            dl->AddCircleFilled(ImVec2(gx, gy), 1.0f, IM_COL32(255, 255, 255, 22));
+    dl->AddLine(ImVec2((pa.x + pb.x) * 0.5f, pa.y), ImVec2((pa.x + pb.x) * 0.5f, pb.y), IM_COL32(255, 255, 255, 30));
+    dl->AddLine(ImVec2(pa.x, (pa.y + pb.y) * 0.5f), ImVec2(pb.x, (pa.y + pb.y) * 0.5f), IM_COL32(255, 255, 255, 30));
     bool drewAny = false;
-    if (lanes) {
-        static constexpr const char* kPadNames[] = {"TL", "TR", "BL", "BR"};
-        const float laneH = (pb.y - pa.y) / kZoneCount;
-        const float lx0 = pa.x + px(18), lx1 = pb.x;
-        for (int z = 0; z < kZoneCount; ++z) {
-            const float ly = pa.y + laneH * static_cast<float>(z);
-            text(dl, gBold, px(9), pa.x, ly + laneH * 0.5f, T::kDim, kPadNames[z], H::Left, V::Middle);
-            if (z > 0)
-                dl->AddLine(ImVec2(lx0, ly), ImVec2(lx1, ly), IM_COL32(255, 255, 255, 18));
-        }
-        for (int f = 0; f < kFingerCount; ++f) {
-            const LiveState::Loop& L = *loops[f];
-            if (state(f) == LoopStatus::State::Empty || !L.status.zones || L.points < 2)
-                continue;
-            drewAny = true;
-            const bool both = loops[1 - f]->status.zones && state(1 - f) != LoopStatus::State::Empty;
-            const float span = state(f) == LoopStatus::State::Recording
-                                   ? std::min(1.0f, static_cast<float>(L.status.length) / (4.0f * Engine::kLoopRateHz))
-                                   : 1.0f;
-            auto xAt = [&](int i) { return lx0 + (lx1 - lx0) * span * static_cast<float>(i) / static_cast<float>(L.points - 1); };
-            int start = -1, pad = -1;
-            for (int i = 0; i <= L.points; ++i) {
-                const int p = i < L.points && L.on[static_cast<std::size_t>(i)] ? L.x[static_cast<std::size_t>(i)] : -1;
-                if (p == pad)
-                    continue;
-                if (pad >= 0 && pad < kZoneCount) {
-                    float blockTop = pa.y + laneH * static_cast<float>(pad) + px(2), blockBottom = blockTop + laneH - px(4);
-                    if (both)  // finger 1 above, finger 2 below, within the lane
-                        (f == 0 ? blockBottom : blockTop) = (blockTop + blockBottom) * 0.5f;
-                    dl->AddRectFilled(ImVec2(xAt(start), blockTop), ImVec2(std::max(xAt(i - 1), xAt(start) + px(2)), blockBottom),
-                                      alpha(fingerColors[f], 0.75f), px(2));
-                }
-                pad = p;
-                start = i;
-            }
-            const float hx = state(f) == LoopStatus::State::Recording
-                                 ? xAt(L.points - 1)
-                                 : lx0 + (lx1 - lx0) * (L.status.length > 1 ? static_cast<float>(L.status.position) /
-                                                                                 static_cast<float>(L.status.length - 1)
-                                                                            : 0.0f);
-            dl->AddLine(ImVec2(hx, pa.y), ImVec2(hx, pb.y),
-                        state(f) == LoopStatus::State::Recording ? alpha(T::kRed, 0.8f) : alpha(fingerColors[f], 0.9f), px(1.3f));
-        }
-    }
     for (int f = 0; f < kFingerCount; ++f) {
         const LiveState::Loop& L = *loops[f];
-        if (lanes || state(f) == LoopStatus::State::Empty || L.points < 2)
+        if (state(f) == LoopStatus::State::Empty || L.points < 2)
             continue;
         drewAny = true;
         auto at = [&](int i) {
@@ -1263,6 +1210,115 @@ void PerformanceView::drawTouchpad(const Mapping& m, const LiveState& live, floa
     }
     if (hoverButton("##touchloop", ImVec2(ga.x, loopY - px(6)), gb))
         click("fingers");
+}
+
+// The touchpad's LOOP panel in 4-pad mode: the pads' notes in the note loop,
+// one lane per pad (TL, TR, BL, BR), with a playhead, and below when each
+// finger's pads played.
+void PerformanceView::drawPadLanes(ImDrawList* dl, const Mapping& m, const LiveState& live, float x, float w, float loopY,
+                                   float boxTop, float boxBottom, float timelineH) {
+    const ImU32 fingerColors[] = {T::kCyan, T::kOrange};
+    const ImU32 kViolet = IM_COL32(0xB0, 0x8C, 0xFF, 255);
+    const LoopStatus& st = live.loops[static_cast<std::size_t>(LoopSource::Notes)].status;
+    const bool recording = st.state == LoopStatus::State::Recording;
+    const bool playing = st.state == LoopStatus::State::Playing;
+
+    // Which lane, and which finger, plays each note.
+    std::array<std::int8_t, 128> laneOf, fingerOf;
+    laneOf.fill(-1);
+    fingerOf.fill(-1);
+    for (int f = kFingerCount - 1; f >= 0; --f) {  // finger 1 wins a note both play
+        const FingerBinding& fb = m.fingers[static_cast<std::size_t>(f)];
+        if (fb.mode != TouchMode::Zones)
+            continue;
+        for (int z = 0; z < kZoneCount; ++z) {
+            const TriggerBinding& t = fb.zones[static_cast<std::size_t>(z)];
+            auto mark = [&](int note) {
+                laneOf[static_cast<std::size_t>(note & 0x7F)] = static_cast<std::int8_t>(z);
+                fingerOf[static_cast<std::size_t>(note & 0x7F)] = static_cast<std::int8_t>(f);
+            };
+            if (t.type == ActionType::Note)
+                mark(t.number);
+            else if (t.type == ActionType::Chord)
+                for (auto n : t.chord.view())
+                    mark(n);
+        }
+    }
+
+    // Header: the note loop's state.
+    char seconds[16];
+    std::snprintf(seconds, sizeof seconds, "%.1f s", static_cast<double>(st.length) / Engine::kLoopRateHz);
+    std::string status;
+    ImU32 statusColor = T::kDim;
+    if (recording) {
+        status = std::string("REC  ") + seconds;
+        statusColor = T::kRed;
+    } else if (st.waiting) {
+        status = "REC  \xC2\xB7  play the pads";
+        statusColor = T::kRed;
+    } else if (playing) {
+        const LoopPlayback pb = m.loops[static_cast<std::size_t>(LoopSource::Notes)].playback;
+        status = std::string(st.overdub ? "OVERDUB  " : "") +
+                 (pb == LoopPlayback::Forward ? "FWD" : pb == LoopPlayback::Reverse ? "REV" : "BACK & FORTH") + "  \xC2\xB7  " + seconds;
+        statusColor = st.overdub ? T::kOrange : kViolet;
+    }
+    text(dl, gBold, px(11), x + px(12), loopY, T::kDim, "LOOP", H::Left, V::Middle);
+    const float statusX = x + w - px(12) - textWidth(gBold, px(10), status);
+    if (!status.empty())
+        text(dl, gBold, px(10), statusX, loopY, statusColor, status, H::Left, V::Middle);
+    const float ruleEnd = status.empty() ? x + w - px(12) : statusX - px(8);
+    const float ruleStart = x + px(16) + textWidth(gBold, px(11), "LOOP");
+    if (ruleEnd > ruleStart)
+        dl->AddLine(ImVec2(ruleStart, loopY), ImVec2(ruleEnd, loopY), IM_COL32(0x40, 0x44, 0x4B, 255), px(1));
+
+    const ImVec2 ga(x + px(12), boxTop), gb(x + w - px(12), boxBottom);
+    dl->AddRectFilled(ga, gb, kGraph, px(4));
+    dl->AddRect(ga, gb, recording ? T::kRed : st.waiting ? alpha(T::kRed, 0.5f) : playing ? alpha(kViolet, 0.45f) : kGraph, px(4),
+                px(1.3f));
+    const ImVec2 pa(ga.x + px(6), ga.y + px(6)), pb(gb.x - px(6), gb.y - px(6) - timelineH);
+    static constexpr const char* kPadNames[] = {"TL", "TR", "BL", "BR"};
+    const float laneH = (pb.y - pa.y) / kZoneCount;
+    const float lx0 = pa.x + px(18), lx1 = pb.x;
+    for (int z = 0; z < kZoneCount; ++z) {
+        const float ly = pa.y + laneH * static_cast<float>(z);
+        text(dl, gBold, px(9), pa.x, ly + laneH * 0.5f, T::kDim, kPadNames[z], H::Left, V::Middle);
+        if (z > 0)
+            dl->AddLine(ImVec2(lx0, ly), ImVec2(lx1, ly), IM_COL32(255, 255, 255, 18));
+    }
+
+    bool any = false;
+    if ((recording || playing) && st.length > 1) {
+        // While recording the loop grows over a 4-second window, then fills the box.
+        const float span = recording ? std::min(1.0f, static_cast<float>(st.length) / (4.0f * Engine::kLoopRateHz)) : 1.0f;
+        auto xAt = [&](float sample) { return lx0 + (lx1 - lx0) * span * sample / static_cast<float>(st.length); };
+        const float tx0 = ga.x + px(2), tx1 = gb.x - px(2);
+        auto tAt = [&](float sample) { return tx0 + (tx1 - tx0) * span * sample / static_cast<float>(st.length); };
+        for (int i = 0; i < live.noteLoopCount; ++i) {
+            const NoteInterval& n = live.noteLoop[static_cast<std::size_t>(i)];
+            const int lane = laneOf[n.note], f = fingerOf[n.note];
+            if (lane < 0)
+                continue;  // a button's note: the piano roll shows it
+            any = true;
+            const float end = n.open ? static_cast<float>(recording || st.position < n.start ? st.length : st.position)
+                                     : static_cast<float>(n.end);
+            const ImU32 col = n.open && (st.overdub || recording) ? T::kOrange : fingerColors[f];
+            const float top = pa.y + laneH * static_cast<float>(lane) + px(2), bottom = top + laneH - px(4);
+            dl->AddRectFilled(ImVec2(xAt(static_cast<float>(n.start)), top), ImVec2(std::max(xAt(end), xAt(static_cast<float>(n.start)) + px(2)), bottom),
+                              alpha(col, 0.8f), px(2));
+            // The timeline: when each finger's pads played.
+            const float ty = gb.y - timelineH + px(5) + static_cast<float>(f) * px(8);
+            dl->AddRectFilled(ImVec2(tAt(static_cast<float>(n.start)), ty - px(2.5f)),
+                              ImVec2(std::max(tAt(end), tAt(static_cast<float>(n.start)) + px(2)), ty + px(2.5f)), fingerColors[f], px(2));
+        }
+        const float hx = recording ? xAt(static_cast<float>(st.length)) : xAt(static_cast<float>(st.position));
+        dl->AddLine(ImVec2(hx, pa.y), ImVec2(hx, pb.y), recording ? alpha(T::kRed, 0.8f) : st.overdub ? T::kOrange : IM_COL32(255, 255, 255, 190),
+                    px(st.overdub ? 2.0f : 1.3f));
+    }
+    if (!any)
+        text(dl, gMedium, px(11), (ga.x + gb.x) * 0.5f, (pa.y + pb.y) * 0.5f, st.waiting ? T::kLabel : T::kDim,
+             st.waiting ? "waiting for notes\xE2\x80\xA6" : "hold Record and play the pads", H::Center, V::Middle);
+    if (hoverButton("##touchloop", ImVec2(ga.x, loopY - px(6)), gb))
+        click("notes");
 }
 
 void PerformanceView::drawButtons(const Mapping& m, const LiveState& live, float x, float y, float w, float h) {

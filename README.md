@@ -190,39 +190,42 @@ Les contrôles portent les noms de l'API gamepad de SDL3 (`south`, `left_x`,
   pour L2/R2 par défaut) et son mode de lecture (avant, arrière, aller-retour),
   réglés dans la fenêtre du stick, du touchpad ou des gâchettes (champ `loops`
   du preset). Le module TRIGGERS montre les CC et les notes de L2 et R2, et un
-  écran LOOP avec leurs deux courbes. En mode 4 pads, un doigt
-  enregistre les pads qu'il joue : la boucle les rejoue tels qu'ils sont
-  mappés (notes, accords, CC, momentanés ou en bascule), et coupe ce qui sonne
-  encore quand elle repart du début. Le module TOUCHPAD montre les CC (ou les
-  pads) de chaque doigt et un écran LOOP où les gestes enregistrés sont tracés
-  (une ligne par pad pour les boucles de pads), avec une frise des moments où
-  chaque doigt touchait.
+  écran LOOP avec leurs deux courbes. En mode 4 pads, les pads jouent des
+  notes : elles vont dans la boucle de notes, avec celles des boutons (voir
+  ci-dessous). Le module TOUCHPAD montre les CC (ou les pads) de chaque doigt
+  et un écran LOOP : en mode axes, les gestes enregistrés tracés ; en mode
+  pads, les notes des pads lues dans la boucle de notes, une ligne par pad ;
+  avec une frise des moments où chaque doigt touchait.
   Chaque canal a ses deux boucles (gauche et droite) : on peut enregistrer
   sur le canal 1, passer au canal 2 et enregistrer encore ; toutes jouent en
   même temps. Un appui sans bouger aucun stick arrête les boucles du canal
   actif ; Panic arrête celles de tous les canaux. Les panneaux LOOP de la vue
   animée montrent les boucles du canal actif et leur tête de lecture. Les
   boucles ne sont pas gardées d'une session à l'autre.
-- **Piano roll et boucles de notes** : le piano roll, sous les sticks et les gâchettes,
-  montre les notes et accords envoyés sur le canal actif (les dernières
-  secondes à gauche de « now », en blanc ; en violet ceux joués par une
-  boucle), avec un clavier dont la plage suit les notes jouées. Maintenir
-  « Loop record » en jouant des notes ou des accords (boutons, croix,
-  gâchettes comme boutons ; les pads du touchpad ont leurs propres boucles)
-  les enregistre : au relâchement, ils tournent en boucle sur le canal où ils
-  ont été joués, avec leur vélocité et leur humanisation éventuelle, en
-  avant, en arrière ou en aller-retour (une boucle par canal). Une note encore
-  tenue à la fin (une bascule restée allumée) sonne jusqu'à la fin de la
-  boucle ; tout ce qui sonne est coupé quand la boucle repart du début. À
-  droite de « now », le piano roll montre en contour ce que la boucle va jouer
-  ensuite. Un clic sur le panneau règle le mode de lecture (champ
-  `loops.notes` du preset).
+- **Piano roll et boucles de notes** : le piano roll, sous les sticks et les
+  gâchettes, montre les notes et accords du canal actif, avec un clavier dont
+  la plage suit les notes jouées. Sans boucle de notes, les dernières secondes
+  défilent jusqu'à la ligne « now », au bord droit (en blanc ; en violet ce
+  qu'une boucle a joué). Maintenir « Loop record » en jouant des notes ou des
+  accords (boutons, croix, gâchettes comme boutons, pads du touchpad) les
+  enregistre : au relâchement, ils tournent en
+  boucle sur le canal où ils ont été joués, avec leur vélocité et leur
+  humanisation éventuelle, en avant, en arrière ou en aller-retour (une boucle
+  par canal). Une note encore tenue à la fin (une bascule restée allumée)
+  sonne jusqu'à la fin de la boucle ; tout ce qui sonne est coupé quand la
+  boucle repart du début. Pendant qu'elle tourne, le piano roll devient un
+  **clip** : la boucle entière, immobile, du début (« start ») à la fin, qu'une
+  tête de lecture balaie dans le sens de la lecture ; ses notes s'illuminent
+  quand la tête les traverse. Un clic sur le panneau règle le mode de lecture
+  (champ `loops.notes` du preset).
 - **Overdub** : quand une boucle de notes tourne, un appui bref (moins de
   500 ms, sans rien jouer) sur « Loop record » active l'overdub : les notes
-  jouées ensuite (boutons, croix, gâchettes, et aussi les pads du touchpad)
+  jouées ensuite (boutons, croix, gâchettes, pads du touchpad)
   s'ajoutent à la boucle là où elle joue, sans en changer la durée. Un second
   appui bref le désactive. Pendant l'overdub, le piano roll affiche
-  « OVERDUB » en orange et le pad du bouton Record est cerclé d'orange.
+  « OVERDUB » et sa tête de lecture en orange, chaque note ajoutée apparaît
+  en orange à sa place dans la boucle tant qu'on la tient, et le pad du
+  bouton Record est cerclé d'orange.
   Maintenir « Loop record » en jouant enregistre une nouvelle boucle de
   notes, qui remplace l'ancienne. Un appui long sans rien jouer, ou un appui
   bref sans boucle de notes, arrête les boucles du canal. Les autres boucles
