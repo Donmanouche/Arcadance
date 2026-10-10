@@ -44,7 +44,7 @@ scène, qui joue en même temps qu'elle édite. **F11** passe en plein écran,
 - un bandeau de pads pour les boutons (✕ ○ □ △ aux couleurs PlayStation) :
   éclair à chaque appui, éclairage tant que la note ou l'accord sonne (les
   bascules verrouillées restent allumées) ;
-- en haut : menu ☰, Panic, canal, preset ;
+- en haut : menu ☰, canal et preset au centre, PANIC à droite ;
 - en bas : la sortie MIDI à gauche, l'état de la manette à droite ;
 - un clic sur un contrôle (pad, direction, zone, potentiomètre d'axe, écran,
   panneau LOOP) ouvre ses réglages dans un panneau semi-transparent au-dessus

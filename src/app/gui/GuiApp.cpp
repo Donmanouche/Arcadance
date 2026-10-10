@@ -927,14 +927,6 @@ void GuiApp::drawPerformance(const LiveState& live) {
         dl->AddText(bold, size, ImVec2(p.x, p.y + (px(32) - sz.y) * 0.5f), Theme::kText, "MIDIPAD");
         ImGui::Dummy(ImVec2(sz.x + px(14), px(32)));
     }
-    ImGui::SameLine(0, px(4));
-    ImGui::PushStyleColor(ImGuiCol_Text, color(Theme::kRed));
-    ImGui::PushStyleColor(ImGuiCol_Border, color(Theme::kRed));
-    if (ImGui::Button("PANIC"))
-        runtime_->panic();
-    ImGui::PopStyleColor(2);
-    ImGui::SetItemTooltip("Turns off every note and CC still on");
-
     // Small arrow buttons drawn as triangles, for the channel and the preset.
     auto arrow = [&](const char* id, ImVec2 at, float w, float h, bool left) {
         ImGui::SetCursorScreenPos(at);
@@ -948,7 +940,7 @@ void GuiApp::drawPerformance(const LiveState& live) {
         return clicked;
     };
 
-    // Channel and preset, centered in the bar (never over PANIC).
+    // Channel and preset, centered in the bar.
     ImGui::SameLine(0, px(14));
     {
         const float groupW = px(150) + px(16) + medium->CalcTextSizeA(px(12), FLT_MAX, 0, "PRESET").x + px(8) + px(26) * 2 + px(180);
@@ -1060,6 +1052,18 @@ void GuiApp::drawPerformance(const LiveState& live) {
             ImGui::PopStyleColor(2);
             ImGui::SetItemTooltip("Ctrl+S");
         }
+    }
+
+    // PANIC, in the top right corner.
+    {
+        const float panicW = ImGui::CalcTextSize("PANIC").x + ImGui::GetStyle().FramePadding.x * 2;
+        ImGui::SetCursorScreenPos(ImVec2(winPos.x + winW - px(8) - panicW, winPos.y + px(9)));
+        ImGui::PushStyleColor(ImGuiCol_Text, color(Theme::kRed));
+        ImGui::PushStyleColor(ImGuiCol_Border, color(Theme::kRed));
+        if (ImGui::Button("PANIC"))
+            runtime_->panic();
+        ImGui::PopStyleColor(2);
+        ImGui::SetItemTooltip("Turns off every note and CC still on");
     }
     ImGui::PopFont();
     ImGui::SetCursorScreenPos(ImVec2(winPos.x + px(8), winPos.y + barH + px(8)));
