@@ -8,7 +8,7 @@ FetchContent_Declare(nlohmann_json
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
 FetchContent_MakeAvailable(nlohmann_json)
 
-if(MIDIPAD_BUILD_TESTS)
+if(MIDIPAD_BUILD_TESTS AND MIDIPAD_TESTS_PRESENT)
     FetchContent_Declare(doctest
         GIT_REPOSITORY https://github.com/doctest/doctest.git
         GIT_TAG v2.4.12

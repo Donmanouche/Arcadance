@@ -29,6 +29,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <functional>
 #include <future>
@@ -72,6 +73,8 @@ struct GuiOptions {
     std::optional<fs::path> screenshot;  // render a few frames, save a BMP, quit
     std::vector<std::pair<float, float>> clicks;  // simulated mouse clicks, for screenshots
     bool demo = false;                             // fake controller state, for screenshots
+    std::optional<fs::path> record;  // save `frames` frames as BMPs in this folder, at `fps`, then quit
+    int frames = 125, fps = 25;
     bool help = false;
     std::string error;
 };
@@ -92,6 +95,14 @@ GuiOptions parseGuiArgs(const std::vector<std::string>& args) {
                 o.error = "--click expects X,Y";
         } else if (a == "--demo") {
             o.demo = true;
+        } else if (a == "--record" && i + 1 < args.size()) {
+            o.record = args[++i];
+        } else if ((a == "--frames" || a == "--fps") && i + 1 < args.size()) {
+            const int n = std::atoi(args[++i].c_str());
+            if (n <= 0)
+                o.error = a + " expects a positive number";
+            else
+                (a == "--frames" ? o.frames : o.fps) = n;
         } else if (!a.empty() && a[0] == '-') {
             o.error = "unknown option " + a;
         } else {
@@ -116,26 +127,84 @@ std::string rawMidiName(const std::string& port) {
     return device == 0 ? "Virtual Raw MIDI" : "Virtual Raw MIDI " + std::to_string(device + 1);
 }
 
-// A moving controller state, so screenshots show the animated view at work.
+// A moving controller state, so screenshots and recordings show the animated
+// view at work: sticks, triggers and a finger in motion, a few presses, and
+// loops playing on channels 1 and 2. `t` in seconds.
 LiveState demoLive(double t) {
     LiveState s;
     s.connected = true;
     s.hasTouchpad = true;
     s.gamepadName = "DualSense (demo)";
     auto axis = [](double v) { return static_cast<std::int16_t>(std::clamp(v, -1.0, 1.0) * 32767); };
-    s.axes[static_cast<std::size_t>(Axis::LeftX)] = axis(0.7 * std::cos(t * 1.3));
-    s.axes[static_cast<std::size_t>(Axis::LeftY)] = axis(-0.6 * std::sin(t * 1.3));
-    s.axes[static_cast<std::size_t>(Axis::RightX)] = axis(0.35);
-    s.axes[static_cast<std::size_t>(Axis::RightY)] = axis(-0.8);
-    s.axes[static_cast<std::size_t>(Axis::LeftTrigger)] = axis(0.65);
-    s.axes[static_cast<std::size_t>(Axis::RightTrigger)] = axis(0.12);
-    for (Button b : {Button::South, Button::DpadUp})
-        s.buttons |= 1u << static_cast<int>(b);
-    for (int slot : {Engine::slotOf(Button::South), Engine::slotOf(HatDir::Up), Engine::slotOf(Button::LeftShoulder),
-                     Engine::slotOf(Button::LeftTrigger)})
-        s.sounding |= std::uint64_t{1} << slot;
-    s.fingers[0] = {true, static_cast<float>(0.3 + 0.15 * std::sin(t * 2.0)), 0.45f};
+    // Every motion repeats within the note loop's eight seconds, so a recording of them loops seamlessly.
+    const double w = 2 * 3.14159265358979 / 8.0;
+    s.axes[static_cast<std::size_t>(Axis::LeftX)] = axis(0.7 * std::cos(t * 2 * w));
+    s.axes[static_cast<std::size_t>(Axis::LeftY)] = axis(-0.6 * std::sin(t * 2 * w));
+    s.axes[static_cast<std::size_t>(Axis::RightX)] = axis(0.35 + 0.1 * std::sin(t * w));
+    s.axes[static_cast<std::size_t>(Axis::RightY)] = axis(-0.8 + 0.1 * std::cos(t * w));
+    s.axes[static_cast<std::size_t>(Axis::LeftTrigger)] = axis(0.5 + 0.45 * std::sin(t * 2 * w));
+    s.axes[static_cast<std::size_t>(Axis::RightTrigger)] = axis(0.25 + 0.25 * std::sin(t * 3 * w + 1.0));
+    s.fingers[0] = {true, static_cast<float>(0.5 + 0.25 * std::cos(t * w)), static_cast<float>(0.5 + 0.25 * std::sin(t * 2 * w))};
     s.frozenAxes = static_cast<std::uint8_t>((1u << static_cast<int>(Axis::RightX)) | (1u << static_cast<int>(Axis::RightY)));
+
+    // Presses: Cross and Triangle in turn, the D-pad's Up latched, L1 and L2 held.
+    auto press = [&](Button b, int slot) {
+        s.buttons |= 1u << static_cast<int>(b);
+        s.sounding |= std::uint64_t{1} << slot;
+    };
+    const double beat = std::fmod(t, 4.0);
+    if (beat < 0.6)
+        press(Button::South, Engine::slotOf(Button::South));
+    if (beat >= 2.0 && beat < 2.6)
+        press(Button::North, Engine::slotOf(Button::North));
+    if (std::fmod(t, 8.0) < 0.3)
+        s.buttons |= 1u << static_cast<int>(Button::DpadUp);
+    for (int slot : {Engine::slotOf(HatDir::Up), Engine::slotOf(Button::LeftShoulder), Engine::slotOf(Button::LeftTrigger)})
+        s.sounding |= std::uint64_t{1} << slot;
+
+    // Movement loops, recorded at Engine::kLoopRateHz, playing.
+    const double samples = t * Engine::kLoopRateHz;
+    auto curve = [&](LoopSource source, int length, double fx, double fy, double phase, bool backAndForth) {
+        auto& l = s.loops[static_cast<std::size_t>(source)];
+        l.status.state = LoopStatus::State::Playing;
+        l.status.length = length;
+        const int lap = static_cast<int>(samples) / length;
+        const int at = static_cast<int>(samples) % length;
+        l.status.direction = backAndForth && lap % 2 ? -1 : 1;
+        l.status.position = l.status.direction > 0 ? at : length - 1 - at;
+        l.points = LiveState::Loop::kPoints;
+        for (int i = 0; i < l.points; ++i) {
+            const double u = 2 * 3.14159265358979 * i / l.points;
+            const auto k = static_cast<std::size_t>(i);
+            l.x[k] = static_cast<std::uint8_t>(128 + 100 * std::sin(fx * u + phase));
+            l.y[k] = static_cast<std::uint8_t>(128 + 90 * std::sin(fy * u));
+            l.on[k] = source != LoopSource::Finger1 || i % 53 < 40;  // a lifted finger now and then
+        }
+    };
+    curve(LoopSource::LeftStick, 800, 1, 2, 0, true);
+    curve(LoopSource::Finger1, 800, 2, 3, 0.5, false);
+    curve(LoopSource::Triggers, 400, 1, 1, 1.2, false);
+
+    // A note loop: Fm9, Bbm9, Dbmaj9, Ebadd9 over eight seconds, a melody on top.
+    auto& n = s.loops[static_cast<std::size_t>(LoopSource::Notes)];
+    n.status.state = LoopStatus::State::Playing;
+    n.status.length = 1600;
+    n.status.position = static_cast<int>(samples) % n.status.length;
+    static constexpr int kNotes[][3] = {
+        {0, 340, 41},     {0, 340, 56},     {0, 340, 60},     {0, 340, 63},     {0, 340, 67},
+        {400, 740, 46},   {400, 740, 61},   {400, 740, 65},   {400, 740, 68},   {800, 1140, 49},
+        {800, 1140, 60},  {800, 1140, 63},  {800, 1140, 68},  {1200, 1540, 51}, {1200, 1540, 58},
+        {1200, 1540, 63}, {1200, 1540, 65}, {120, 240, 72},   {520, 640, 73},   {920, 1040, 75},
+        {1320, 1440, 77}, {1460, 1580, 75},
+    };
+    for (const auto& x : kNotes) {
+        auto& iv = s.noteLoop[static_cast<std::size_t>(s.noteLoopCount++)];
+        iv.start = x[0];
+        iv.end = x[1];
+        iv.note = static_cast<std::uint8_t>(x[2]);
+        iv.velocity = 100;
+    }
+    s.loopChannels = 0b11;
     return s;
 }
 
@@ -418,10 +487,23 @@ int GuiApp::run() {
             }
             frame();
             const int screenshotFrame = 4 + 4 * static_cast<int>(options_.clicks.size());
-            if (options_.screenshot && ++frameCount_ == screenshotFrame) {
+            ++frameCount_;
+            if (options_.screenshot && frameCount_ == screenshotFrame) {
                 if (!saveScreenshot(*options_.screenshot))
                     std::cerr << "midipad: screenshot failed: " << SDL_GetError() << '\n';
                 quit_ = true;
+            }
+            // A recording starts where a screenshot would be taken.
+            if (options_.record && frameCount_ >= screenshotFrame) {
+                const int index = frameCount_ - screenshotFrame;
+                char name[32];
+                std::snprintf(name, sizeof name, "frame_%04d.bmp", index);
+                if (!saveScreenshot(*options_.record / name)) {
+                    std::cerr << "midipad: recording failed: " << SDL_GetError() << '\n';
+                    quit_ = true;
+                }
+                if (index + 1 >= options_.frames)
+                    quit_ = true;
             }
         }
     }
@@ -442,6 +524,8 @@ void GuiApp::frame() {
 
     ImGui_ImplSDLRenderer3_NewFrame();
     ImGui_ImplSDL3_NewFrame();
+    if (options_.record)  // the same time step whatever the rendering speed
+        ImGui::GetIO().DeltaTime = 1.0f / static_cast<float>(options_.fps);
     ImGui::NewFrame();
     draw();
     ImGui::Render();

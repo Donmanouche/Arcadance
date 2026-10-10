@@ -1,12 +1,18 @@
 cmake_minimum_required(VERSION 3.25)
-project(MidiPad VERSION 0.18 LANGUAGES CXX)
+project(MidiPad VERSION 0.19 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-option(MIDIPAD_BUILD_TESTS "Build the unit tests" ON)
+# The unit tests are kept out of the published sources: built only where they are present.
+if(EXISTS "${PROJECT_SOURCE_DIR}/tests/CMakeLists.txt")
+    set(MIDIPAD_TESTS_PRESENT ON)
+else()
+    set(MIDIPAD_TESTS_PRESENT OFF)
+endif()
+option(MIDIPAD_BUILD_TESTS "Build the unit tests (when the tests folder is present)" ${MIDIPAD_TESTS_PRESENT})
 option(MIDIPAD_BUILD_APP "Build the midipad application (needs SDL3 and RtMidi)" ON)
 
 include(cmake/Dependencies.cmake)
@@ -24,7 +30,7 @@ if(MIDIPAD_BUILD_APP)
     add_subdirectory(src/app)
 endif()
 
-if(MIDIPAD_BUILD_TESTS)
+if(MIDIPAD_BUILD_TESTS AND MIDIPAD_TESTS_PRESENT)
     enable_testing()
     add_subdirectory(tests)
 endif()
