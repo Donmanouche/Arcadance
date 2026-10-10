@@ -217,6 +217,16 @@ Les contrôles portent les noms de l'API gamepad de SDL3 (`south`, `left_x`,
   droite de « now », le piano roll montre en contour ce que la boucle va jouer
   ensuite. Un clic sur le panneau règle le mode de lecture (champ
   `loops.notes` du preset).
+- **Overdub** : quand une boucle de notes tourne, un appui bref (moins de
+  500 ms, sans rien jouer) sur « Loop record » active l'overdub : les notes
+  jouées ensuite (boutons, croix, gâchettes, et aussi les pads du touchpad)
+  s'ajoutent à la boucle là où elle joue, sans en changer la durée. Un second
+  appui bref le désactive. Pendant l'overdub, le piano roll affiche
+  « OVERDUB » en orange et le pad du bouton Record est cerclé d'orange.
+  Maintenir « Loop record » en jouant enregistre une nouvelle boucle de
+  notes, qui remplace l'ancienne. Un appui long sans rien jouer, ou un appui
+  bref sans boucle de notes, arrête les boucles du canal. Les autres boucles
+  (sticks, gâchettes, touchpad en mode CC) ne sont pas concernées.
 - **Freeze** : gèle l'axe à sa valeur courante. Dans la vue animée, la fleur
   reste bleu glacé et suit le stick ; une silhouette et un réticule, bleus
   pour le stick gauche, jaunes pour le droit, marquent l'endroit du gel

@@ -39,6 +39,7 @@ struct LoopStatus {
     enum class State : std::uint8_t { Empty, Recording, Playing } state = State::Empty;
     bool waiting = false;  // Record held, this source has not moved yet
     bool zones = false;    // a finger in 4-pad mode: the samples are pads (0-3), not X/Y
+    bool overdub = false;  // a note loop taking the notes played on top of it
     int length = 0;        // samples, at Engine::kLoopRateHz
     int position = 0;      // sample playing now
     int direction = 1;     // 1 forwards, -1 backwards
@@ -90,10 +91,15 @@ public:
     // played. A finger in 4-pad mode records the pads it plays: the loop plays
     // them again (as mapped), and cuts what still sounds when it starts over. On release each recording plays in a loop on its own
     // CCs (Mapping::loops), beside the stick or finger. Every channel's loops
-    // play at once. A hold where nothing moves stops the active channel's loops.
+    // play at once.
+    // A press where nothing moves: short (under kLoopTapMs) while the active
+    // channel's note loop plays, it turns overdub on or off: the notes then
+    // played (buttons, D-pad, triggers, pads) join the loop where it plays;
+    // otherwise it stops the active channel's loops.
     static constexpr int kLoopRateHz = 200;
     static constexpr int kMaxLoopSamples = 60 * kLoopRateHz;
     static constexpr float kLoopMoveThreshold = 0.06f;  // of the [0, 1] travel
+    static constexpr int kLoopTapMs = 500;
     LoopStatus loopStatus(int channel, int source) const;
     // [0, 1]; axis 0: X, 1: Y (a finger's Y grows downwards); for a 4-pad
     // loop, the pad (0-3). Negative while a finger was lifted.
@@ -168,6 +174,7 @@ private:
     void playLoopPads(std::size_t loop);
     void playLoopNotes(std::size_t loop);
     void recordNote(int channel, int note, int velocity, std::uint64_t at);
+    void overdubNote(int channel, int note, int velocity, std::uint64_t at);
     void emit(const MidiMessage& message, bool fromLoop);  // to the sink, telling the observer of notes
     void silenceLoop(std::size_t loop);
     // Sends `message` at `at` (now if it is not later); in time order.
@@ -248,6 +255,8 @@ private:
     std::array<std::bitset<128>, kChannelCount> noteLoopOn_{};
     std::array<std::uint8_t, 128> noteVelocity_{};  // of the last note-on recorded, for its release
     std::uint64_t noteRecordStart_ = 0;
+    int overdubChannel_ = -1;        // the channel whose note loop takes new notes
+    std::uint64_t holdStartedAt_ = 0;  // when Record went down
     std::array<std::array<float, 2>, kFingerCount> fingerPosition_{};  // raw touchpad X, Y
     std::array<bool, kFingerCount> fingerDown_{};
     std::array<float, 4> stickPosition_{0.5f, 0.5f, 0.5f, 0.5f};  // [0, 1], LeftX..RightY

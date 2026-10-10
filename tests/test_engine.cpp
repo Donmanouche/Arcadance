@@ -934,3 +934,105 @@ TEST_CASE_FIXTURE(ZonesFixture, "pads are not recorded into the note loop") {
     CHECK(engine.loopStatus(0, kNotes).state == LoopStatus::State::Empty);
     CHECK(engine.loopStatus(0, 2).state == LoopStatus::State::Playing);  // the pad loop has them
 }
+
+namespace {
+
+// A note loop of `steps` steps on channel 1: North held for its first step.
+void recordShortLoop(NoteLoopFixture& fx, int steps) {
+    fx.engine.tick(fx.t);
+    fx.engine.buttonChanged(Button::South, true);
+    fx.hold(Button::North, 1);
+    for (int i = 1; i < steps; ++i)
+        fx.step();
+    fx.engine.buttonChanged(Button::South, false);
+    fx.sink.take();
+}
+
+void tapRecord(NoteLoopFixture& fx) {
+    fx.engine.buttonChanged(Button::South, true);
+    fx.step();
+    fx.engine.buttonChanged(Button::South, false);
+}
+
+}  // namespace
+
+TEST_CASE_FIXTURE(NoteLoopFixture, "a tap of Record over a playing note loop turns overdub on and off") {
+    recordShortLoop(*this, 8);
+    REQUIRE(engine.loopStatus(0, kNotes).state == LoopStatus::State::Playing);
+    tapRecord(*this);
+    CHECK(engine.loopStatus(0, kNotes).overdub);
+    CHECK(engine.loopStatus(0, kNotes).state == LoopStatus::State::Playing);  // not stopped
+    tapRecord(*this);
+    CHECK_FALSE(engine.loopStatus(0, kNotes).overdub);
+}
+
+TEST_CASE_FIXTURE(NoteLoopFixture, "notes played while overdubbing join the note loop") {
+    recordShortLoop(*this, 8);
+    tapRecord(*this);
+    NoteInterval notes[16];
+    REQUIRE(engine.noteLoopIntervals(0, notes, 16) == 1);
+    hold(Button::East, 1);  // a C chord, added where the loop plays
+    CHECK(engine.noteLoopIntervals(0, notes, 16) == 4);
+    // It plays again on the next turn, from the loop.
+    bool replayed = false;
+    for (int i = 0; i < 10; ++i) {
+        step();
+        for (const auto& m : sink.take())
+            replayed |= (m.bytes[0] & 0xF0) == 0x90 && m.bytes[1] == 67;
+    }
+    CHECK(replayed);
+}
+
+TEST_CASE_FIXTURE(NoteLoopFixture, "a long press without playing stops the loops, overdub included") {
+    recordShortLoop(*this, 8);
+    tapRecord(*this);
+    engine.buttonChanged(Button::South, true);
+    for (int i = 0; i < 110; ++i)  // 550 ms
+        step();
+    engine.buttonChanged(Button::South, false);
+    CHECK(engine.loopStatus(0, kNotes).state == LoopStatus::State::Empty);
+    CHECK_FALSE(engine.loopStatus(0, kNotes).overdub);
+}
+
+TEST_CASE_FIXTURE(NoteLoopFixture, "recording notes again replaces them and ends the overdub") {
+    recordShortLoop(*this, 8);
+    tapRecord(*this);
+    engine.buttonChanged(Button::South, true);
+    hold(Button::East, 2);
+    step();
+    engine.buttonChanged(Button::South, false);
+    NoteInterval notes[16];
+    CHECK(engine.noteLoopIntervals(0, notes, 16) == 3);  // only the chord
+    CHECK_FALSE(engine.loopStatus(0, kNotes).overdub);
+}
+
+TEST_CASE_FIXTURE(NoteLoopFixture, "a tap with no note loop still stops the other loops") {
+    recordLeft();
+    tapRecord(*this);
+    CHECK(engine.loopStatus(0, 0).state == LoopStatus::State::Empty);
+}
+
+TEST_CASE_FIXTURE(ZonesFixture, "pads played while overdubbing join the note loop") {
+    Preset p = engine.preset();
+    button(p, Button::North) = note(60);
+    p.base.fingers[0].zones[static_cast<std::size_t>(Zone::TopLeft)] = note(72);
+    load(p);
+    engine.tick(t);
+    engine.buttonChanged(Button::South, true);
+    engine.buttonChanged(Button::North, true);
+    step();
+    engine.buttonChanged(Button::North, false);
+    for (int i = 0; i < 6; ++i)
+        step();
+    engine.buttonChanged(Button::South, false);
+    engine.buttonChanged(Button::South, true);  // tap: overdub
+    step();
+    engine.buttonChanged(Button::South, false);
+    REQUIRE(engine.loopStatus(0, kNotes).overdub);
+    engine.touchMoved(0, 0.2f, 0.2f);
+    step();
+    engine.touchReleased(0);
+    NoteInterval notes[16];
+    REQUIRE(engine.noteLoopIntervals(0, notes, 16) == 2);
+    CHECK((notes[0].note == 72 || notes[1].note == 72));
+}

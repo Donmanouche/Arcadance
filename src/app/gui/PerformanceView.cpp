@@ -388,10 +388,10 @@ void PerformanceView::drawPianoRoll(const Mapping& m, const LiveState& live, flo
         status = "REC  \xC2\xB7  play notes";
         statusColor = T::kRed;
     } else if (playing) {
-        status = std::string("LOOP  ") +
+        status = std::string(st.overdub ? "OVERDUB  " : "LOOP  ") +
                  (lb.playback == LoopPlayback::Forward ? "FWD" : lb.playback == LoopPlayback::Reverse ? "REV" : "BACK & FORTH") +
                  "  \xC2\xB7  " + seconds;
-        statusColor = kViolet;
+        statusColor = st.overdub ? T::kOrange : kViolet;
     }
 
     // Geometry: keyboard, then the roll; "now" at two thirds.
@@ -509,7 +509,8 @@ void PerformanceView::drawPianoRoll(const Mapping& m, const LiveState& live, flo
     dl->PopClipRect();
 
     if (any || playing) {
-        dl->AddLine(ImVec2(nowX, ay0), ImVec2(nowX, ay1), recording ? alpha(T::kRed, 0.9f) : IM_COL32(255, 255, 255, 190), px(1.3f));
+        dl->AddLine(ImVec2(nowX, ay0), ImVec2(nowX, ay1),
+                    recording ? alpha(T::kRed, 0.9f) : st.overdub ? T::kOrange : IM_COL32(255, 255, 255, 190), px(st.overdub ? 2.0f : 1.3f));
     } else {
         text(dl, gMedium, px(11), (gx0 + ax1) * 0.5f, (ay0 + ay1) * 0.5f, st.waiting ? T::kLabel : T::kDim,
              st.waiting ? "waiting for notes\xE2\x80\xA6" : "notes played appear here  \xC2\xB7  hold Record and play to loop them",
@@ -1349,6 +1350,8 @@ void PerformanceView::drawButtons(const Mapping& m, const LiveState& live, float
 
         // Name, then what it plays, then the toggle mark.
         const auto& binding = m.buttons[static_cast<std::size_t>(pd.button)];
+        if (binding.type == ActionType::LoopRecord && live.loops[static_cast<std::size_t>(LoopSource::Notes)].status.overdub)
+            dl->AddCircle(c, r + px(4), T::kOrange, 0, px(2.5f));  // overdubbing
         float ty = cy + r + px(11);
         text(dl, gMedium, px(12), cx, ty, T::kLabel, fit(gMedium, px(12), label(pd.button), slot - 2), H::Center, V::Middle);
         ty += px(14);

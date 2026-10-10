@@ -321,7 +321,8 @@ void Engine::press(int slot) {
     }
 
     Sounding sounding = soundingFor(binding, channel_);
-    sounding.recordable = slot < kZoneSlotBase;  // the pads have their own loops
+    // The pads have their own loops, except when overdubbing notes.
+    sounding.recordable = slot < kZoneSlotBase || (overdubChannel_ == channel_ && recordHolders_.none());
     if (binding.mode == Mode::Momentary) {
         start(sounding);
         held_[static_cast<std::size_t>(slot)] = sounding;
@@ -469,6 +470,7 @@ bool Engine::sourcePosition(int source, float& x, float& y) const {
 void Engine::beginRecordHold() {
     recordedThisHold_ = false;
     holdChannel_ = channel_;
+    holdStartedAt_ = now_;
     for (int s = 0; s < kLoopSourceCount; ++s) {
         auto& start = holdStart_[static_cast<std::size_t>(s)];
         holdStartOn_[static_cast<std::size_t>(s)] = sourcePosition(s, start[0], start[1]);
@@ -513,8 +515,16 @@ void Engine::endRecordHold() {
             loop.sentX = loop.sentY = -1;
         }
     }
-    if (!recordedThisHold_)
-        stopLoops(holdChannel_);  // Record pressed without moving anything
+    if (recordedThisHold_)
+        return;
+    // Record pressed without moving anything: a tap over a playing note loop
+    // turns its overdub on or off, anything else stops the loops.
+    const bool tap = now_ - holdStartedAt_ < static_cast<std::uint64_t>(kLoopTapMs) * 1'000'000u;
+    const Loop& notes = loops_[loopIndex(holdChannel_, static_cast<int>(LoopSource::Notes))];
+    if (tap && notes.state == LoopStatus::State::Playing)
+        overdubChannel_ = overdubChannel_ == holdChannel_ ? -1 : holdChannel_;
+    else
+        stopLoops(holdChannel_);
 }
 
 void Engine::runLoops() {
@@ -744,6 +754,12 @@ void Engine::recordNote(int channel, int note, int velocity, std::uint64_t at) {
         noteRecordStart_ = now_;
         noteEvents_[static_cast<std::size_t>(channel)].clear();
         recordedThisHold_ = true;
+        if (overdubChannel_ == channel)
+            overdubChannel_ = -1;
+    }
+    if (loop.state == LoopStatus::State::Playing && channel == overdubChannel_) {
+        overdubNote(channel, note, velocity, at);
+        return;
     }
     auto& events = noteEvents_[static_cast<std::size_t>(channel)];
     if (loop.state != LoopStatus::State::Recording || events.size() >= kMaxNoteEvents || at < noteRecordStart_)
@@ -754,6 +770,26 @@ void Engine::recordNote(int channel, int note, int velocity, std::uint64_t at) {
     if (velocity > 0)
         noteVelocity_[n] = static_cast<std::uint8_t>(velocity);
     events.push_back({sample, static_cast<std::uint8_t>(n), noteVelocity_[n], velocity > 0});
+}
+
+// Adds a note played over a channel's note loop where the loop plays it,
+// kept in the loop's order: played backwards, its release is where it starts.
+void Engine::overdubNote(int channel, int note, int velocity, std::uint64_t at) {
+    const Loop& loop = loops_[loopIndex(channel, static_cast<int>(LoopSource::Notes))];
+    auto& events = noteEvents_[static_cast<std::size_t>(channel)];
+    if (events.size() >= kMaxNoteEvents || loop.length < 2)
+        return;
+    constexpr std::uint64_t kStep = 1'000'000'000ull / kLoopRateHz;
+    const auto ahead = static_cast<int>((at > now_ ? at - now_ : 0) / kStep);  // a humanized delay
+    const int position = ((loop.position + loop.direction * ahead) % loop.length + loop.length) % loop.length;
+    const auto n = static_cast<std::size_t>(note & 0x7F);
+    if (velocity > 0)
+        noteVelocity_[n] = static_cast<std::uint8_t>(velocity);
+    const bool on = loop.direction > 0 ? velocity > 0 : velocity == 0;
+    const NoteEvent event{position, static_cast<std::uint8_t>(n), noteVelocity_[n], on};
+    const auto where = std::upper_bound(events.begin(), events.end(), position,
+                                        [](int at2, const NoteEvent& e) { return at2 < e.at; });
+    events.insert(where, event);  // the vector has its capacity: no allocation
 }
 
 // A note loop at its current step: its notes there start or stop; played
@@ -817,7 +853,8 @@ LoopStatus Engine::loopStatus(int channel, int source) const {
     source = std::clamp(source, 0, kLoopSourceCount - 1);
     const Loop& loop = loops_[loopIndex(channel, source)];
     const bool waiting = waiting_[static_cast<std::size_t>(source)] && holdChannel_ == channel;
-    return {loop.state, waiting, loop.zones, loop.length, loop.position, loop.direction, channel};
+    const bool overdub = source == static_cast<int>(LoopSource::Notes) && overdubChannel_ == channel;
+    return {loop.state, waiting, loop.zones, overdub, loop.length, loop.position, loop.direction, channel};
 }
 
 float Engine::loopSample(int channel, int source, int axis, int index) const {
@@ -835,6 +872,9 @@ void Engine::clearLoop(int channel, int source) {
     Loop& loop = loops_[index];
     loop.state = LoopStatus::State::Empty;
     loop.length = 0;
+    if (index % kLoopSourceCount == static_cast<std::size_t>(LoopSource::Notes) &&
+        overdubChannel_ == static_cast<int>(index / kLoopSourceCount))
+        overdubChannel_ = -1;
 }
 
 void Engine::stopLoops(int channel) {
