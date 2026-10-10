@@ -48,6 +48,10 @@ public:
     };
     void setFonts(const Fonts& fonts) { fonts_ = fonts; }
 
+    // A note the engine sent (velocity 0: released), at `time` (ImGui::GetTime()),
+    // for the piano roll.
+    void addNote(int channel, int note, int velocity, bool fromLoop, double time);
+
     // Draws into the remaining space of the current window. Returns the
     // control clicked, as a MappingEditor::drawControl() spec ("button:south",
     // "dpad:up", "zone:1:top_left", "axis:left_x", "finger:1"...).
@@ -68,6 +72,9 @@ private:
     void drawDpad(const midipad::Mapping& m, const LiveState& live, float x, float y, float w, float h);
     void drawTouchpad(const midipad::Mapping& m, const LiveState& live, float x, float y, float w, float h);
     void drawButtons(const midipad::Mapping& m, const LiveState& live, float x, float y, float w, float h);
+    void drawScale(const std::optional<midipad::Key>& key, float x, float y, float w, float h);
+    void drawChannel(const LiveState& live, float x, float y, float w, float h);
+    void drawPianoRoll(const midipad::Mapping& m, const LiveState& live, float x, float y, float w, float h);
     void drawLoopPanel(ImDrawList* dl, float x, float w, float loopY, float bottom, const LiveState::Loop& loop,
                        const midipad::LoopBinding& binding, ImU32 colorX, ImU32 colorY, const char* idleHint,
                        const char* waitStatus, const char* id, const std::string& spec, bool upward,
@@ -91,6 +98,14 @@ private:
     }();
     std::uint32_t previousButtons_ = 0;
     std::array<Trail, midipad::kFingerCount> trails_;
+    // The notes sent recently, for the piano roll.
+    struct RollNote {
+        double start = 0, end = 0;  // `end` once released
+        std::uint8_t channel = 0, note = 0, velocity = 0;
+        bool fromLoop = false;
+        bool sounding = true;
+    };
+    std::deque<RollNote> rollNotes_;
     // Stick positions (-1..1) at the moment each axis froze, per channel; a bit
     // of frozenKnown_ per stick axis once recorded.
     std::array<std::array<float, 4>, 16> frozenAt_{};

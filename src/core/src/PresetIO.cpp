@@ -327,10 +327,10 @@ Mapping mappingFromJson(const Json& j, const std::string& where) {
     if (j.contains("loops")) {
         for (const auto& [key, value] : requireObject(j["loops"], where + ".loops").items()) {
             const std::string at = where + ".loops." + key;
-            static constexpr std::string_view kKeys[] = {"left", "right", "finger1", "finger2", "triggers"};
+            static constexpr std::string_view kKeys[] = {"left", "right", "finger1", "finger2", "triggers", "notes"};
             const auto found = std::find(std::begin(kKeys), std::end(kKeys), key);
             if (found == std::end(kKeys))
-                fail(at, "expected \"left\", \"right\", \"finger1\", \"finger2\" or \"triggers\"");
+                fail(at, "expected \"left\", \"right\", \"finger1\", \"finger2\", \"triggers\" or \"notes\"");
             const auto source = found - std::begin(kKeys);
             requireObject(value, at);
             LoopBinding& loop = m.loops[static_cast<std::size_t>(source)];
@@ -410,7 +410,7 @@ Json mappingToJson(const Mapping& m) {
                                                                   : "back_and_forth";
         lj["cc_x"] = loop.ccX;
         lj["cc_y"] = loop.ccY;
-        static constexpr const char* kKeys[] = {"left", "right", "finger1", "finger2", "triggers"};
+        static constexpr const char* kKeys[] = {"left", "right", "finger1", "finger2", "triggers", "notes"};
         loops[kKeys[s]] = lj;
     }
     if (!loops.empty())

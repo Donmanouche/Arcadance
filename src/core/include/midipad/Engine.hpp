@@ -24,6 +24,14 @@ public:
     virtual void channelChanged(int /*channel*/) {}
     // One bit per Axis that is now frozen on `channel`.
     virtual void freezeChanged(int /*channel*/, std::uint8_t /*frozenAxes*/) {}
+    // A note sent (velocity 0: its release), by a loop or not.
+    virtual void noteSent(int /*channel*/, int /*note*/, int /*velocity*/, bool /*fromLoop*/) {}
+};
+
+// One note of a note loop, in loop samples (Engine::kLoopRateHz).
+struct NoteInterval {
+    std::int32_t start = 0, end = 0;
+    std::uint8_t note = 0, velocity = 0;
 };
 
 // What a loop is doing, for display.
@@ -33,6 +41,7 @@ struct LoopStatus {
     bool zones = false;    // a finger in 4-pad mode: the samples are pads (0-3), not X/Y
     int length = 0;        // samples, at Engine::kLoopRateHz
     int position = 0;      // sample playing now
+    int direction = 1;     // 1 forwards, -1 backwards
     int channel = 0;
 };
 
@@ -90,7 +99,12 @@ public:
     // loop, the pad (0-3). Negative while a finger was lifted.
     float loopSample(int channel, int source, int axis, int index) const;
     void clearLoop(int channel, int source);
+    // The notes of a channel's note loop, at most `max`; returns how many.
+    int noteLoopIntervals(int channel, NoteInterval* out, int max) const;
+    static constexpr int kMaxNoteEvents = 4096;  // per note loop
     void stopLoops(int channel);
+    // A bit per channel where a loop plays or records.
+    std::uint16_t channelsWithLoops() const;
     void stopLoops();  // every channel
     void seedRandom(std::uint64_t seed) { random_ = seed ? seed : 0x9E3779B97F4A7C15ull; }
 
@@ -130,6 +144,7 @@ private:
         std::uint8_t cc = 0, onValue = 0, offValue = 0;
         ChordNotes notes;
         bool humanized = false;
+        bool recordable = false;  // a button, D-pad or trigger note: a note loop may record it
         std::array<std::uint16_t, 9> delayMs{};  // per note, humanized: the release is delayed alike
 
         bool active() const { return type != ActionType::None; }
@@ -151,6 +166,9 @@ private:
     void runLoops();
     void sendLoopSample(std::size_t loop);
     void playLoopPads(std::size_t loop);
+    void playLoopNotes(std::size_t loop);
+    void recordNote(int channel, int note, int velocity, std::uint64_t at);
+    void emit(const MidiMessage& message, bool fromLoop);  // to the sink, telling the observer of notes
     void silenceLoop(std::size_t loop);
     // Sends `message` at `at` (now if it is not later); in time order.
     void sendAt(std::uint64_t at, const MidiMessage& message);
@@ -181,12 +199,14 @@ private:
     struct Delayed {
         std::uint64_t at = 0, order = 0;
         MidiMessage message;
+        bool fromLoop = false;
     };
     static constexpr std::size_t kMaxDelayed = 512;
     std::array<Delayed, kMaxDelayed> delayed_{};
     std::size_t delayedCount_ = 0;
     std::uint64_t delayedOrder_ = 0;
     bool immediate_ = false;  // releaseAll(): no delays
+    bool fromLoop_ = false;   // a loop is sending: for EngineObserver::noteSent
 
     struct Loop {
         LoopStatus::State state = LoopStatus::State::Empty;
@@ -217,6 +237,17 @@ private:
     std::array<std::array<float, 2>, kLoopSourceCount> holdStart_{};
     std::array<bool, kLoopSourceCount> holdStartOn_{};
     std::array<int, kFingerCount> holdStartPad_{};  // -1: none
+    // Note loops: the notes recorded per channel, sorted by `at` once recorded,
+    // and the notes each loop has on.
+    struct NoteEvent {
+        std::int32_t at = 0;  // loop sample
+        std::uint8_t note = 0, velocity = 0;
+        bool on = false;
+    };
+    std::array<std::vector<NoteEvent>, kChannelCount> noteEvents_;
+    std::array<std::bitset<128>, kChannelCount> noteLoopOn_{};
+    std::array<std::uint8_t, 128> noteVelocity_{};  // of the last note-on recorded, for its release
+    std::uint64_t noteRecordStart_ = 0;
     std::array<std::array<float, 2>, kFingerCount> fingerPosition_{};  // raw touchpad X, Y
     std::array<bool, kFingerCount> fingerDown_{};
     std::array<float, 4> stickPosition_{0.5f, 0.5f, 0.5f, 0.5f};  // [0, 1], LeftX..RightY

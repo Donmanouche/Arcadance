@@ -166,7 +166,7 @@ private:
 
     // Drawing.
     void draw();
-    bool drawKeyCombo(float width);
+    bool drawKeyChoices();
     void drawOptionsOverlay();
     void drawPerformanceStatus(const LiveState& live, float height);
     void drawPerformance(const LiveState& live);
@@ -469,6 +469,12 @@ void GuiApp::update() {
     if (const auto source = editor_.takeClearLoopRequest())
         runtime_->clearLoop(*source);
     while (runtime_->popReport()) {
+    }
+    // The notes sent, for the piano roll, at the time they were sent.
+    const std::uint64_t nowNs = SDL_GetTicksNS();
+    while (const auto n = runtime_->popNote()) {
+        const double age = static_cast<double>(nowNs > n->timeNs ? nowNs - n->timeNs : 0) * 1e-9;
+        performance_.addNote(n->channel, n->note, n->velocity, n->fromLoop, ImGui::GetTime() - age);
     }
     {
         std::lock_guard lock(pendingLogMutex_);
@@ -793,14 +799,10 @@ void GuiApp::draw() {
     ImGui::End();
 }
 
-bool GuiApp::drawKeyCombo(float width) {
-    const bool flats = settings_.key && prefersFlats(*settings_.key);
-    const std::string preview =
-        settings_.key ? pitchName(settings_.key->root, flats) + "  " + std::string(settings_.key->type().label) : "None";
+// The tonality, for every channel: a root (or none), then a scale. Drawn in
+// the menu the SCALE screen opens.
+bool GuiApp::drawKeyChoices() {
     bool changed = false;
-    ImGui::SetNextItemWidth(width);
-    if (!ImGui::BeginCombo("##key", preview.c_str(), ImGuiComboFlags_HeightLargest))
-        return false;
     const float column = ImGui::GetFontSize() * 7.5f;
     if (ImGui::BeginTable("##keytable", 2, ImGuiTableFlags_SizingFixedFit)) {
         ImGui::TableSetupColumn("root", ImGuiTableColumnFlags_WidthFixed, column * 0.75f);
@@ -835,7 +837,6 @@ bool GuiApp::drawKeyCombo(float width) {
         ImGui::EndDisabled();
         ImGui::EndTable();
     }
-    ImGui::EndCombo();
     return changed;
 }
 
@@ -947,8 +948,14 @@ void GuiApp::drawPerformance(const LiveState& live) {
         return clicked;
     };
 
-    // Channel: one framed control with arrows on both sides.
+    // Channel and preset, centered in the bar (never over PANIC).
     ImGui::SameLine(0, px(14));
+    {
+        const float groupW = px(150) + px(16) + medium->CalcTextSizeA(px(12), FLT_MAX, 0, "PRESET").x + px(8) + px(26) * 2 + px(180);
+        const float centered = winPos.x + (winW - groupW) * 0.5f;
+        ImGui::SetCursorScreenPos(ImVec2(std::max(ImGui::GetCursorScreenPos().x, centered), ImGui::GetCursorScreenPos().y));
+    }
+    // Channel: one framed control with arrows on both sides.
     {
         const ImVec2 p = ImGui::GetCursorScreenPos();
         const float w = px(150), h = px(32);
@@ -972,10 +979,6 @@ void GuiApp::drawPerformance(const LiveState& live) {
         ImGui::PopFont();
         ImGui::SameLine(0, px(8));
     };
-    caption("KEY");
-    if (drawKeyCombo(px(168)))
-        persistSettings();
-
     // Preset: arrows around a drop-down list, an orange dot when modified, SAVE next to it.
     caption("PRESET");
     {
@@ -1070,11 +1073,25 @@ void GuiApp::drawPerformance(const LiveState& live) {
     ImGui::PopStyleColor();
     drawPerformanceStatus(live, statusH);
 
-    // Clicking a control edits it in a panel over the view.
-    if (clicked) {
+    // The SCALE screen opens the tonality menu; any other control is edited
+    // in a panel over the view.
+    if (clicked && *clicked == "scale") {
+        ImGui::OpenPopup("##keymenu");
+    } else if (clicked) {
         overlayAppearing_ = overlaySpec_ != clicked;
         overlaySpec_ = clicked;
         optionsOpen_ = false;
+    }
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(px(12), px(10)));
+    ImGui::PushStyleVar(ImGuiStyleVar_PopupRounding, px(6));
+    const bool keyMenu = ImGui::BeginPopup("##keymenu");
+    ImGui::PopStyleVar(2);
+    if (keyMenu) {
+        ImGui::PushFont(medium, 14.0f);
+        if (drawKeyChoices())
+            persistSettings();
+        ImGui::PopFont();
+        ImGui::EndPopup();
     }
     if (overlaySpec_)
         drawMappingOverlay(live);

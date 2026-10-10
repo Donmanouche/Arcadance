@@ -117,6 +117,8 @@ std::string MappingEditor::controlTitle(const std::string& spec) {
         return "Touchpad finger " + p[1];
     if (p.size() == 1 && p[0] == "fingers")
         return "Touchpad";
+    if (p.size() == 1 && p[0] == "notes")
+        return "Notes";
     return spec;
 }
 
@@ -204,6 +206,8 @@ bool MappingEditor::drawControl(const std::string& spec, Mapping& m, const LiveS
         const int finger = p[1][0] - '1';
         changed |= drawFingerForm(finger, m.fingers[static_cast<std::size_t>(finger)], live);
         changed |= drawLoopForm(2 + finger, m);
+    } else if (p.size() == 1 && p[0] == "notes") {
+        changed |= drawLoopForm(static_cast<int>(LoopSource::Notes), m);
     } else if (p.size() == 1 && p[0] == "fingers") {
         for (int f = 0; f < kFingerCount; ++f) {
             ImGui::SeparatorText(f == 0 ? "Finger 1" : "Finger 2");
@@ -222,7 +226,7 @@ bool MappingEditor::drawControl(const std::string& spec, Mapping& m, const LiveS
 bool MappingEditor::drawLoopForm(int source, Mapping& m) {
     static constexpr const char* kTitles[] = {"Left stick loop (recorded movement)", "Right stick loop (recorded movement)",
                                               "Finger 1 loop (recorded movement)", "Finger 2 loop (recorded movement)",
-                                              "Triggers loop (recorded travel)"};
+                                              "Triggers loop (recorded travel)", "Note loop (recorded notes and chords)"};
     bool changed = false;
     LoopBinding& loop = m.loops[static_cast<std::size_t>(source)];
     ImGui::PushID(source);
@@ -237,6 +241,17 @@ bool MappingEditor::drawLoopForm(int source, Mapping& m) {
             loop.playback = playback;
             changed = true;
         }
+    }
+    if (source == static_cast<int>(LoopSource::Notes)) {
+        ImGui::PushStyleColor(ImGuiCol_Text, kHintColor);
+        ImGui::TextWrapped("Hold Record and play notes or chords (buttons, D-pad, triggers as buttons): they loop on "
+                           "the channel where they were played. What still sounds is cut when the loop starts over. "
+                           "The touchpad pads have their own loops.");
+        ImGui::PopStyleColor();
+        if (ImGui::Button("Clear the loop"))
+            clearLoopRequest_ = source;
+        ImGui::PopID();
+        return changed;
     }
     // What the source itself sends.
     const bool finger = source == 2 || source == 3;

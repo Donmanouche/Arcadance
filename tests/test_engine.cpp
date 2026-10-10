@@ -827,6 +827,7 @@ TEST_CASE_FIXTURE(LoopFixture, "the triggers' travel is recorded and loops on it
         step();
     }
     engine.buttonChanged(Button::South, false);
+    engine.clearLoop(0, static_cast<int>(LoopSource::Notes));  // L2's button note went into the note loop
     sink.take();
     CHECK(engine.loopStatus(0, static_cast<int>(LoopSource::Triggers)).state == LoopStatus::State::Playing);
     CHECK(engine.loopStatus(0, 0).state == LoopStatus::State::Empty);
@@ -843,4 +844,93 @@ TEST_CASE_FIXTURE(LoopFixture, "the triggers' travel is recorded and loops on it
     CHECK_FALSE(notes);
     REQUIRE(l2.size() >= 3);
     CHECK(std::vector(l2.begin(), l2.begin() + 3) == std::vector<int>{127, 64, 0});
+}
+
+namespace {
+
+constexpr int kNotes = static_cast<int>(LoopSource::Notes);
+
+struct NoteLoopFixture : LoopFixture {
+    NoteLoopFixture() {
+        Preset p = engine.preset();
+        button(p, Button::North) = note(60);
+        button(p, Button::East) = chord("C");
+        button(p, Button::West) = note(62, Mode::Toggle);
+        load(p);
+    }
+    void hold(Button b, int steps) {
+        engine.buttonChanged(b, true);
+        for (int i = 0; i < steps; ++i)
+            step();
+        engine.buttonChanged(b, false);
+    }
+};
+
+}  // namespace
+
+TEST_CASE_FIXTURE(NoteLoopFixture, "notes played while Record is held loop on their channel") {
+    engine.tick(t);
+    engine.buttonChanged(Button::South, true);
+    hold(Button::North, 2);  // starts the recording
+    step();
+    hold(Button::East, 2);   // a chord
+    step();
+    engine.buttonChanged(Button::South, false);
+    sink.take();
+    REQUIRE(engine.loopStatus(0, kNotes).state == LoopStatus::State::Playing);
+    NoteInterval notes[16];
+    CHECK(engine.noteLoopIntervals(0, notes, 16) == 4);  // 60, then C E G
+    const auto played = notesOver(*this, 7);
+    REQUIRE(played.size() >= 8);
+    CHECK(std::vector(played.begin(), played.begin() + 8) ==
+          std::vector<std::string>{"+60", "-60", "+60", "+64", "+67", "-60", "-64", "-67"});
+}
+
+TEST_CASE_FIXTURE(NoteLoopFixture, "a note loop plays backwards in reverse") {
+    Preset p = engine.preset();
+    p.base.loops[kNotes].playback = LoopPlayback::Reverse;
+    load(p);
+    engine.tick(t);
+    engine.buttonChanged(Button::South, true);
+    hold(Button::North, 1);
+    step();
+    engine.buttonChanged(Button::West, true);  // toggled on: it rings to the end of the loop
+    step();
+    engine.buttonChanged(Button::West, false);
+    step();
+    engine.buttonChanged(Button::South, false);
+    sink.take();
+    const auto played = notesOver(*this, 6);
+    REQUIRE(played.size() >= 2);
+    CHECK(played[0] == "+62");  // the end comes first, the held note sounding from there
+}
+
+TEST_CASE_FIXTURE(NoteLoopFixture, "a note still on when the note loop starts over is cut") {
+    engine.tick(t);
+    engine.buttonChanged(Button::South, true);
+    engine.buttonChanged(Button::West, true);  // toggled on, never off during the recording
+    step();
+    engine.buttonChanged(Button::West, false);
+    step();
+    step();
+    engine.buttonChanged(Button::South, false);
+    sink.take();
+    const auto played = notesOver(*this, 4);
+    REQUIRE(played.size() >= 3);
+    CHECK(std::vector(played.begin(), played.begin() + 3) == std::vector<std::string>{"+62", "-62", "+62"});
+}
+
+TEST_CASE_FIXTURE(ZonesFixture, "pads are not recorded into the note loop") {
+    Preset p = engine.preset();
+    p.base.fingers[0].zones[static_cast<std::size_t>(Zone::TopLeft)] = note(60);
+    load(p);
+    engine.tick(t);
+    engine.buttonChanged(Button::South, true);
+    engine.touchMoved(0, 0.2f, 0.2f);
+    step();
+    engine.touchReleased(0);
+    step();
+    engine.buttonChanged(Button::South, false);
+    CHECK(engine.loopStatus(0, kNotes).state == LoopStatus::State::Empty);
+    CHECK(engine.loopStatus(0, 2).state == LoopStatus::State::Playing);  // the pad loop has them
 }

@@ -92,6 +92,10 @@ public:
         r.frozenAxes = frozenAxes;
         runtime_.report(r);
     }
+    void noteSent(int channel, int note, int velocity, bool fromLoop) override {
+        runtime_.notes_.push({SDL_GetTicksNS(), static_cast<std::uint8_t>(channel), static_cast<std::uint8_t>(note),
+                              static_cast<std::uint8_t>(velocity), fromLoop});  // dropped if the window lags
+    }
 
 private:
     Runtime& runtime_;
@@ -145,9 +149,12 @@ LiveState Runtime::live() const {
     s.channel = channel_.load(std::memory_order_relaxed);
     s.frozenAxes = frozen_.load(std::memory_order_relaxed);
     s.sounding = sounding_.load(std::memory_order_relaxed);
+    s.loopChannels = loopChannels_.load(std::memory_order_relaxed);
     {
         std::lock_guard lock(loopsMutex_);
         s.loops = loops_;
+        s.noteLoop = noteLoop_;
+        s.noteLoopCount = noteLoopCount_;
     }
     std::lock_guard lock(nameMutex_);
     s.gamepadName = gamepadName_;
@@ -209,6 +216,7 @@ void Runtime::publish(const GamepadInput& gamepad, const Engine& engine) {
             frozen = static_cast<std::uint8_t>(frozen | (1u << a));
     frozen_.store(frozen, std::memory_order_relaxed);
     sounding_.store(engine.soundingSlots(), std::memory_order_relaxed);
+    loopChannels_.store(engine.channelsWithLoops(), std::memory_order_relaxed);
 
     // The loops, if the main thread is not reading them right now.
     std::unique_lock lock(loopsMutex_, std::try_to_lock);
@@ -219,7 +227,7 @@ void Runtime::publish(const GamepadInput& gamepad, const Engine& engine) {
         LiveState::Loop& loop = loops_[static_cast<std::size_t>(s)];
         loop.status = engine.loopStatus(channel, s);
         const int length = loop.status.length;
-        loop.points = std::min(length, LiveState::Loop::kPoints);
+        loop.points = s == static_cast<int>(LoopSource::Notes) ? 0 : std::min(length, LiveState::Loop::kPoints);
         for (int i = 0; i < loop.points; ++i) {
             const int at = loop.points > 1 ? static_cast<int>(static_cast<long long>(i) * (length - 1) / (loop.points - 1)) : 0;
             const float x = engine.loopSample(channel, s, 0, at), y = engine.loopSample(channel, s, 1, at);
@@ -229,6 +237,7 @@ void Runtime::publish(const GamepadInput& gamepad, const Engine& engine) {
             loop.y[static_cast<std::size_t>(i)] = static_cast<std::uint8_t>(std::lround(std::max(y, 0.0f) * scale));
         }
     }
+    noteLoopCount_ = engine.noteLoopIntervals(channel, noteLoop_.data(), LiveState::kMaxNoteLoopNotes);
 }
 
 void Runtime::run(std::stop_token stop, Options options, std::shared_ptr<const Preset> preset) {

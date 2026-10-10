@@ -134,24 +134,6 @@ void led(ImDrawList* dl, ImVec2 c, float r, ImU32 col, bool on) {
     dl->AddCircleFilled(c, r, on ? col : shade(col, 0.35f));
 }
 
-// A knob showing `value` in [0, 1]: dark body, track, colored arc. The value
-// itself is printed below by the caller.
-void knob(ImDrawList* dl, ImVec2 c, float r, float value, ImU32 accent, bool enabled) {
-    const float a0 = 0.75f * kPi, a1 = 2.25f * kPi;
-    const float a = a0 + (a1 - a0) * std::clamp(value, 0.0f, 1.0f);
-    dl->PathArcTo(c, r * 1.2f, a0, a1, 48);
-    dl->PathStroke(kTrack, r * 0.17f);
-    if (enabled) {
-        dl->PathArcTo(c, r * 1.2f, a0, a, 48);
-        dl->PathStroke(accent, r * 0.17f);
-    }
-    dl->AddCircleFilled(ImVec2(c.x, c.y + r * 0.06f), r * 0.95f, IM_COL32(0, 0, 0, 90));
-    dl->AddCircleFilled(c, r * 0.92f, kKnob);
-    dl->AddCircleFilled(ImVec2(c.x - r * 0.1f, c.y - r * 0.12f), r * 0.66f, mix(kKnob, IM_COL32_WHITE, 0.07f));
-    const ImVec2 tip(c.x + std::cos(a) * r * 0.68f, c.y + std::sin(a) * r * 0.68f);
-    dl->AddCircleFilled(tip, r * 0.1f, enabled ? accent : T::kDim);
-}
-
 // A CRT-like screen: dark glass, content, scanlines and a vignette.
 template <typename Content>
 void screen(ImDrawList* dl, ImVec2 a, ImVec2 b, ImU32 tint, Content&& content) {
@@ -214,13 +196,6 @@ float stickPosition(const LiveState& live, Axis a) {
 float axisPosition01(const LiveState& live, Axis a) {
     const float raw = static_cast<float>(live.axes[static_cast<std::size_t>(a)]) / 32767.0f;
     return std::clamp(isTrigger(a) ? raw : (raw + 1.0f) * 0.5f, 0.0f, 1.0f);
-}
-
-// The CC an axis binding sends for a [0, 1] position.
-int ccValue(const AxisBinding& b, float position) {
-    if (b.invert)
-        position = 1.0f - position;
-    return b.min + static_cast<int>(std::lround(position * static_cast<float>(b.max - b.min)));
 }
 
 std::optional<HatDir> liveHat(const LiveState& live) {
@@ -288,7 +263,17 @@ struct ScreenBox {
     ImVec2 a, b;
 };
 
+// Where the LOOP panels start below their module's screen, the same in every
+// module so their boxes line up.
+float loopOffset() { return px(108); }
+
+// The height the modules' screens are sized from: the whole top row, so every
+// module has the same screen whatever its own height.
+float gScreenRef = 0;
+
 ScreenBox screenBox(float x, float top, float w, float h) {
+    if (gScreenRef > 0)
+        h = gScreenRef;
     const float pad = px(10);
     const float sh = std::clamp(h * 0.30f, px(100), (w - 2 * pad) * 0.85f);
     return {ImVec2(x + pad, top + px(10)), ImVec2(x + w - pad, top + px(10) + sh)};
@@ -329,25 +314,296 @@ std::optional<std::string> PerformanceView::draw(const Mapping& mapping, const L
     const ImVec2 origin = ImGui::GetCursorScreenPos();
     const ImVec2 avail = ImGui::GetContentRegionAvail();
     const float gap = px(8);
-    const float stripH = std::clamp(avail.y * 0.31f, px(220), px(260));
+    const float stripH = px(114);
     const float topH = avail.y - stripH - gap;
+    gScreenRef = topH;
     const float colW = (avail.x - 4 * gap) / 5.0f;
 
+    // The modules, all as tall; below them the piano roll (under the sticks
+    // and triggers), the scale and the channel.
+    const float lowH = std::clamp(topH * 0.23f, px(120), px(150));
+    const float moduleH = topH - lowH - gap;
+    const float lowY = origin.y + moduleH + gap;
     float x = origin.x;
-    drawStick(0, mapping, live, x, origin.y, colW, topH);
+    drawStick(0, mapping, live, x, origin.y, colW, moduleH);
     x += colW + gap;
-    drawStick(1, mapping, live, x, origin.y, colW, topH);
+    drawStick(1, mapping, live, x, origin.y, colW, moduleH);
     x += colW + gap;
-    drawTriggers(mapping, live, x, origin.y, colW, topH);
+    drawTriggers(mapping, live, x, origin.y, colW, moduleH);
+    drawPianoRoll(mapping, live, origin.x, lowY, colW * 3 + gap * 2, lowH);
     x += colW + gap;
-    drawDpad(mapping, live, x, origin.y, colW, topH);
+    drawDpad(mapping, live, x, origin.y, colW, moduleH);
+    drawScale(key, x, lowY, colW, lowH);
     x += colW + gap;
-    drawTouchpad(mapping, live, x, origin.y, colW, topH);
+    drawTouchpad(mapping, live, x, origin.y, colW, moduleH);
+    drawChannel(live, x, lowY, colW, lowH);
     drawButtons(mapping, live, origin.x, origin.y + topH + gap, avail.x, stripH);
 
     ImGui::SetCursorScreenPos(ImVec2(origin.x, origin.y + avail.y));
     ImGui::Dummy(ImVec2(0, 0));
     return clicked_;
+}
+
+void PerformanceView::addNote(int channel, int note, int velocity, bool fromLoop, double time) {
+    if (velocity > 0) {
+        rollNotes_.push_back({time, time, static_cast<std::uint8_t>(channel), static_cast<std::uint8_t>(note),
+                              static_cast<std::uint8_t>(velocity), fromLoop, true});
+    } else {
+        for (auto it = rollNotes_.rbegin(); it != rollNotes_.rend(); ++it) {
+            if (it->sounding && it->channel == channel && it->note == note) {
+                it->end = time;
+                it->sounding = false;
+                break;
+            }
+        }
+    }
+    // Keep what the roll can still show.
+    while (rollNotes_.size() > 1024 || (!rollNotes_.empty() && !rollNotes_.front().sounding && rollNotes_.front().end < time - 8.0))
+        rollNotes_.pop_front();
+}
+
+// The notes and chords sent on the active channel: the last seconds left of
+// "now", and on its right what the note loop will play next.
+void PerformanceView::drawPianoRoll(const Mapping& m, const LiveState& live, float x, float y, float w, float h) {
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    constexpr auto kNotes = static_cast<std::size_t>(LoopSource::Notes);
+    const LoopStatus& st = live.loops[kNotes].status;
+    const LoopBinding& lb = m.loops[kNotes];
+    const bool recording = st.state == LoopStatus::State::Recording;
+    const bool playing = st.state == LoopStatus::State::Playing;
+    const ImU32 kViolet = IM_COL32(0xB0, 0x8C, 0xFF, 255);
+    const ImU32 kLive = IM_COL32(0xEB, 0xEE, 0xF2, 255);
+    // No title bar: the roll fills its block, its state shows top right.
+    dl->AddRectFilled(ImVec2(x, y), ImVec2(x + w, y + h), T::kPanel, px(8));
+    dl->AddRect(ImVec2(x, y), ImVec2(x + w, y + h), T::kBorder, px(8), px(1));
+
+    char seconds[16];
+    std::snprintf(seconds, sizeof seconds, "%.1f s", static_cast<double>(st.length) / Engine::kLoopRateHz);
+    std::string status;
+    ImU32 statusColor = T::kDim;
+    if (recording) {
+        status = std::string("REC  ") + seconds;
+        statusColor = T::kRed;
+    } else if (st.waiting) {
+        status = "REC  \xC2\xB7  play notes";
+        statusColor = T::kRed;
+    } else if (playing) {
+        status = std::string("LOOP  ") +
+                 (lb.playback == LoopPlayback::Forward ? "FWD" : lb.playback == LoopPlayback::Reverse ? "REV" : "BACK & FORTH") +
+                 "  \xC2\xB7  " + seconds;
+        statusColor = kViolet;
+    }
+
+    // Geometry: keyboard, then the roll; "now" at two thirds.
+    const float ax0 = x + px(12), ay0 = y + px(10), ax1 = x + w - px(12), ay1 = y + h - px(10);
+    if (ay1 - ay0 < px(30))
+        return;
+    const float keyW = px(20), gx0 = ax0 + keyW + px(16);
+    constexpr double kPast = 4.0, kFuture = 2.0;
+    const float nowX = gx0 + (ax1 - gx0) * static_cast<float>(kPast / (kPast + kFuture));
+    const float pxPerSec = (nowX - gx0) / static_cast<float>(kPast);
+    auto xAt = [&](double t) { return nowX + static_cast<float>(t - time_) * pxPerSec; };
+
+    // The range: the notes in view, two octaves at least, eased.
+    int lo = 127, hi = 0;
+    for (const RollNote& n : rollNotes_)
+        if (n.channel == live.channel && (n.sounding || n.end > time_ - kPast)) {
+            lo = std::min<int>(lo, n.note);
+            hi = std::max<int>(hi, n.note);
+        }
+    if (playing || recording)
+        for (int i = 0; i < live.noteLoopCount; ++i) {
+            lo = std::min<int>(lo, live.noteLoop[static_cast<std::size_t>(i)].note);
+            hi = std::max<int>(hi, live.noteLoop[static_cast<std::size_t>(i)].note);
+        }
+    if (lo > hi) {
+        lo = 48;
+        hi = 72;
+    }
+    if (hi - lo < 24) {
+        const int c = (lo + hi) / 2;
+        lo = c - 12;
+        hi = c + 12;
+    }
+    const float low = smooth(62, static_cast<float>(lo - 1), 6.0f), high = smooth(63, static_cast<float>(hi + 1), 6.0f);
+    const float rowH = (ay1 - ay0) / std::max(high - low, 1.0f);
+    auto yOf = [&](int note) { return ay1 - (static_cast<float>(note) - low) * rowH; };  // bottom of its row
+
+    dl->PushClipRect(ImVec2(ax0, ay0), ImVec2(ax1, ay1), true);
+    dl->AddRectFilled(ImVec2(gx0 - px(2), ay0), ImVec2(ax1, ay1), kGraph, px(3));
+    for (int n = static_cast<int>(std::floor(low)); n <= static_cast<int>(std::ceil(high)); ++n) {
+        const float yb = yOf(n), yt = yb - rowH;
+        const bool black = n % 12 == 1 || n % 12 == 3 || n % 12 == 6 || n % 12 == 8 || n % 12 == 10;
+        dl->AddRectFilled(ImVec2(ax0, yt), ImVec2(ax0 + keyW, yb - 0.5f), black ? IM_COL32(0x2A, 0x2C, 0x30, 255) : IM_COL32(0xCD, 0xD0, 0xD6, 255));
+        if (black)
+            dl->AddRectFilled(ImVec2(gx0, yt), ImVec2(ax1, yb), IM_COL32(0, 0, 0, 40));
+        if (n % 12 == 0) {
+            dl->AddLine(ImVec2(gx0, yb), ImVec2(ax1, yb), IM_COL32(255, 255, 255, 30));
+            text(dl, gBold, px(8), ax0 + keyW + px(2), yb - rowH * 0.5f, T::kDim, "C" + std::to_string(n / 12 - 1), H::Left, V::Middle);
+        }
+    }
+    // Half-second lines, scrolling with time.
+    for (double t = std::floor(time_ * 2.0) / 2.0 + 0.5 * 4; xAt(t) > gx0; t -= 0.5)
+        if (xAt(t) < ax1)
+            dl->AddLine(ImVec2(xAt(t), ay0), ImVec2(xAt(t), ay1), IM_COL32(255, 255, 255, 18));
+
+    // What was played: white, or violet from a loop; brighter when louder.
+    bool any = false;
+    for (const RollNote& n : rollNotes_) {
+        if (n.channel != live.channel)
+            continue;
+        const double end = n.sounding ? time_ : n.end;
+        if (end < time_ - kPast)
+            continue;
+        any = true;
+        const float yb = yOf(n.note);
+        const float a = 0.55f + 0.45f * static_cast<float>(n.velocity) / 127.0f;
+        dl->AddRectFilled(ImVec2(std::max(xAt(n.start), gx0), yb - rowH + 0.5f), ImVec2(std::max(xAt(end), xAt(n.start) + px(2)), yb - 0.5f),
+                          alpha(n.fromLoop ? kViolet : kLive, a), px(1));
+    }
+
+    // What the note loop plays next: its steps simulated over the next seconds.
+    if (playing && st.length > 1 && live.noteLoopCount > 0) {
+        any = true;
+        constexpr int kStride = 2;
+        const int steps = static_cast<int>(kFuture * Engine::kLoopRateHz) / kStride;
+        std::array<int, LiveState::kMaxNoteLoopNotes> runStart;
+        runStart.fill(-1);
+        int p = st.position, d = st.direction;
+        auto drawRun = [&](int i, int from, int to) {
+            const NoteInterval& n = live.noteLoop[static_cast<std::size_t>(i)];
+            const float xa = nowX + static_cast<float>(from * kStride) / Engine::kLoopRateHz * pxPerSec;
+            const float xb = nowX + static_cast<float>(to * kStride) / Engine::kLoopRateHz * pxPerSec;
+            const float yb = yOf(n.note);
+            dl->AddRect(ImVec2(xa, yb - rowH + 0.5f), ImVec2(std::max(xb, xa + px(2)), yb - 0.5f), alpha(kViolet, 0.85f), px(1), px(1));
+        };
+        for (int k = 0; k <= steps; ++k) {
+            for (int i = 0; i < live.noteLoopCount; ++i) {
+                const NoteInterval& n = live.noteLoop[static_cast<std::size_t>(i)];
+                const bool on = k < steps && p >= n.start && p < n.end;
+                if (on && runStart[static_cast<std::size_t>(i)] < 0)
+                    runStart[static_cast<std::size_t>(i)] = k;
+                if (!on && runStart[static_cast<std::size_t>(i)] >= 0) {
+                    drawRun(i, runStart[static_cast<std::size_t>(i)], k);
+                    runStart[static_cast<std::size_t>(i)] = -1;
+                }
+            }
+            for (int s2 = 0; s2 < kStride; ++s2) {  // as the engine steps
+                if (lb.playback == LoopPlayback::Forward) {
+                    p = (p + 1) % st.length;
+                } else if (lb.playback == LoopPlayback::Reverse) {
+                    p = (p - 1 + st.length) % st.length;
+                } else {
+                    p += d;
+                    if (p >= st.length) {
+                        d = -1;
+                        p = std::max(0, st.length - 2);
+                    } else if (p < 0) {
+                        d = 1;
+                        p = std::min(1, st.length - 1);
+                    }
+                }
+            }
+        }
+    }
+    dl->PopClipRect();
+
+    if (any || playing) {
+        dl->AddLine(ImVec2(nowX, ay0), ImVec2(nowX, ay1), recording ? alpha(T::kRed, 0.9f) : IM_COL32(255, 255, 255, 190), px(1.3f));
+    } else {
+        text(dl, gMedium, px(11), (gx0 + ax1) * 0.5f, (ay0 + ay1) * 0.5f, st.waiting ? T::kLabel : T::kDim,
+             st.waiting ? "waiting for notes\xE2\x80\xA6" : "notes played appear here  \xC2\xB7  hold Record and play to loop them",
+             H::Center, V::Middle);
+    }
+    if (!status.empty()) {
+        const float tw = textWidth(gBold, px(10), status);
+        dl->AddRectFilled(ImVec2(ax1 - tw - px(12), ay0 + px(3)), ImVec2(ax1 - px(3), ay0 + px(17)), IM_COL32(0x20, 0x22, 0x26, 230), px(4));
+        text(dl, gBold, px(10), ax1 - px(7), ay0 + px(10), statusColor, status, H::Right, V::Middle);
+    }
+    if (hoverButton("##pianoroll", ImVec2(ax0, ay0), ImVec2(ax1, ay1)))
+        click("notes");
+}
+
+// A block without a title bar, like the piano roll's.
+void plainBlock(ImDrawList* dl, float x, float y, float w, float h) {
+    dl->AddRectFilled(ImVec2(x, y), ImVec2(x + w, y + h), T::kPanel, px(8));
+    dl->AddRect(ImVec2(x, y), ImVec2(x + w, y + h), T::kBorder, px(8), px(1));
+}
+
+// The tonality, for every channel: its name over an octave of keys, the
+// scale's notes lit, the root brighter. A click opens the menu choosing it.
+void PerformanceView::drawScale(const std::optional<Key>& key, float x, float y, float w, float h) {
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    plainBlock(dl, x, y, w, h);
+    const ImVec2 a(x + px(10), y + px(10)), b(x + w - px(10), y + h - px(10));
+    if (b.y - a.y < px(30))
+        return;
+    std::array<bool, 12> inScale{};
+    if (key)
+        for (int pc : scalePitchClasses(*key))
+            inScale[static_cast<std::size_t>(((pc % 12) + 12) % 12)] = true;
+    const int root = key ? key->root : -1;
+    screen(dl, a, b, T::kBlue, [&] {
+        text(dl, gBold, px(13), (a.x + b.x) * 0.5f, a.y + px(13), key ? T::kIce : T::kDim,
+             key ? keyName(*key) : "no scale  \xC2\xB7  click to choose", H::Center, V::Middle);
+        const float kx0 = a.x + px(8), kx1 = b.x - px(8), ky0 = a.y + px(26), ky1 = b.y - px(7);
+        const float ww = (kx1 - kx0) / 7.0f;
+        static constexpr int kWhites[] = {0, 2, 4, 5, 7, 9, 11};
+        static constexpr const char* kNames[] = {"C", "D", "E", "F", "G", "A", "B"};
+        for (int i = 0; i < 7; ++i) {
+            const int pc = kWhites[i];
+            const bool on = inScale[static_cast<std::size_t>(pc)];
+            const ImU32 fill = on ? (pc == root ? T::kIce : T::kBlue) : IM_COL32(0x3C, 0x42, 0x4C, 255);
+            dl->AddRectFilled(ImVec2(kx0 + static_cast<float>(i) * ww + 1, ky0), ImVec2(kx0 + static_cast<float>(i + 1) * ww - 1, ky1), fill, px(2));
+            text(dl, gBold, px(8.5f), kx0 + (static_cast<float>(i) + 0.5f) * ww, ky1 - px(7), on ? IM_COL32(0x10, 0x12, 0x16, 255) : T::kDim,
+                 kNames[i], H::Center, V::Middle);
+        }
+        static constexpr std::pair<int, int> kBlacks[] = {{1, 0}, {3, 1}, {6, 3}, {8, 4}, {10, 5}};  // pitch, white key before it
+        for (auto [pc, before] : kBlacks) {
+            const bool on = inScale[static_cast<std::size_t>(pc)];
+            const float bx = kx0 + static_cast<float>(before + 1) * ww;
+            const ImVec2 ba(bx - ww * 0.32f, ky0), bb(bx + ww * 0.32f, ky0 + (ky1 - ky0) * 0.58f);
+            dl->AddRectFilled(ba, bb, on ? (pc == root ? T::kIce : T::kBlue) : IM_COL32(0x18, 0x1A, 0x1E, 255), px(2));
+            dl->AddRect(ba, bb, IM_COL32(0x0A, 0x0A, 0x0C, 255), px(2), px(1));
+        }
+    });
+    if (hoverButton("##scale", a, b))
+        click("scale");
+}
+
+// The active MIDI channel, large, and the sixteen channels: a violet dot on
+// those where a loop plays.
+void PerformanceView::drawChannel(const LiveState& live, float x, float y, float w, float h) {
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    plainBlock(dl, x, y, w, h);
+    const ImVec2 a(x + px(10), y + px(10)), b(x + w - px(10), y + h - px(10));
+    if (b.y - a.y < px(30))
+        return;
+    const ImU32 kViolet = IM_COL32(0xB0, 0x8C, 0xFF, 255);
+    screen(dl, a, b, T::kGreen, [&] {
+        const float numX = a.x + (b.x - a.x) * 0.24f, midY = (a.y + b.y) * 0.5f;
+        const std::string number = std::to_string(live.channel + 1);
+        const float size = std::min(px(64), (b.y - a.y) * 0.8f);
+        for (float r : {px(3), px(1.5f)})  // glow
+            for (auto [dx, dy] : {std::pair{-r, 0.0f}, {r, 0.0f}, {0.0f, -r}, {0.0f, r}})
+                text(dl, gBold, size, numX + dx, midY + dy, alpha(T::kGreen, 0.18f), number, H::Center, V::Middle);
+        text(dl, gBold, size, numX, midY, T::kGreen, number, H::Center, V::Middle);
+        // The sixteen channels, four by four.
+        const float gx0 = a.x + (b.x - a.x) * 0.48f, gx1 = b.x - px(6), gy0 = a.y + px(5), gy1 = b.y - px(5);
+        const float cw = (gx1 - gx0) / 4.0f, ch = (gy1 - gy0) / 4.0f;
+        for (int c = 0; c < 16; ++c) {
+            const ImVec2 ca(gx0 + static_cast<float>(c % 4) * cw + px(2), gy0 + static_cast<float>(c / 4) * ch + px(2));
+            const ImVec2 cb(ca.x + cw - px(4), ca.y + ch - px(4));
+            const bool active = c == live.channel;
+            dl->AddRectFilled(ca, cb, active ? alpha(T::kGreen, 0.85f) : alpha(T::kGreen, 0.10f), px(3));
+            dl->AddRect(ca, cb, alpha(T::kGreen, active ? 1.0f : 0.35f), px(3), px(1));
+            text(dl, gCondensed, px(9), (ca.x + cb.x) * 0.5f, (ca.y + cb.y) * 0.5f,
+                 active ? IM_COL32(0x0A, 0x1E, 0x12, 255) : mix(T::kGreen, IM_COL32(0, 0, 0, 255), 0.2f), std::to_string(c + 1),
+                 H::Center, V::Middle);
+            if ((live.loopChannels >> c) & 1u)
+                dl->AddCircleFilled(ImVec2(cb.x - px(1), ca.y + px(1)), px(2.5f), kViolet);
+        }
+    });
 }
 
 void PerformanceView::trackFrozenPositions(const LiveState& live) {
@@ -425,51 +681,41 @@ void PerformanceView::drawStick(int index, const Mapping& m, const LiveState& li
     if (hoverButton(index == 0 ? "##stickL" : "##stickR", s.a, s.b))
         click(index == 0 ? "axes:left_x,left_y" : "axes:right_x,right_y");
 
-    // Values: one knob per axis, the CC value below it, then the CC badge.
-    const float valuesY = s.b.y + px(18);
-    section(dl, x, w, valuesY, "VALUES");
-    const float r = std::min(w * 0.14f, px(28));
-    const float kc = valuesY + px(52);
-    auto axisKnob = [&](float cx, const AxisBinding& b, Axis a, const char* name, int smoothId) {
-        const int value = ccValue(b, axisPosition01(live, a));
-        knob(dl, ImVec2(cx, kc), r, smooth(smoothId, static_cast<float>(value) / 127.0f, 20.0f), color, b.enabled);
-        text(dl, gBold, px(13), cx, kc - r * 1.37f - px(9), color, name, H::Center, V::Middle);
-        const std::string shown = !b.enabled ? "-" : frozen ? "frozen" : std::to_string(value);
-        text(dl, gBold, px(17), cx, kc + r * 1.28f, frozen ? T::kIce : T::kText, shown, H::Center);
-        if (b.enabled)
-            badge(dl, gCondensed, px(15), cx, kc + r * 1.28f + px(24), px(23), "CC " + std::to_string(b.cc), T::kText,
-                  alpha(color, 0.22f), color);
-        if (b.invert)
-            text(dl, gMedium, px(11), cx, kc + r * 1.28f + px(52), T::kLabel, "inverted", H::Center);
+    // What the axes send: their CCs, as chips (ice blue while frozen).
+    const float midiY = s.b.y + px(18);
+    section(dl, x, w, midiY, "MIDI");
+    const float chipTop = midiY + px(12), chipH = px(20);
+    const float cw = (w - px(30)) * 0.5f;
+    auto axisChip = [&](float cx0, const AxisBinding& b, Axis a, const char* name) {
+        const std::string label = std::string(name) + "  " + (b.enabled ? "CC " + std::to_string(b.cc) : "-") + (b.invert ? "  inv" : "");
+        badge(dl, gCondensed, px(13), cx0 + cw * 0.5f, chipTop, chipH, label, T::kText, alpha(frozen ? T::kIce : accent, 0.22f),
+              b.enabled ? (frozen ? T::kIce : accent) : T::kDim);
         const std::string spec = "axis:" + std::string(toString(a));
-        if (hoverButton(("##" + spec).c_str(), ImVec2(cx - r * 1.5f, kc - r * 1.3f - px(14)),
-                        ImVec2(cx + r * 1.5f, kc + r * 1.28f + px(50))))
+        if (hoverButton(("##" + spec).c_str(), ImVec2(cx0, chipTop - px(2)), ImVec2(cx0 + cw, chipTop + chipH + px(2))))
             click(spec);
     };
-    axisKnob(x + w * 0.28f, bx, ax, "X", index * 4 + 2);
-    axisKnob(x + w * 0.72f, by, ay, "Y", index * 4 + 3);
+    axisChip(x + px(12), bx, ax, "X");
+    axisChip(x + px(18) + cw, by, ay, "Y");
 
     // Freeze: which button freezes these axes, and whether they are frozen.
-    const float freezeY = valuesY + px(158);
-    if (freezeY + px(46) > y + h)
-        return;
-    section(dl, x, w, freezeY, "FREEZE");
     const auto button = freezeButton(m, axisBits);
-    const float fy = freezeY + px(12), fh = px(34);
+    const float fy = chipTop + chipH + px(8), fh = px(28);
+    if (fy + fh > y + h - px(10))
+        return;
     row(dl, x + px(12), fy, w - px(24), fh, frozen ? alpha(T::kIce, 0.18f) : T::kRow, frozen ? T::kIce : T::kRowBorder);
-    const ImVec2 dot(x + px(30), fy + fh * 0.5f);
+    const ImVec2 dot(x + px(28), fy + fh * 0.5f);
     if (frozen)
-        dl->AddCircleFilled(dot, px(6), T::kIce);
+        dl->AddCircleFilled(dot, px(5.5f), T::kIce);
     else
-        dl->AddCircle(dot, px(6), T::kIce, 0, px(2));
-    text(dl, gBold, px(14), x + px(44), fy + fh * 0.5f, T::kText, button ? label(*button) : "no button", H::Left, V::Middle);
-    text(dl, frozen ? gBold : gMedium, px(13), x + w - px(22), fy + fh * 0.5f, frozen ? T::kIce : T::kLabel,
+        dl->AddCircle(dot, px(5.5f), T::kIce, 0, px(2));
+    text(dl, gBold, px(13), x + px(42), fy + fh * 0.5f, T::kText, button ? label(*button) : "no freeze button", H::Left, V::Middle);
+    text(dl, frozen ? gBold : gMedium, px(12), x + w - px(22), fy + fh * 0.5f, frozen ? T::kIce : T::kLabel,
          frozen ? "frozen" : "free", H::Right, V::Middle);
     if (button && hoverButton(index == 0 ? "##freezeL" : "##freezeR", ImVec2(x + px(12), fy), ImVec2(x + w - px(12), fy + fh)))
         click("button:" + std::string(toString(*button)));
 
     // Loop: the movement a Loop record button captured from this stick.
-    const float loopY = valuesY + px(220);
+    const float loopY = s.b.y + loopOffset();
     if (y + h - px(10) - (loopY + px(10)) < px(28))
         return;
     drawLoopPanel(dl, x, w, loopY, y + h - px(10), live.loops[static_cast<std::size_t>(index)],
@@ -649,7 +895,7 @@ void PerformanceView::drawTriggers(const Mapping& m, const LiveState& live, floa
     triggerRow(rowY + px(30), Axis::RightTrigger, Button::RightTrigger, br, dr2, soundR);
 
     // Loop: the triggers' travel a Loop record button captured, L2 and R2.
-    const float loopY = rowY + px(78);
+    const float loopY = s.b.y + loopOffset();
     if (y + h - px(10) - (loopY + px(10)) < px(28))
         return;
     drawLoopPanel(dl, x, w, loopY, y + h - px(10), live.loops[static_cast<std::size_t>(LoopSource::Triggers)],
@@ -810,7 +1056,7 @@ void PerformanceView::drawTouchpad(const Mapping& m, const LiveState& live, floa
     for (int f = 0; f < kFingerCount; ++f) {
         const FingerBinding& fb = m.fingers[static_cast<std::size_t>(f)];
         const auto& finger = live.fingers[static_cast<std::size_t>(f)];
-        const float rowH = fb.mode == TouchMode::Zones ? px(46) : px(28);
+        const float rowH = px(28);
         const float midY = rowY + rowH * 0.5f;
         const ImU32 col = fingerColors[f];
         text(dl, gBold, px(11), x + px(12), midY, fb.mode != TouchMode::Off && finger.down ? T::kLabel : T::kDim,
@@ -825,10 +1071,10 @@ void PerformanceView::drawTouchpad(const Mapping& m, const LiveState& live, floa
                 badge(dl, gCondensed, px(13), cx0 + cw * 0.5f + static_cast<float>(k) * (cw + px(6)), midY - px(10), px(20), label,
                       T::kText, alpha(col, finger.down ? 0.30f : 0.16f), b.enabled ? col : T::kDim);
             }
-        } else if (fb.mode == TouchMode::Zones) {
-            const float cw = (cx1 - cx0 - px(4)) * 0.5f, ch = (rowH - px(4)) * 0.5f;
+        } else if (fb.mode == TouchMode::Zones) {  // the four pads in a row: TL, TR, BL, BR
+            const float cw = (cx1 - cx0 - px(9)) / 4.0f, ch = px(20);
             for (int z = 0; z < kZoneCount; ++z) {
-                const ImVec2 za(cx0 + static_cast<float>(z % 2) * (cw + px(4)), rowY + static_cast<float>(z / 2) * (ch + px(4)));
+                const ImVec2 za(cx0 + static_cast<float>(z) * (cw + px(3)), midY - ch * 0.5f);
                 const ImVec2 zb(za.x + cw, za.y + ch);
                 const bool on = live.isSounding(Engine::slotOf(f, static_cast<Zone>(z)));
                 row(dl, za.x, za.y, cw, ch, on ? alpha(col, 0.35f) : T::kRow, on ? col : T::kRowBorder);
@@ -849,9 +1095,9 @@ void PerformanceView::drawTouchpad(const Mapping& m, const LiveState& live, floa
 
     // Loop: the finger movements a Loop record button captured, drawn as the
     // paths they took on the touchpad, with a timeline of when each touched.
-    const float loopY = rowY + px(14);
-    const float timelineH = px(22);
-    const float boxTop = loopY + px(10), boxBottom = y + h - px(10) - timelineH;
+    const float loopY = s.b.y + loopOffset();
+    const float timelineH = px(20);  // inside the box, at its bottom
+    const float boxTop = loopY + px(10), boxBottom = y + h - px(10);
     if (boxBottom - boxTop < px(40))
         return;
     const LiveState::Loop* loops[] = {&live.loops[2], &live.loops[3]};
@@ -896,7 +1142,7 @@ void PerformanceView::drawTouchpad(const Mapping& m, const LiveState& live, floa
     dl->AddRectFilled(ga, gb, kGraph, px(4));
     const ImU32 border = recording ? T::kRed : waiting ? alpha(T::kRed, 0.5f) : shown >= 0 ? alpha(fingerColors[shown], 0.45f) : kGraph;
     dl->AddRect(ga, gb, border, px(4), px(1.3f));
-    const ImVec2 pa(ga.x + px(6), ga.y + px(6)), pb(gb.x - px(6), gb.y - px(6));
+    const ImVec2 pa(ga.x + px(6), ga.y + px(6)), pb(gb.x - px(6), gb.y - px(6) - timelineH);
     // 4-pad loops: one lane per pad, a block while a pad played. Otherwise the
     // paths, over a small touchpad.
     bool lanes = false;
@@ -992,7 +1238,7 @@ void PerformanceView::drawTouchpad(const Mapping& m, const LiveState& live, floa
         const LiveState::Loop& L = *loops[f];
         if (state(f) == LoopStatus::State::Empty || L.points < 2)
             continue;
-        const float ty = gb.y + px(7) + static_cast<float>(f) * px(8);
+        const float ty = gb.y - timelineH + px(5) + static_cast<float>(f) * px(8);
         const float tx0 = ga.x + px(2), tx1 = gb.x - px(2);
         const float span = state(f) == LoopStatus::State::Recording
                                ? std::min(1.0f, static_cast<float>(L.status.length) / (4.0f * Engine::kLoopRateHz))
@@ -1014,7 +1260,7 @@ void PerformanceView::drawTouchpad(const Mapping& m, const LiveState& live, floa
             dl->AddLine(ImVec2(hx, ty - px(4)), ImVec2(hx, ty + px(4)), IM_COL32_WHITE, px(1.5f));
         }
     }
-    if (hoverButton("##touchloop", ImVec2(ga.x, loopY - px(6)), ImVec2(gb.x, gb.y + timelineH)))
+    if (hoverButton("##touchloop", ImVec2(ga.x, loopY - px(6)), gb))
         click("fingers");
 }
 
@@ -1023,7 +1269,11 @@ void PerformanceView::drawButtons(const Mapping& m, const LiveState& live, float
     bool any = false;
     for (const auto& t : m.buttons)
         any |= t.isSet();
-    const float top = panel(dl, x, y, w, h, "BUTTONS", live.connected && any);
+    // No title bar either: the pads, their names and what they play.
+    (void)any;
+    const float top = y;
+    dl->AddRectFilled(ImVec2(x, y), ImVec2(x + w, y + h), T::kPanel, px(8));
+    dl->AddRect(ImVec2(x, y), ImVec2(x + w, y + h), T::kBorder, px(8), px(1));
 
     struct Pad {
         Button button;
@@ -1038,12 +1288,12 @@ void PerformanceView::drawButtons(const Mapping& m, const LiveState& live, float
     const float pad = px(12);
     const float slot = (w - 2 * pad) / static_cast<float>(std::size(kPads));
     const float body = y + h - top;
-    const float cy = top + std::min(px(64), body * 0.30f);
+    const float cy = top + body * 0.30f;
     for (std::size_t i = 0; i < std::size(kPads); ++i) {
         const Pad& pd = kPads[i];
         const bool face = pd.color != 0;
         const float cx = x + pad + slot * (static_cast<float>(i) + 0.5f);
-        const float r = std::min(slot * (face ? 0.42f : 0.33f), px(face ? 30 : 23));
+        const float r = std::min({slot * (face ? 0.42f : 0.33f), px(face ? 30 : 23), body * (face ? 0.19f : 0.155f)});
         const ImU32 color = face ? pd.color : kPadGrey;
         bool down = false;
         if (pd.button == Button::LeftTrigger)
@@ -1099,14 +1349,14 @@ void PerformanceView::drawButtons(const Mapping& m, const LiveState& live, float
 
         // Name, then what it plays, then the toggle mark.
         const auto& binding = m.buttons[static_cast<std::size_t>(pd.button)];
-        float ty = cy + r + px(16);
+        float ty = cy + r + px(11);
         text(dl, gMedium, px(12), cx, ty, T::kLabel, fit(gMedium, px(12), label(pd.button), slot - 2), H::Center, V::Middle);
         ty += px(14);
         const std::string action = fit(gCondensed, px(14), compact(binding, flats_), slot - px(16));
         badge(dl, gCondensed, px(14), cx, ty, px(22), action, binding.isSet() ? T::kText : T::kDim,
               sounding ? alpha(color, 0.45f) : IM_COL32(0x40, 0x45, 0x4D, 255), 0, H::Center, 6);
-        if (binding.isSet() && binding.mode == Mode::Toggle)
-            toggleMark(dl, ImVec2(cx, ty + px(36)), px(5.5f), sounding ? color : T::kLabel);
+        if (binding.isSet() && binding.mode == Mode::Toggle)  // top right of the pad
+            toggleMark(dl, ImVec2(cx + r + px(7), cy - r + px(4)), px(4.5f), sounding ? color : T::kLabel);
 
         if (hoverButton(("##pad" + std::to_string(i)).c_str(), ImVec2(cx - slot * 0.5f + 2, top + px(4)),
                         ImVec2(cx + slot * 0.5f - 2, y + h - px(4))))

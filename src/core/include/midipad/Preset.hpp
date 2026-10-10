@@ -64,16 +64,19 @@ struct LoopBinding {
 };
 
 // What a loop records: a stick (X, Y), a touchpad finger (X, Y or its pads),
-// or the triggers' travel (L2 as X, R2 as Y).
-enum class LoopSource : std::uint8_t { LeftStick, RightStick, Finger1, Finger2, Triggers };
-inline constexpr int kLoopSourceCount = 5;
+// the triggers' travel (L2 as X, R2 as Y), or the notes and chords played by
+// the buttons, the D-pad and the triggers as buttons.
+enum class LoopSource : std::uint8_t { LeftStick, RightStick, Finger1, Finger2, Triggers, Notes };
+inline constexpr int kLoopSourceCount = 6;
 
-// By default on CC 70/71, 72/73 (sticks), 74/75, 76/77 (fingers) and 78/79 (triggers).
+// By default on CC 70/71, 72/73 (sticks), 74/75, 76/77 (fingers) and 78/79
+// (triggers); a note loop sends the notes it recorded, its CCs are unused.
 inline constexpr std::array<LoopBinding, kLoopSourceCount> kDefaultLoops{{{LoopPlayback::Forward, 70, 71},
                                                                           {LoopPlayback::Forward, 72, 73},
                                                                           {LoopPlayback::Forward, 74, 75},
                                                                           {LoopPlayback::Forward, 76, 77},
-                                                                          {LoopPlayback::Forward, 78, 79}}};
+                                                                          {LoopPlayback::Forward, 78, 79},
+                                                                          {LoopPlayback::Forward, 0, 0}}};
 
 enum class TouchMode : std::uint8_t { Off, Axis, Zones };
 

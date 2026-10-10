@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <utility>
 
 namespace midipad {
 
@@ -47,6 +48,8 @@ Engine::Engine(MidiSink& sink) : sink_(sink) {
         loop.x.assign(kMaxLoopSamples, 32767);
         loop.y.assign(kMaxLoopSamples, 32767);
     }
+    for (auto& events : noteEvents_)
+        events.reserve(kMaxNoteEvents);
     for (auto& channel : lastCc_)
         channel.fill(-1);
     setPreset(nullptr);
@@ -114,8 +117,11 @@ void Engine::tick(std::uint64_t nowNs) {
         if (next == delayedCount_)
             break;
         const MidiMessage message = delayed_[next].message;
+        const bool fromLoop = delayed_[next].fromLoop;
         delayed_[next] = delayed_[--delayedCount_];
+        const bool saved = std::exchange(fromLoop_, fromLoop);
         sendNow(message);
+        fromLoop_ = saved;
     }
 }
 
@@ -124,7 +130,14 @@ void Engine::sendAt(std::uint64_t at, const MidiMessage& message) {
         sendNow(message);
         return;
     }
-    delayed_[delayedCount_++] = {at, delayedOrder_++, message};
+    delayed_[delayedCount_++] = {at, delayedOrder_++, message, fromLoop_};
+}
+
+void Engine::emit(const MidiMessage& message, bool fromLoop) {
+    sink_.send(message);
+    const int kind = message.bytes[0] & 0xF0;
+    if (observer_ && (kind == 0x90 || kind == 0x80))
+        observer_->noteSent(message.bytes[0] & 0x0F, message.bytes[1], kind == 0x90 ? message.bytes[2] : 0, fromLoop);
 }
 
 void Engine::sendNow(const MidiMessage& message) {
@@ -135,14 +148,14 @@ void Engine::sendNow(const MidiMessage& message) {
             const MidiMessage& m = delayed_[i].message;
             if ((m.bytes[0] & 0xF0) == 0x80 && (m.bytes[0] & 0x0F) == (message.bytes[0] & 0x0F) &&
                 m.bytes[1] == message.bytes[1]) {
-                sink_.send(m);
+                emit(m, delayed_[i].fromLoop);
                 delayed_[i] = delayed_[--delayedCount_];
             } else {
                 ++i;
             }
         }
     }
-    sink_.send(message);
+    emit(message, fromLoop_);
 }
 
 int Engine::randomBetween(int low, int high) {
@@ -222,7 +235,7 @@ void Engine::releaseAll() {
     // Releases still waiting go out now; notes not started yet never will.
     for (std::size_t i = 0; i < delayedCount_; ++i)
         if ((delayed_[i].message.bytes[0] & 0xF0) == 0x80)
-            sink_.send(delayed_[i].message);
+            emit(delayed_[i].message, delayed_[i].fromLoop);
     delayedCount_ = 0;
     immediate_ = true;
     for (auto& s : held_) {
@@ -307,7 +320,8 @@ void Engine::press(int slot) {
         break;
     }
 
-    const Sounding sounding = soundingFor(binding, channel_);
+    Sounding sounding = soundingFor(binding, channel_);
+    sounding.recordable = slot < kZoneSlotBase;  // the pads have their own loops
     if (binding.mode == Mode::Momentary) {
         start(sounding);
         held_[static_cast<std::size_t>(slot)] = sounding;
@@ -388,6 +402,8 @@ void Engine::start(const Sounding& s) {
             velocity = std::clamp((s.velocity * percent + 50) / 100, 1, 127);
             at += static_cast<std::uint64_t>(s.delayMs[i]) * 1'000'000u;
         }
+        if (s.recordable)
+            recordNote(s.channel, s.notes.notes[i], velocity, at);
         sendAt(at, MidiMessage::noteOn(s.channel, s.notes.notes[i], velocity));
     }
 }
@@ -399,10 +415,14 @@ void Engine::stop(const Sounding& s) {
     }
     for (std::size_t i = 0; i < s.notes.count; ++i) {
         const MidiMessage off = MidiMessage::noteOff(s.channel, s.notes.notes[i]);
-        if (immediate_ || !s.humanized)
-            sendNow(off);
+        const bool late = !immediate_ && s.humanized;
+        const std::uint64_t at = late ? now_ + static_cast<std::uint64_t>(s.delayMs[i]) * 1'000'000u : now_;
+        if (s.recordable)
+            recordNote(s.channel, s.notes.notes[i], 0, at);
+        if (late)
+            sendAt(at, off);
         else
-            sendAt(now_ + static_cast<std::uint64_t>(s.delayMs[i]) * 1'000'000u, off);
+            sendNow(off);
     }
 }
 
@@ -436,6 +456,10 @@ bool Engine::sourcePosition(int source, float& x, float& y) const {
         y = triggerPosition_[1];
         return true;
     }
+    if (source == static_cast<int>(LoopSource::Notes)) {
+        x = y = 0;
+        return false;
+    }
     const auto f = static_cast<std::size_t>(source - 2);
     x = fingerPosition_[f][0];
     y = fingerPosition_[f][1];
@@ -467,6 +491,20 @@ void Engine::endRecordHold() {
                 loop.state = LoopStatus::State::Empty;
                 continue;
             }
+            if (source == static_cast<int>(LoopSource::Notes)) {
+                auto& events = noteEvents_[static_cast<std::size_t>(channel)];
+                for (auto& e : events)  // a release delayed past the end ends with the loop
+                    e.at = std::clamp(e.at, 0, loop.length - 1);
+                std::stable_sort(events.begin(), events.end(), [](const NoteEvent& a, const NoteEvent& b) { return a.at < b.at; });
+                // A note still on at the end (a toggle left on) ends there: so it
+                // also sounds from the end when the loop plays backwards.
+                std::bitset<128> held;
+                for (const NoteEvent& e : events)
+                    held.set(e.note, e.on);
+                for (int n = 0; n < 128; ++n)
+                    if (held.test(static_cast<std::size_t>(n)) && events.size() < kMaxNoteEvents)
+                        events.push_back({loop.length - 1, static_cast<std::uint8_t>(n), noteVelocity_[static_cast<std::size_t>(n)], false});
+            }
             loop.state = LoopStatus::State::Playing;
             const LoopPlayback playback = preset_->forChannel(channel).loops[static_cast<std::size_t>(source)].playback;
             loop.position = playback == LoopPlayback::Reverse ? loop.length - 1 : 0;
@@ -485,7 +523,7 @@ void Engine::runLoops() {
     // stick leaving its spot, a finger landing, sliding or reaching another pad.
     for (int source = 0; source < kLoopSourceCount; ++source) {
         const auto i = static_cast<std::size_t>(source);
-        if (!waiting_[i])
+        if (!waiting_[i] || source == static_cast<int>(LoopSource::Notes))  // notes start when one plays
             continue;
         const bool finger = source == 2 || source == 3;
         const bool pads = finger &&
@@ -524,6 +562,10 @@ void Engine::runLoops() {
         while (now_ >= loop.nextAt) {
             loop.nextAt += kStep;
             if (loop.state == LoopStatus::State::Recording) {
+                if (source == static_cast<int>(LoopSource::Notes)) {
+                    loop.length = std::min(loop.length + 1, kMaxLoopSamples);  // the notes come from recordNote
+                    continue;
+                }
                 if (loop.length < kMaxLoopSamples) {
                     const auto at = static_cast<std::size_t>(loop.length);
                     if (loop.zones) {  // the pad under the finger, if any
@@ -541,7 +583,12 @@ void Engine::runLoops() {
                 }
                 continue;
             }
-            sendLoopSample(i);
+            fromLoop_ = true;
+            if (source == static_cast<int>(LoopSource::Notes))
+                playLoopNotes(i);
+            else
+                sendLoopSample(i);
+            fromLoop_ = false;
             // Then step, as the playback asks now (it can change while playing).
             const LoopPlayback playback = preset_->forChannel(channel).loops[static_cast<std::size_t>(source)].playback;
             bool startsOver = false;
@@ -564,8 +611,11 @@ void Engine::runLoops() {
                     startsOver = true;
                 }
             }
-            if (startsOver && loop.zones)
+            if (startsOver && (loop.zones || source == static_cast<int>(LoopSource::Notes))) {
+                fromLoop_ = true;
                 silenceLoop(i);  // what still sounds stops when the loop starts over
+                fromLoop_ = false;
+            }
         }
     }
 }
@@ -657,9 +707,17 @@ void Engine::playLoopPads(std::size_t index) {
     mine = sounding;
 }
 
-// Stops what a 4-pad loop has on.
+// Stops what a 4-pad or note loop has on.
 void Engine::silenceLoop(std::size_t index) {
     Loop& loop = loops_[index];
+    if (index % kLoopSourceCount == static_cast<std::size_t>(LoopSource::Notes)) {
+        const auto channel = static_cast<int>(index / kLoopSourceCount);
+        auto& on = noteLoopOn_[static_cast<std::size_t>(channel)];
+        for (int n = 0; n < 128; ++n)
+            if (on.test(static_cast<std::size_t>(n)))
+                sendNow(MidiMessage::noteOff(channel, n));
+        on.reset();
+    }
     if (loop.held.active())
         stop(loop.held);
     loop.held = {};
@@ -671,12 +729,95 @@ void Engine::silenceLoop(std::size_t index) {
     loop.lastPad = -1;
 }
 
+// Records a note played on `channel` at `at` (velocity 0: its release) into
+// the channel's note loop, starting it if Record is held and waits for notes.
+void Engine::recordNote(int channel, int note, int velocity, std::uint64_t at) {
+    constexpr auto kNotes = static_cast<std::size_t>(LoopSource::Notes);
+    const std::size_t index = loopIndex(channel, static_cast<int>(kNotes));
+    Loop& loop = loops_[index];
+    if (velocity > 0 && waiting_[kNotes] && channel == holdChannel_) {
+        waiting_[kNotes] = false;
+        silenceLoop(index);
+        loop.state = LoopStatus::State::Recording;
+        loop.length = 0;
+        loop.nextAt = now_;
+        noteRecordStart_ = now_;
+        noteEvents_[static_cast<std::size_t>(channel)].clear();
+        recordedThisHold_ = true;
+    }
+    auto& events = noteEvents_[static_cast<std::size_t>(channel)];
+    if (loop.state != LoopStatus::State::Recording || events.size() >= kMaxNoteEvents || at < noteRecordStart_)
+        return;
+    constexpr std::uint64_t kStep = 1'000'000'000ull / kLoopRateHz;
+    const auto sample = static_cast<std::int32_t>((at - noteRecordStart_) / kStep);
+    const auto n = static_cast<std::size_t>(note & 0x7F);
+    if (velocity > 0)
+        noteVelocity_[n] = static_cast<std::uint8_t>(velocity);
+    events.push_back({sample, static_cast<std::uint8_t>(n), noteVelocity_[n], velocity > 0});
+}
+
+// A note loop at its current step: its notes there start or stop; played
+// backwards, a release starts its note and a start stops it.
+void Engine::playLoopNotes(std::size_t index) {
+    const Loop& loop = loops_[index];
+    const auto channel = static_cast<int>(index / kLoopSourceCount);
+    const auto& events = noteEvents_[static_cast<std::size_t>(channel)];
+    auto& on = noteLoopOn_[static_cast<std::size_t>(channel)];
+    const auto lo = std::lower_bound(events.begin(), events.end(), loop.position,
+                                     [](const NoteEvent& e, int at) { return e.at < at; });
+    auto hi = lo;
+    while (hi != events.end() && hi->at == loop.position)
+        ++hi;
+    auto play = [&](const NoteEvent& e, bool start) {
+        if (start) {
+            sendNow(MidiMessage::noteOn(channel, e.note, e.velocity));
+            on.set(e.note);
+        } else if (on.test(e.note)) {
+            sendNow(MidiMessage::noteOff(channel, e.note));
+            on.reset(e.note);
+        }
+    };
+    if (loop.direction > 0)
+        for (auto it = lo; it != hi; ++it)
+            play(*it, it->on);
+    else
+        for (auto it = hi; it != lo;) {
+            --it;
+            play(*it, !it->on);
+        }
+}
+
+int Engine::noteLoopIntervals(int channel, NoteInterval* out, int max) const {
+    channel = std::clamp(channel, 0, kChannelCount - 1);
+    const Loop& loop = loops_[loopIndex(channel, static_cast<int>(LoopSource::Notes))];
+    if (loop.state == LoopStatus::State::Empty)
+        return 0;
+    std::array<int, 128> open;
+    open.fill(-1);
+    int count = 0;
+    for (const NoteEvent& e : noteEvents_[static_cast<std::size_t>(channel)]) {
+        if (e.on) {
+            if (count == max)
+                break;
+            open[e.note] = count;
+            out[count++] = {e.at, -1, e.note, e.velocity};
+        } else if (open[e.note] >= 0) {
+            out[open[e.note]].end = std::max(e.at, out[open[e.note]].start + 1);
+            open[e.note] = -1;
+        }
+    }
+    for (int i = 0; i < count; ++i)  // still on when the loop ends (or now, while recording)
+        if (out[i].end < 0)
+            out[i].end = std::max(loop.length, out[i].start + 1);
+    return count;
+}
+
 LoopStatus Engine::loopStatus(int channel, int source) const {
     channel = std::clamp(channel, 0, kChannelCount - 1);
     source = std::clamp(source, 0, kLoopSourceCount - 1);
     const Loop& loop = loops_[loopIndex(channel, source)];
     const bool waiting = waiting_[static_cast<std::size_t>(source)] && holdChannel_ == channel;
-    return {loop.state, waiting, loop.zones, loop.length, loop.position, channel};
+    return {loop.state, waiting, loop.zones, loop.length, loop.position, loop.direction, channel};
 }
 
 float Engine::loopSample(int channel, int source, int axis, int index) const {
@@ -700,6 +841,14 @@ void Engine::stopLoops(int channel) {
     for (int source = 0; source < kLoopSourceCount; ++source)
         if (loops_[loopIndex(channel, source)].state == LoopStatus::State::Playing)
             clearLoop(channel, source);
+}
+
+std::uint16_t Engine::channelsWithLoops() const {
+    std::uint16_t bits = 0;
+    for (std::size_t i = 0; i < loops_.size(); ++i)
+        if (loops_[i].state != LoopStatus::State::Empty)
+            bits = static_cast<std::uint16_t>(bits | (1u << (i / kLoopSourceCount)));
+    return bits;
 }
 
 void Engine::stopLoops() {

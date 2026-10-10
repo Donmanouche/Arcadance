@@ -27,6 +27,13 @@ struct Report {
 
 std::string describe(const Report& report);
 
+// A note the engine sent, for the piano roll.
+struct SentNote {
+    std::uint64_t timeNs = 0;  // SDL_GetTicksNS()
+    std::uint8_t channel = 0, note = 0, velocity = 0;  // velocity 0: released
+    bool fromLoop = false;
+};
+
 // Controller and engine state, for display.
 struct LiveState {
     bool connected = false;
@@ -51,7 +58,12 @@ struct LiveState {
         std::array<bool, kPoints> on{};              // false while a finger was lifted
     };
     std::array<Loop, midipad::kLoopSourceCount> loops{};
+    // The active channel's note loop, as notes (in loop samples).
+    static constexpr int kMaxNoteLoopNotes = 128;
+    std::array<midipad::NoteInterval, kMaxNoteLoopNotes> noteLoop{};
+    int noteLoopCount = 0;
     std::uint64_t sounding = 0;   // Engine::soundingSlots()
+    std::uint16_t loopChannels = 0;  // Engine::channelsWithLoops()
 
     bool isDown(midipad::Button b) const { return (buttons >> static_cast<int>(b)) & 1u; }
     bool isSounding(int slot) const { return (sounding >> slot) & 1u; }
@@ -104,6 +116,7 @@ public:
     void setHumanize(const midipad::Humanize& humanize) { humanize_.store(pack(humanize), std::memory_order_relaxed); }
 
     std::optional<Report> popReport() { return reports_.pop(); }
+    std::optional<SentNote> popNote() { return notes_.pop(); }
     LiveState live() const;
     RuntimeStats stats() const;
 
@@ -128,6 +141,7 @@ private:
     std::shared_ptr<MidiOutput> output_;  // main thread's view, for stats
 
     midipad::SpscRing<Report, 4096> reports_;
+    midipad::SpscRing<SentNote, 2048> notes_;
     std::atomic<std::uint64_t> droppedReports_{0};
     midipad::SpscRing<Command, 64> commands_;
 
@@ -145,8 +159,11 @@ private:
     std::atomic<int> channel_{0};
     std::atomic<std::uint8_t> frozen_{0};
     std::atomic<std::uint64_t> sounding_{0};
+    std::atomic<std::uint16_t> loopChannels_{0};
     mutable std::mutex loopsMutex_;  // the input thread only try_locks it
     std::array<LiveState::Loop, midipad::kLoopSourceCount> loops_{};
+    std::array<midipad::NoteInterval, LiveState::kMaxNoteLoopNotes> noteLoop_{};
+    int noteLoopCount_ = 0;
     mutable std::mutex nameMutex_;
     std::string gamepadName_;
 

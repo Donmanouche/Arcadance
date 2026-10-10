@@ -37,10 +37,14 @@ scène, qui joue en même temps qu'elle édite. **F11** passe en plein écran,
 - un module par partie de la manette : sticks gauche et droit, gâchettes,
   croix directionnelle, touchpad ; chacun a un écran animé qui suit la
   manette et des potentiomètres affichant les CC envoyés ;
+- sous les modules : le piano roll (sous les sticks et les gâchettes), le
+  bloc SCALE (la tonalité, sur un clavier d'une octave ; un clic la choisit) et le bloc
+  CHANNEL (le canal actif en grand, les seize canaux, un point violet là où
+  une boucle tourne) ;
 - un bandeau de pads pour les boutons (✕ ○ □ △ aux couleurs PlayStation) :
   éclair à chaque appui, éclairage tant que la note ou l'accord sonne (les
   bascules verrouillées restent allumées) ;
-- en haut : menu ☰, Panic, canal, tonalité, preset ;
+- en haut : menu ☰, Panic, canal, preset ;
 - en bas : la sortie MIDI à gauche, l'état de la manette à droite ;
 - un clic sur un contrôle (pad, direction, zone, potentiomètre d'axe, écran,
   panneau LOOP) ouvre ses réglages dans un panneau semi-transparent au-dessus
@@ -53,7 +57,8 @@ déplacé dans le sous-dossier `trash`, jamais supprimé). SAVE apparaît quand 
 preset est modifié. Un preset tient dans un seul fichier JSON, mappings par
 canal compris.
 
-**Key** (tonalité, facultative) : une fondamentale et une gamme (majeur, mineur
+**Tonalité** (facultative, commune à tous les canaux), choisie d'un clic sur
+l'écran SCALE : une fondamentale et une gamme (majeur, mineur
 naturel, harmonique, mélodique, modes, pentatoniques, blues, par tons). Le
 panneau de mapping ne propose alors que les notes de la gamme et, pour les
 accords, un menu « Chord of the key » listant par degré tous les accords dont
@@ -198,6 +203,20 @@ Les contrôles portent les noms de l'API gamepad de SDL3 (`south`, `left_x`,
   actif ; Panic arrête celles de tous les canaux. Les panneaux LOOP de la vue
   animée montrent les boucles du canal actif et leur tête de lecture. Les
   boucles ne sont pas gardées d'une session à l'autre.
+- **Piano roll et boucles de notes** : le piano roll, sous les sticks et les gâchettes,
+  montre les notes et accords envoyés sur le canal actif (les dernières
+  secondes à gauche de « now », en blanc ; en violet ceux joués par une
+  boucle), avec un clavier dont la plage suit les notes jouées. Maintenir
+  « Loop record » en jouant des notes ou des accords (boutons, croix,
+  gâchettes comme boutons ; les pads du touchpad ont leurs propres boucles)
+  les enregistre : au relâchement, ils tournent en boucle sur le canal où ils
+  ont été joués, avec leur vélocité et leur humanisation éventuelle, en
+  avant, en arrière ou en aller-retour (une boucle par canal). Une note encore
+  tenue à la fin (une bascule restée allumée) sonne jusqu'à la fin de la
+  boucle ; tout ce qui sonne est coupé quand la boucle repart du début. À
+  droite de « now », le piano roll montre en contour ce que la boucle va jouer
+  ensuite. Un clic sur le panneau règle le mode de lecture (champ
+  `loops.notes` du preset).
 - **Freeze** : gèle l'axe à sa valeur courante. Dans la vue animée, la fleur
   reste bleu glacé et suit le stick ; une silhouette et un réticule, bleus
   pour le stick gauche, jaunes pour le droit, marquent l'endroit du gel
