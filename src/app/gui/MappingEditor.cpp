@@ -20,8 +20,6 @@ namespace {
 constexpr ImVec4 kErrorColor{1.0f, 0.45f, 0.4f, 1.0f};
 constexpr ImVec4 kHintColor{0.65f, 0.65f, 0.7f, 1.0f};
 
-constexpr std::array<const char*, 12> kRoots = {"C", "C#", "D", "Eb", "E", "F", "F#", "G", "Ab", "A", "Bb", "B"};
-
 float axisPosition(const LiveState& live, Axis a) {
     const float raw = static_cast<float>(live.axes[static_cast<std::size_t>(a)]) / 32767.0f;
     return std::clamp(isTrigger(a) ? raw : (raw + 1.0f) * 0.5f, 0.0f, 1.0f);
@@ -563,61 +561,8 @@ bool MappingEditor::drawChordFields(TriggerBinding& b) {
             ImGui::TextColored(kErrorColor, "Contains notes outside %s", keyName(*key_).c_str());
     }
 
-    // Builder: root + quality, narrowed to the tonality when there is one.
-    std::size_t rootLength = 0;
-    const auto rootPitch = parsePitch(b.chordName, &rootLength);
-    const int root = rootPitch ? ((*rootPitch % 12) + 12) % 12 : 0;
-    const std::string quality = rootPitch ? b.chordName.substr(rootLength) : std::string();
-    std::vector<int> roots;
-    if (key_)
-        roots = scalePitchClasses(*key_);
-    else
-        for (int pc = 0; pc < 12; ++pc)
-            roots.push_back(pc);
-    const bool rootInKey = std::find(roots.begin(), roots.end(), root) != roots.end();
-    auto rootName = [&](int pc) { return key_ ? pitchName(pc, flats()) : std::string(kRoots[static_cast<std::size_t>(pc)]); };
-
-    // A root outside the scale keeps the spelling of the chord name.
-    const std::string rootPreview = rootInKey || !rootPitch ? rootName(root) : b.chordName.substr(0, rootLength);
-    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 5);
-    if (ImGui::BeginCombo("Root", rootPreview.c_str())) {
-        for (int pc : roots) {
-            if (!ImGui::Selectable(rootName(pc).c_str(), pc == root))
-                continue;
-            std::string candidate = rootName(pc) + quality;
-            if (key_) {  // keep the chord inside the scale: same quality if it fits, else the first that does
-                const auto& chords = keyChords();
-                const auto same = std::find_if(chords.begin(), chords.end(),
-                                               [&](const KeyChord& c) { return c.name == candidate; });
-                const auto first = std::find_if(chords.begin(), chords.end(), [&](const KeyChord& c) {
-                    return parsePitch(c.name) && ((*parsePitch(c.name) % 12) + 12) % 12 == pc;
-                });
-                if (same == chords.end() && first != chords.end())
-                    candidate = first->name;
-            }
-            apply(candidate);
-        }
-        ImGui::EndCombo();
-    }
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 7);
-    const std::string preview = quality.empty() ? "major" : quality;
-    if (ImGui::BeginCombo("Type", preview.c_str())) {
-        for (std::string_view q : chordQualities()) {
-            const std::string candidate = rootPreview + std::string(q);
-            if (key_ && rootInKey) {
-                const auto& chords = keyChords();
-                const bool fits = std::any_of(chords.begin(), chords.end(),
-                                              [&](const KeyChord& c) { return c.name == candidate; });
-                if (!fits)
-                    continue;
-            }
-            const std::string name = q.empty() ? "major" : std::string(q);
-            if (ImGui::Selectable(name.c_str(), q == quality))
-                apply(candidate);
-        }
-        ImGui::EndCombo();
-    }
+    // The chord's root, for the octave and the bass below.
+    const auto rootPitch = parsePitch(b.chordName);
 
     // Octave: the same chord higher or lower.
     if (rootPitch) {

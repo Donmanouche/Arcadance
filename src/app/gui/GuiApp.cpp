@@ -910,9 +910,6 @@ void GuiApp::drawPerformance(const LiveState& live) {
         if (ImGui::MenuItem("Fullscreen", "F11", (SDL_GetWindowFlags(window_) & SDL_WINDOW_FULLSCREEN) != 0))
             toggleFullscreen();
         ImGui::Separator();
-        if (ImGui::MenuItem("Presets folder…"))
-            browseFolder(FolderTarget::Presets, settings_.presetsDir);
-        ImGui::Separator();
         if (ImGui::MenuItem("Quit", "Ctrl+Q"))
             guard([this] { quit_ = true; });
         ImGui::PopFont();
