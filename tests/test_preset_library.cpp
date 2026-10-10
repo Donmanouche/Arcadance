@@ -52,18 +52,16 @@ TEST_CASE("the file name is the preset name") {
     CHECK(library.load("renamed").name == "renamed");
 }
 
-TEST_CASE("removed presets go to the trash folder, never deleted") {
+TEST_CASE("removed presets are deleted") {
     TempDir dir;
     PresetLibrary library(dir.path);
     library.save(named("live"));
-    const auto first = library.moveToTrash("live");
-    CHECK(first == dir.path / "trash" / "live.json");
-    CHECK(fs::exists(first));
-    CHECK(library.names().empty());
-
-    library.save(named("live"));
-    CHECK(library.moveToTrash("live") == dir.path / "trash" / "live (2).json");
-    CHECK(fs::exists(first));
+    library.save(named("keep"));
+    const auto removed = library.remove("live");
+    CHECK(removed == dir.path / "live.json");
+    CHECK_FALSE(fs::exists(removed));
+    CHECK(library.names() == std::vector<std::string>{"keep"});
+    CHECK_THROWS_AS(library.remove("live"), PresetError);
 }
 
 TEST_CASE("unique names count up") {

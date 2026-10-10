@@ -11,7 +11,6 @@ namespace midipad {
 
 namespace {
 
-constexpr const char* kTrashFolder = "trash";
 
 std::string lower(std::string s) {
     std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
@@ -56,14 +55,11 @@ void PresetLibrary::save(const Preset& preset) const {
     savePreset(preset, pathFor(preset.name));
 }
 
-fs::path PresetLibrary::moveToTrash(std::string_view name) const {
-    const fs::path trash = directory_ / kTrashFolder;
-    fs::create_directories(trash);
-    fs::path target = trash / (std::string(name) + ".json");
-    for (int i = 2; fs::exists(target); ++i)
-        target = trash / (std::string(name) + " (" + std::to_string(i) + ").json");
-    fs::rename(pathFor(name), target);
-    return target;
+fs::path PresetLibrary::remove(std::string_view name) const {
+    const fs::path path = pathFor(name);
+    if (!fs::remove(path))
+        throw PresetError("No preset file " + path.string());
+    return path;
 }
 
 std::string PresetLibrary::uniqueName(std::string_view base) const {

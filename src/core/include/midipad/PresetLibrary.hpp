@@ -10,8 +10,7 @@
 
 namespace midipad {
 
-// The presets of one folder: <folder>/<name>.json. Nothing is ever deleted:
-// removed presets go to <folder>/trash/.
+// The presets of one folder: <folder>/<name>.json.
 class PresetLibrary {
 public:
     explicit PresetLibrary(std::filesystem::path directory);
@@ -24,8 +23,8 @@ public:
 
     Preset load(std::string_view name) const;  // throws PresetError
     void save(const Preset& preset) const;     // to pathFor(preset.name); creates the folder
-    // Returns where the file went.
-    std::filesystem::path moveToTrash(std::string_view name) const;
+    // Deletes the file for good and returns its path; throws if there is none.
+    std::filesystem::path remove(std::string_view name) const;
 
     // "Base", "Base 2", "Base 3"... whichever is free.
     std::string uniqueName(std::string_view base) const;

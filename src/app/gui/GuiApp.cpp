@@ -172,10 +172,16 @@ private:
     void drawPerformance(const LiveState& live);
     void drawMappingOverlay(const LiveState& live);
     void toggleFullscreen();
+    // Every window over the view looks like the Options panel.
+    void pushWindowLook();
+    void popWindowLook();
+    bool beginDialog(const char* title, ImGuiWindowFlags flags = ImGuiWindowFlags_AlwaysAutoResize);
+    void endDialog();
+    int dialogButtons(std::initializer_list<const char*> labels);  // the one clicked, or -1
     void drawDialogs();
     void drawNameDialog();
     void drawUnsavedDialog();
-    void drawTrashDialog();
+    void drawDeleteDialog();
     void drawErrorDialog();
     void drawOutputDialog();
 
@@ -252,7 +258,7 @@ private:
     std::function<void()> afterSave_;
     std::function<void()> pendingAction_;
     bool openUnsavedDialog_ = false;
-    bool openTrashDialog_ = false;
+    bool openDeleteDialog_ = false;
     std::string errorMessage_;
     bool openErrorDialog_ = false;
     bool openOutputDialog_ = false;
@@ -795,7 +801,6 @@ void GuiApp::draw() {
         toggleFullscreen();
 
     drawPerformance(live);
-    drawDialogs();
     ImGui::End();
 }
 
@@ -1033,9 +1038,9 @@ void GuiApp::drawPerformance(const LiveState& live) {
                 nameError_.clear();
                 openNameDialog_ = true;
             }
-            if (ImGui::Selectable("Move to trash\u2026", false, hasFile_ ? 0 : ImGuiSelectableFlags_Disabled))
-                openTrashDialog_ = true;
-            ImGui::SetItemTooltip("Moves the preset to the \"trash\" subfolder of the presets folder");
+            if (ImGui::Selectable("Delete\u2026", false, hasFile_ ? 0 : ImGuiSelectableFlags_Disabled))
+                openDeleteDialog_ = true;
+            ImGui::SetItemTooltip("Deletes the preset file");
             ImGui::PopFont();
             ImGui::EndCombo();
         }
@@ -1133,6 +1138,7 @@ void GuiApp::drawPerformance(const LiveState& live) {
         drawMappingOverlay(live);
     if (optionsOpen_)
         drawOptionsOverlay();
+    drawDialogs();
 
     ImGui::PopStyleVar(kVars);
     ImGui::PopStyleColor(kColors);
@@ -1200,13 +1206,8 @@ void GuiApp::drawOptionsOverlay() {
         ImGui::SetNextWindowFocus();
         optionsAppearing_ = false;
     }
-    ImGui::SetNextWindowBgAlpha(0.9f);
     ImGui::SetNextWindowSize(ImVec2(px(560), 0));
-    ImGui::PushStyleColor(ImGuiCol_WindowBg, color(Theme::kPanelHeader));
-    ImGui::PushStyleColor(ImGuiCol_TitleBg, color(Theme::kTopBar));
-    ImGui::PushStyleColor(ImGuiCol_TitleBgActive, color(Theme::kTopBar));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, px(8));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(px(14), px(12)));
+    pushWindowLook();
     bool open = true;
     ImGui::PushFont(bold, 16.0f);
     const bool visible = ImGui::Begin("Options###optionsoverlay", &open,
@@ -1510,8 +1511,7 @@ void GuiApp::drawOptionsOverlay() {
         ImGui::PopFont();
     }
     ImGui::End();
-    ImGui::PopStyleVar(2);
-    ImGui::PopStyleColor(3);
+    popWindowLook();
     if (!open)
         optionsOpen_ = false;
 }
@@ -1613,22 +1613,20 @@ void GuiApp::drawMappingOverlay(const LiveState& live) {
                                        viewport->WorkPos.y + viewport->WorkSize.y * 0.5f),
                                 ImGuiCond_Always, ImVec2(0.5f, 0.5f));
     }
-    ImGui::SetNextWindowBgAlpha(0.88f);
     ImGui::SetNextWindowSizeConstraints(ImVec2(ImGui::GetFontSize() * 26, 0), ImVec2(ImGui::GetFontSize() * 40, FLT_MAX));
-    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImGui::ColorConvertU32ToFloat4(Theme::kPanelHeader));
-    ImGui::PushStyleColor(ImGuiCol_TitleBg, ImGui::ColorConvertU32ToFloat4(Theme::kBorder));
-    ImGui::PushStyleColor(ImGuiCol_TitleBgActive, ImGui::ColorConvertU32ToFloat4(Theme::kBorder));
+    pushWindowLook();
     ImGui::PushStyleColor(ImGuiCol_FrameBg, ImGui::ColorConvertU32ToFloat4(0xFF4A4642));
     ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, ImGui::ColorConvertU32ToFloat4(0xFF57524D));
     ImGui::PushStyleColor(ImGuiCol_PlotHistogram, ImGui::ColorConvertU32ToFloat4(Theme::kBlue));
     ImGui::PushStyleColor(ImGuiCol_SliderGrab, ImGui::ColorConvertU32ToFloat4(Theme::kBlue));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 6.0f);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(ImGui::GetFontSize() * 0.9f, ImGui::GetFontSize() * 0.7f));
     bool open = true;
     const std::string title = MappingEditor::controlTitle(spec) + "###mappingoverlay";
-    if (ImGui::Begin(title.c_str(), &open,
-                     ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings |
-                         ImGuiWindowFlags_NoScrollbar)) {
+    ImGui::PushFont(uiFonts_.bold ? uiFonts_.bold : ImGui::GetFont(), 16.0f);
+    const bool visible = ImGui::Begin(title.c_str(), &open,
+                                      ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoCollapse |
+                                          ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoScrollbar);
+    ImGui::PopFont();
+    if (visible) {
         // Edit what plays now: the active channel's own mapping, or the base.
         auto& own = preset_.channels[static_cast<std::size_t>(live.channel)];
         Mapping& target = own ? *own : preset_.base;
@@ -1650,6 +1648,14 @@ void GuiApp::drawMappingOverlay(const LiveState& live) {
 
         ImGui::Spacing();
         ImGui::Separator();
+        ImGui::PushFont(uiFonts_.bold ? uiFonts_.bold : ImGui::GetFont(), 13.0f);
+        // At the bottom right, as in Options.
+        const ImGuiStyle& style = ImGui::GetStyle();
+        float buttonsW = style.ItemSpacing.x * 2;
+        for (const char* label : {"Save preset", "Revert", "Close"})
+            buttonsW += ImGui::CalcTextSize(label).x + style.FramePadding.x * 2;
+        ImGui::Spacing();
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.0f, ImGui::GetContentRegionAvail().x - buttonsW));
         ImGui::BeginDisabled(hasFile_ && !dirty_);
         if (ImGui::Button("Save preset"))
             saveCurrent();
@@ -1664,18 +1670,90 @@ void GuiApp::drawMappingOverlay(const LiveState& live) {
         if (ImGui::Button("Close") ||
             (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) && ImGui::IsKeyPressed(ImGuiKey_Escape)))
             open = false;
+        ImGui::PopFont();
     }
     ImGui::End();
-    ImGui::PopStyleVar(2);
-    ImGui::PopStyleColor(7);
+    ImGui::PopStyleColor(4);
+    popWindowLook();
     if (!open)
         overlaySpec_.reset();
+}
+
+void GuiApp::pushWindowLook() {
+    using Theme = PerformanceView::Theme;
+    const float em = ImGui::GetFontSize();
+    auto color = [](ImU32 c) { return ImGui::ColorConvertU32ToFloat4(c); };
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, color((Theme::kPanelHeader & ~IM_COL32_A_MASK) | IM_COL32(0, 0, 0, 230)));
+    ImGui::PushStyleColor(ImGuiCol_TitleBg, color(Theme::kTopBar));
+    ImGui::PushStyleColor(ImGuiCol_TitleBgActive, color(Theme::kTopBar));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, em * 0.5f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(em * 14 / 16, em * 12 / 16));
+}
+
+void GuiApp::popWindowLook() {
+    ImGui::PopStyleVar(2);
+    ImGui::PopStyleColor(3);
+}
+
+// A modal over the view: the Options look, its bold title, text in the medium font.
+bool GuiApp::beginDialog(const char* title, ImGuiWindowFlags flags) {
+    using Theme = PerformanceView::Theme;
+    const float em = ImGui::GetFontSize();
+    pushWindowLook();
+    ImGui::PushStyleColor(ImGuiCol_PopupBg, ImGui::ColorConvertU32ToFloat4(Theme::kPanelHeader));
+    ImGui::PushStyleVar(ImGuiStyleVar_PopupRounding, em * 0.5f);
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + viewport->WorkSize.x * 0.5f,
+                                   viewport->WorkPos.y + viewport->WorkSize.y * 0.5f),
+                            ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    ImGui::PushFont(uiFonts_.bold ? uiFonts_.bold : ImGui::GetFont(), 16.0f);
+    const bool open = ImGui::BeginPopupModal(title, nullptr, flags | ImGuiWindowFlags_NoSavedSettings);
+    ImGui::PopFont();
+    if (!open) {
+        ImGui::PopStyleVar();
+        ImGui::PopStyleColor();
+        popWindowLook();
+        return false;
+    }
+    ImGui::PushFont(uiFonts_.medium ? uiFonts_.medium : ImGui::GetFont(), 14.0f);
+    return true;
+}
+
+void GuiApp::endDialog() {
+    ImGui::PopFont();
+    ImGui::EndPopup();
+    ImGui::PopStyleVar();
+    ImGui::PopStyleColor();
+    popWindowLook();
+}
+
+// The buttons closing a dialog, at the bottom right as in Options.
+int GuiApp::dialogButtons(std::initializer_list<const char*> labels) {
+    ImGui::PushFont(uiFonts_.bold ? uiFonts_.bold : ImGui::GetFont(), 13.0f);
+    const ImGuiStyle& style = ImGui::GetStyle();
+    const float minW = ImGui::GetFontSize() * 80 / 13;
+    float total = 0;
+    for (const char* label : labels)
+        total += std::max(minW, ImGui::CalcTextSize(label).x + style.FramePadding.x * 2) + style.ItemSpacing.x;
+    total -= style.ItemSpacing.x;
+    ImGui::Spacing();
+    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.0f, ImGui::GetContentRegionAvail().x - total));
+    int clicked = -1, i = 0;
+    for (const char* label : labels) {
+        if (i > 0)
+            ImGui::SameLine();
+        if (ImGui::Button(label, ImVec2(std::max(minW, ImGui::CalcTextSize(label).x + style.FramePadding.x * 2), 0)))
+            clicked = i;
+        ++i;
+    }
+    ImGui::PopFont();
+    return clicked;
 }
 
 void GuiApp::drawDialogs() {
     drawNameDialog();
     drawUnsavedDialog();
-    drawTrashDialog();
+    drawDeleteDialog();
     drawErrorDialog();
     drawOutputDialog();
 }
@@ -1686,7 +1764,7 @@ void GuiApp::drawNameDialog() {
         ImGui::OpenPopup(title);
         openNameDialog_ = false;
     }
-    if (!ImGui::BeginPopupModal(title, nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+    if (!beginDialog(title))
         return;
     ImGui::TextUnformatted("Preset name");
     if (ImGui::IsWindowAppearing())
@@ -1696,7 +1774,8 @@ void GuiApp::drawNameDialog() {
     if (!nameError_.empty())
         ImGui::TextColored(kErrorColor, "%s", nameError_.c_str());
 
-    if (ImGui::Button("OK") || enter) {
+    const int button = dialogButtons({"OK", "Cancel"});
+    if (button == 0 || enter) {
         if (auto error = PresetLibrary::nameError(nameInput_)) {
             nameError_ = *error;
         } else if (library_->contains(nameInput_)) {
@@ -1719,12 +1798,11 @@ void GuiApp::drawNameDialog() {
                 std::exchange(afterSave_, nullptr)();
         }
     }
-    ImGui::SameLine();
-    if (ImGui::Button("Cancel") || ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+    if (button == 1 || ImGui::IsKeyPressed(ImGuiKey_Escape)) {
         afterSave_ = nullptr;
         ImGui::CloseCurrentPopup();
     }
-    ImGui::EndPopup();
+    endDialog();
 }
 
 void GuiApp::drawUnsavedDialog() {
@@ -1733,11 +1811,11 @@ void GuiApp::drawUnsavedDialog() {
         ImGui::OpenPopup(kTitle);
         openUnsavedDialog_ = false;
     }
-    if (!ImGui::BeginPopupModal(kTitle, nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+    if (!beginDialog(kTitle))
         return;
     ImGui::Text("The preset \"%s\" was changed.", hasFile_ ? preset_.name.c_str() : "Untitled");
-    ImGui::Spacing();
-    if (ImGui::Button("Save")) {
+    const int button = dialogButtons({"Save", "Don't save", "Cancel"});
+    if (button == 0) {
         ImGui::CloseCurrentPopup();
         if (hasFile_) {
             if (saveCurrent() && pendingAction_)
@@ -1747,46 +1825,44 @@ void GuiApp::drawUnsavedDialog() {
             saveCurrent();  // asks for a name, then runs afterSave_
         }
     }
-    ImGui::SameLine();
-    if (ImGui::Button("Don't save")) {
+    if (button == 1) {
         ImGui::CloseCurrentPopup();
         dirty_ = false;
         if (pendingAction_)
             std::exchange(pendingAction_, nullptr)();
     }
-    ImGui::SameLine();
-    if (ImGui::Button("Cancel") || ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+    if (button == 2 || ImGui::IsKeyPressed(ImGuiKey_Escape)) {
         pendingAction_ = nullptr;
         ImGui::CloseCurrentPopup();
     }
-    ImGui::EndPopup();
+    endDialog();
 }
 
-void GuiApp::drawTrashDialog() {
-    constexpr const char* kTitle = "Move to trash";
-    if (openTrashDialog_) {
+void GuiApp::drawDeleteDialog() {
+    constexpr const char* kTitle = "Delete preset";
+    if (openDeleteDialog_) {
         ImGui::OpenPopup(kTitle);
-        openTrashDialog_ = false;
+        openDeleteDialog_ = false;
     }
-    if (!ImGui::BeginPopupModal(kTitle, nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+    if (!beginDialog(kTitle))
         return;
-    ImGui::Text("Move \"%s\" to the \"trash\" folder?", preset_.name.c_str());
-    ImGui::TextColored(kHintColor, "The file is not deleted: it can be recovered from that folder.");
-    if (ImGui::Button("Move")) {
+    ImGui::Text("Delete the preset \"%s\"?", preset_.name.c_str());
+    ImGui::TextColored(kHintColor, "The file is deleted for good.");
+    const int button = dialogButtons({"Delete", "Cancel"});
+    if (button == 0) {
         try {
-            const fs::path moved = library_->moveToTrash(preset_.name);
-            log("Preset moved to " + moved.string());
+            const fs::path removed = library_->remove(preset_.name);
+            log("Preset deleted: " + removed.string());
             refreshPresetList();
             openFirstOrUntitled();
         } catch (const std::exception& e) {
-            showError(std::string("Cannot move:\n") + e.what());
+            showError(std::string("Cannot delete:\n") + e.what());
         }
         ImGui::CloseCurrentPopup();
     }
-    ImGui::SameLine();
-    if (ImGui::Button("Cancel") || ImGui::IsKeyPressed(ImGuiKey_Escape))
+    if (button == 1 || ImGui::IsKeyPressed(ImGuiKey_Escape))
         ImGui::CloseCurrentPopup();
-    ImGui::EndPopup();
+    endDialog();
 }
 
 void GuiApp::drawErrorDialog() {
@@ -1795,12 +1871,12 @@ void GuiApp::drawErrorDialog() {
         ImGui::OpenPopup(kTitle);
         openErrorDialog_ = false;
     }
-    if (!ImGui::BeginPopupModal(kTitle, nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+    if (!beginDialog(kTitle))
         return;
     ImGui::TextUnformatted(errorMessage_.c_str());
-    if (ImGui::Button("OK") || ImGui::IsKeyPressed(ImGuiKey_Escape) || ImGui::IsKeyPressed(ImGuiKey_Enter))
+    if (dialogButtons({"OK"}) == 0 || ImGui::IsKeyPressed(ImGuiKey_Escape) || ImGui::IsKeyPressed(ImGuiKey_Enter))
         ImGui::CloseCurrentPopup();
-    ImGui::EndPopup();
+    endDialog();
 }
 
 void GuiApp::drawOutputDialog() {
@@ -1811,7 +1887,7 @@ void GuiApp::drawOutputDialog() {
         openOutputDialog_ = false;
     }
     ImGui::SetNextWindowSize(ImVec2(ImGui::GetFontSize() * 40, 0), ImGuiCond_Appearing);
-    if (!ImGui::BeginPopupModal(kTitle, nullptr)) {
+    if (!beginDialog(kTitle, 0)) {
         outputDialogOpen_ = false;
         return;
     }
@@ -1849,17 +1925,16 @@ void GuiApp::drawOutputDialog() {
     }
     ImGui::EndChild();
 
-    if (ImGui::Button("Refresh"))
-        refreshPorts();
-    ImGui::SameLine();
     const std::string virtualLabel = "Virtual port \"" + settings_.virtualPortName + "\"";
-    if (ImGui::Button(virtualLabel.c_str()) && useOutput(AppSettings::Output::VirtualPort, {}))
+    const int button = dialogButtons({"Refresh", virtualLabel.c_str(), "Later"});
+    if (button == 0)
+        refreshPorts();
+    if (button == 1 && useOutput(AppSettings::Output::VirtualPort, {}))
         ImGui::CloseCurrentPopup();
-    ImGui::SameLine();
-    if (ImGui::Button("Later") || ImGui::IsKeyPressed(ImGuiKey_Escape))
+    if (button == 2 || ImGui::IsKeyPressed(ImGuiKey_Escape))
         ImGui::CloseCurrentPopup();
     ImGui::SetItemTooltip("Keeps the virtual port for now; the question comes back at the next start");
-    ImGui::EndPopup();
+    endDialog();
 }
 
 }  // namespace

@@ -53,8 +53,8 @@ scène, qui joue en même temps qu'elle édite. **F11** passe en plein écran,
   mapping de base.
 
 **Presets** : le menu déroulant PRESET (avec précédent / suivant) ouvre un
-preset ; il propose aussi New…, Save as… et Move to trash… (le fichier est
-déplacé dans le sous-dossier `trash`, jamais supprimé). SAVE apparaît quand le
+preset ; il propose aussi New…, Save as… et Delete… (le fichier est supprimé
+définitivement, après confirmation). SAVE apparaît quand le
 preset est modifié. Un preset tient dans un seul fichier JSON, mappings par
 canal compris.
 
