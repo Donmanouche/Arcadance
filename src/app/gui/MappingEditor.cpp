@@ -189,10 +189,11 @@ bool MappingEditor::drawAxisForm(const char* id, AxisBinding& a, float position,
     };
     ImGui::SameLine(0, ImGui::GetFontSize() * 2);
     ImGui::Dummy(ImVec2(0, 0));
-    modeRadio("CC", AxisMode::Cc);
-    modeRadio("Program change", AxisMode::Program);
-    modeRadio("Velocity", AxisMode::Velocity);
-    modeRadio("Transpose", AxisMode::Transpose);
+    // "##mode": the same words label fields below (the CC number...); ImGui needs distinct IDs.
+    modeRadio("CC##mode", AxisMode::Cc);
+    modeRadio("Program change##mode", AxisMode::Program);
+    modeRadio("Velocity##mode", AxisMode::Velocity);
+    modeRadio("Transpose##mode", AxisMode::Transpose);
     auto hint = [](const char* text) {
         ImGui::PushStyleColor(ImGuiCol_Text, kHintColor);
         ImGui::TextWrapped("%s", text);
@@ -532,7 +533,8 @@ bool MappingEditor::drawTriggerEditor(TriggerBinding& b) {
         break;
     }
     case ActionType::ProgramChange: {
-        const std::pair<int, const char*> kinds[] = {{0, "Program"}, {1, "Next (+1)"}, {-1, "Previous (-1)"}};
+        // "##kind": the Program field below has the same label.
+        const std::pair<int, const char*> kinds[] = {{0, "Program##kind"}, {1, "Next (+1)##kind"}, {-1, "Previous (-1)##kind"}};
         for (auto [step, text] : kinds) {
             if (step != 0)
                 ImGui::SameLine();

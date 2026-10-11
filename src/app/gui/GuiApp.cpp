@@ -416,6 +416,9 @@ bool GuiApp::init() {
     ImGuiIO& io = ImGui::GetIO();
     io.IniFilename = nullptr;  // the layout is fixed
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+#ifdef NDEBUG
+    io.ConfigDebugHighlightIdConflicts = false;  // a programmer's warning: debug builds only
+#endif
     ImGui::StyleColorsDark();
     ImGuiStyle& style = ImGui::GetStyle();
     style.WindowRounding = 0;
