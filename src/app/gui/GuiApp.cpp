@@ -1543,6 +1543,7 @@ void GuiApp::drawOptionsOverlay() {
                 ImGui::SameLine(px(150));
             };
             bool changed = false;
+            const float linkRowY = ImGui::GetCursorPosY();
             rowLabel("Ableton Link");
             const int link = choice("link", {"Off", "On"}, settings_.linkEnabled ? 1 : 0);
             if (link >= 0 && (link == 1) != settings_.linkEnabled) {
@@ -1550,12 +1551,13 @@ void GuiApp::drawOptionsOverlay() {
                 changed = true;
             }
             if (live.linkEnabled) {
-                ImGui::SameLine(0, 0);
-                ImGui::SetCursorPosY(ImGui::GetCursorPosY() - ImGui::GetFrameHeightWithSpacing());
-                ImGui::SetCursorPosX(px(150) + px(120));
+                // On the Link row, after its buttons.
+                const float nextRowY = ImGui::GetCursorPosY();
+                ImGui::SetCursorPos(ImVec2(px(150) + px(120), linkRowY));
                 ImGui::AlignTextToFramePadding();
                 ImGui::TextColored(color(Theme::kGreen), "%d %s \xC2\xB7 %.1f BPM", live.linkPeers,
                                    live.linkPeers == 1 ? "peer" : "peers", live.tempo);
+                ImGui::SetCursorPosY(nextRowY);
             }
             rowLabel("Loops snap to");
             const int snap = choice("snap", {"Free", "1 beat", "1 bar", "2 bars", "4 bars"}, static_cast<int>(settings_.loopSnap));
