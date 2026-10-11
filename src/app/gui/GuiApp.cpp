@@ -556,6 +556,7 @@ void GuiApp::handleEvent(const SDL_Event& e) {
 
 void GuiApp::update() {
     finishVirMidiJob();
+    runtime_->setKey(settings_.key);
     if (const auto source = editor_.takeClearLoopRequest())
         runtime_->clearLoop(*source);
     while (runtime_->popReport()) {

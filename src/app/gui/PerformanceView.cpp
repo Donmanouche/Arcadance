@@ -123,12 +123,29 @@ std::string compact(const TriggerBinding& b, bool flats) {
     return {};
 }
 
-// What an axis sends, for its chip: "CC 40", "PC 1-16", "-".
-std::string axisTarget(const AxisBinding& b) {
+// What an axis sends, for its chip: "CC 40", "PC 1-16", "VEL +40%", "TR -2", "-".
+std::string axisTarget(const AxisBinding& b, const LiveState& live) {
     if (!b.enabled)
         return "-";
-    if (b.program)
+    char buf[24];
+    switch (b.mode) {
+    case AxisMode::Program:
         return "PC " + std::to_string(b.min + 1) + "-" + std::to_string(b.max + 1);
+    case AxisMode::Velocity:
+        if (std::abs(live.velocityShaping) < 0.005f)
+            return "VEL";
+        std::snprintf(buf, sizeof buf, "VEL %+d%%", static_cast<int>(std::lround(live.velocityShaping * 100.0f)));
+        return buf;
+    case AxisMode::Transpose: {
+        const int steps = b.transposeTarget == TransposeTarget::Loop ? live.transposeLoop : live.transposeNotes;
+        if (steps == 0)
+            return b.transposeTarget == TransposeTarget::Loop ? "TR LOOP" : "TR";
+        std::snprintf(buf, sizeof buf, "TR %+d", steps);
+        return buf;
+    }
+    case AxisMode::Cc:
+        break;
+    }
     return "CC " + std::to_string(b.cc);
 }
 
@@ -782,6 +799,23 @@ void PerformanceView::drawPianoRoll(const Mapping& m, const LiveState& live, flo
             dl->AddLine(ImVec2(xAtSample(s2), ay0), ImVec2(xAtSample(s2), ay1), IM_COL32(255, 255, 255, 18));
         dl->AddLine(ImVec2(gx0, ay0), ImVec2(gx0, ay1), IM_COL32(255, 255, 255, 90), px(1.2f));
         text(dl, gMedium, px(8), gx0 + px(3), ay1 - px(6), T::kDim, "start", H::Left, V::Middle);
+        // Beneath the loop, what is played live scrolls by as without a loop, from
+        // "now" at the right edge: faint cyan, so the loop stays in front.
+        bool liveShown = false;
+        for (const RollNote& n : rollNotes_) {
+            if (n.channel != live.channel || n.fromLoop)
+                continue;
+            const double end = n.sounding ? time_ : n.end;
+            if (end < time_ - kWindow)
+                continue;
+            liveShown = true;
+            const float yb = yOf(n.note);
+            const float a = 0.14f + 0.08f * static_cast<float>(n.velocity) / 127.0f;
+            dl->AddRectFilled(ImVec2(std::max(xAtTime(n.start), gx0), yb - rowH + 0.5f),
+                              ImVec2(std::max(xAtTime(end), xAtTime(n.start) + px(2)), yb - 0.5f), alpha(T::kCyan, a), px(1));
+        }
+        if (liveShown)
+            dl->AddLine(ImVec2(ax1 - px(1), ay0), ImVec2(ax1 - px(1), ay1), alpha(T::kCyan, 0.3f), px(1.2f));
         // The loop's notes; lit while the playhead crosses them; orange while
         // being added in overdub (from their start to the playhead).
         const auto pos = static_cast<float>(st.position);
@@ -1010,7 +1044,7 @@ void PerformanceView::drawStick(int index, const Mapping& m, const LiveState& li
     const float chipTop = midiY + px(12), chipH = px(20);
     const float cw = (w - px(30)) * 0.5f;
     auto axisChip = [&](float cx0, const AxisBinding& b, Axis a, const char* name) {
-        const std::string label = std::string(name) + "  " + axisTarget(b) + (b.invert ? "  inv" : "");
+        const std::string label = std::string(name) + "  " + axisTarget(b, live) + (b.invert ? "  inv" : "");
         badge(dl, gCondensed, px(13), cx0 + cw * 0.5f, chipTop, chipH, label, T::kText, alpha(frozen ? T::kIce : accent, 0.22f),
               b.enabled ? (frozen ? T::kIce : accent) : T::kDim);
         const std::string spec = "axis:" + std::string(toString(a));
@@ -1206,7 +1240,7 @@ void PerformanceView::drawTriggers(const Mapping& m, const LiveState& live, floa
         const float rh = px(28), midY = ry + rh * 0.5f;
         text(dl, gBold, px(12), x + px(12), midY, T::kLabel, a == Axis::LeftTrigger ? "L2" : "R2", H::Left, V::Middle);
         const float ccX0 = x + px(38), ccW = px(52);
-        badge(dl, gCondensed, px(13), ccX0 + ccW * 0.5f, midY - px(10), px(20), axisTarget(ab),
+        badge(dl, gCondensed, px(13), ccX0 + ccW * 0.5f, midY - px(10), px(20), axisTarget(ab, live),
               T::kText, alpha(T::kPink, 0.22f), ab.enabled ? T::kPink : T::kDim);
         const std::string axisSpec = "axes:left_trigger,right_trigger";
         if (hoverButton(a == Axis::LeftTrigger ? "##l2cc" : "##r2cc", ImVec2(ccX0, ry), ImVec2(ccX0 + ccW, ry + rh)))
@@ -1402,7 +1436,7 @@ void PerformanceView::drawTouchpad(const Mapping& m, const LiveState& live, floa
             const AxisBinding* axes[] = {&fb.x, &fb.y};
             for (int k = 0; k < 2; ++k) {
                 const AxisBinding& b = *axes[k];
-                const std::string label = std::string(k == 0 ? "X  " : "Y  ") + axisTarget(b);
+                const std::string label = std::string(k == 0 ? "X  " : "Y  ") + axisTarget(b, live);
                 badge(dl, gCondensed, px(13), cx0 + cw * 0.5f + static_cast<float>(k) * (cw + px(6)), midY - px(10), px(20), label,
                       T::kText, alpha(col, finger.down ? 0.30f : 0.16f), b.enabled ? col : T::kDim);
             }

@@ -239,6 +239,8 @@ void Engine::touchMoved(int finger, float x, float y) {
         }
         return;
     }
+    if (binding.mode == TouchMode::Axis)
+        fingerHeld_[static_cast<std::size_t>(finger)] = {x, y};  // stays once lifted
     if (binding.mode == TouchMode::Axis) {
         if (binding.x.enabled)
             sendAxis(binding.x, x, kAxisCount + finger * 2, false);  // a finger rests by lifting
@@ -433,6 +435,18 @@ Engine::Sounding Engine::soundingFor(const TriggerBinding& binding, int channel)
         s.notes.count = 1;
     } else if (binding.type == ActionType::Chord) {
         s.notes = binding.chord;
+    }
+    if (binding.type == ActionType::Note || binding.type == ActionType::Chord) {
+        // The Velocity and Transpose axes, as they are when the note starts.
+        const Shaping sh = shaping(channel);
+        const int base = binding.velocity;
+        const float v = sh.velocity;
+        s.velocity = static_cast<std::uint8_t>(std::clamp(
+            static_cast<int>(std::lround(static_cast<float>(base) + (v > 0 ? v * static_cast<float>(127 - base) : v * static_cast<float>(base - 1)))),
+            1, 127));
+        if (sh.transposeNotes != 0)
+            for (std::size_t i = 0; i < std::min<std::size_t>(s.notes.count, s.notes.notes.size()); ++i)
+                s.notes.notes[i] = static_cast<std::uint8_t>(transposed(s.notes.notes[i], sh.transposeNotes));
     } else {
         s.cc = binding.number;
         s.onValue = binding.onValue;
@@ -493,7 +507,9 @@ void Engine::sendAxis(const AxisBinding& binding, float position, int key, bool 
         position = 1.0f - position;
     const int span = binding.max - binding.min;
     const int value = binding.min + static_cast<int>(std::lround(position * static_cast<float>(span)));
-    if (binding.program) {
+    if (binding.mode == AxisMode::Velocity || binding.mode == AxisMode::Transpose)
+        return;  // read when a note starts, see shaping()
+    if (binding.mode == AxisMode::Program) {
         // Chosen once the control stays on it (tick() sends it), never on the way back to rest.
         auto& pending = pendingProgram_[static_cast<std::size_t>(key)];
         if (atRest) {
@@ -630,6 +646,7 @@ void Engine::runLoops() {
         loop.state = LoopStatus::State::Recording;
         loop.length = 0;
         loop.stretch = 0;
+        loopShaping_[index] = {-1.0f, -1.0f};
         loop.nextAt = now_;
         recordedThisHold_ = true;
     }
@@ -747,6 +764,98 @@ void Engine::stretchLoop(int channel, int source, int steps) {
     if ((loop.stretch > 0 && next < 0) || (loop.stretch < 0 && next > 0))
         next = 0;  // stop at 1x on the way
     loop.stretch = std::clamp(next, kMinStretch, kMaxStretch);
+}
+
+int Engine::transposeSteps(int semitones) const {
+    semitones = std::clamp(semitones, 0, kMaxTranspose);
+    if (!key_)
+        return semitones;
+    const auto degrees = static_cast<int>(key_->type().intervals.size());
+    return semitones * degrees / 12;  // 12 semitones: an octave of degrees
+}
+
+int Engine::transposed(int note, int steps) const {
+    int out = note + steps;
+    if (key_ && steps != 0) {
+        const auto& iv = key_->type().intervals;
+        const auto n = static_cast<int>(iv.size());
+        const int rel = note - key_->root;
+        const int octave = rel >= 0 ? rel / 12 : -((-rel + 11) / 12);
+        const int pc = rel - octave * 12;
+        // The nearest degree (the octave above counts as degree n).
+        int degree = 0;
+        for (int d = 0; d <= n; ++d) {
+            const int at = d < n ? iv[static_cast<std::size_t>(d)] : 12;
+            if (std::abs(at - pc) < std::abs((degree < n ? iv[static_cast<std::size_t>(degree)] : 12) - pc))
+                degree = d;
+        }
+        const int target = octave * n + degree + steps;
+        const int targetOctave = target >= 0 ? target / n : -((-target + n - 1) / n);
+        out = key_->root + targetOctave * 12 + iv[static_cast<std::size_t>(target - targetOctave * n)];
+    }
+    while (out > 127)
+        out -= 12;
+    while (out < 0)
+        out += 12;
+    return out;
+}
+
+Engine::Shaping Engine::shaping(int channel) const {
+    Shaping sh;
+    channel = std::clamp(channel, 0, kChannelCount - 1);
+    const Mapping& m = preset_->forChannel(channel);
+    const bool live = channel == channel_;
+    // One axis at position p in [0, 1]: a stick or finger from its middle, a trigger from rest.
+    auto add = [&](const AxisBinding& a, float p, bool trigger, bool stick) {
+        if (!a.enabled || p < 0.0f)
+            return;
+        if (a.invert)
+            p = 1.0f - p;
+        float v = trigger ? p : (p - 0.5f) * 2.0f;
+        if (stick && std::abs(v) < 0.12f)
+            v = 0;  // a stick at rest changes nothing
+        if (a.mode == AxisMode::Velocity) {
+            sh.velocity += v;
+        } else if (a.mode == AxisMode::Transpose) {
+            const int steps = static_cast<int>(std::lround(v * static_cast<float>(transposeSteps(v > 0 ? a.transposeUp : a.transposeDown))));
+            (a.transposeTarget == TransposeTarget::Loop ? sh.transposeLoop : sh.transposeNotes) += steps;
+        }
+    };
+    const auto ch = static_cast<std::size_t>(channel);
+    for (int i = 0; i < kAxisCount; ++i) {
+        const auto axis = static_cast<Axis>(i);
+        const AxisBinding& a = m.axes[static_cast<std::size_t>(i)];
+        if (a.mode != AxisMode::Velocity && a.mode != AxisMode::Transpose)
+            continue;
+        const bool trigger = isTrigger(axis);
+        if (live) {
+            const float p = (frozen_[ch] & axisBit(axis)) ? frozenAt_[ch][static_cast<std::size_t>(i)]
+                            : trigger ? triggerPosition_[axis == Axis::LeftTrigger ? 0 : 1]
+                                      : stickPosition_[static_cast<std::size_t>(i)];
+            add(a, p, trigger, !trigger);
+        }
+        // Its loop: the sticks' X / Y, the triggers' L2 / R2.
+        const int source = trigger ? static_cast<int>(LoopSource::Triggers) : (i < 2 ? 0 : 1);
+        const int xy = trigger ? (axis == Axis::LeftTrigger ? 0 : 1) : i % 2;
+        add(a, loopShaping_[loopIndex(channel, source)][static_cast<std::size_t>(xy)], trigger, false);
+    }
+    for (int f = 0; f < kFingerCount; ++f) {
+        const FingerBinding& fb = m.fingers[static_cast<std::size_t>(f)];
+        if (fb.mode != TouchMode::Axis)
+            continue;
+        const auto& held = fingerHeld_[static_cast<std::size_t>(f)];
+        const auto& looped = loopShaping_[loopIndex(channel, 2 + f)];
+        for (int xy = 0; xy < 2; ++xy) {
+            const AxisBinding& a = xy == 0 ? fb.x : fb.y;
+            if (a.mode != AxisMode::Velocity && a.mode != AxisMode::Transpose)
+                continue;
+            if (live)
+                add(a, xy == 0 ? held[0] : 1.0f - held[1], false, false);
+            add(a, looped[static_cast<std::size_t>(xy)], false, false);
+        }
+    }
+    sh.velocity = std::clamp(sh.velocity, -1.0f, 1.0f);
+    return sh;
 }
 
 // Stretches a loop of the active channel, waiting kStretchPauseMs at 1x when it
@@ -875,23 +984,28 @@ void Engine::sendLoopValue(std::size_t index, float px, float py) {
         const int lo = a.enabled ? a.min : 0, hi = a.enabled ? a.max : 127;
         return lo + static_cast<int>(std::lround(position * static_cast<float>(hi - lo)));
     };
-    int vx = 0, vy = 0;
+    const AxisBinding *bx = nullptr, *by = nullptr;
     if (source < 2) {
-        vx = value(m.axes[static_cast<std::size_t>(source == 0 ? Axis::LeftX : Axis::RightX)], px);
-        vy = value(m.axes[static_cast<std::size_t>(source == 0 ? Axis::LeftY : Axis::RightY)], py);
+        bx = &m.axes[static_cast<std::size_t>(source == 0 ? Axis::LeftX : Axis::RightX)];
+        by = &m.axes[static_cast<std::size_t>(source == 0 ? Axis::LeftY : Axis::RightY)];
     } else if (source == static_cast<int>(LoopSource::Triggers)) {
-        vx = value(m.axes[static_cast<std::size_t>(Axis::LeftTrigger)], px);
-        vy = value(m.axes[static_cast<std::size_t>(Axis::RightTrigger)], py);
+        bx = &m.axes[static_cast<std::size_t>(Axis::LeftTrigger)];
+        by = &m.axes[static_cast<std::size_t>(Axis::RightTrigger)];
     } else {
         const FingerBinding& f = m.fingers[static_cast<std::size_t>(source - 2)];
-        vx = value(f.x, px);
-        vy = value(f.y, 1.0f - py);  // the touchpad's Y grows downwards, its CC upwards
+        bx = &f.x;
+        by = &f.y;
+        py = 1.0f - py;  // the touchpad's Y grows downwards, its CC upwards
     }
-    if (vx != loop.sentX) {
+    // An axis set to Velocity or Transpose plays its loop as that, not as a CC.
+    auto shapes = [](const AxisBinding& a) { return a.enabled && (a.mode == AxisMode::Velocity || a.mode == AxisMode::Transpose); };
+    loopShaping_[index] = {shapes(*bx) ? px : -1.0f, shapes(*by) ? py : -1.0f};
+    const int vx = value(*bx, px), vy = value(*by, py);
+    if (!shapes(*bx) && vx != loop.sentX) {
         sendCc(channel, binding.ccX, vx);
         loop.sentX = vx;
     }
-    if (vy != loop.sentY) {
+    if (!shapes(*by) && vy != loop.sentY) {
         sendCc(channel, binding.ccY, vy);
         loop.sentY = vy;
     }
@@ -902,9 +1016,10 @@ void Engine::silenceLoop(std::size_t index) {
     if (index % kLoopSourceCount == static_cast<std::size_t>(LoopSource::Notes)) {
         const auto channel = static_cast<int>(index / kLoopSourceCount);
         auto& on = noteLoopOn_[static_cast<std::size_t>(channel)];
+        const auto& shift = loopShift_[static_cast<std::size_t>(channel)];
         for (int n = 0; n < 128; ++n)
             if (on.test(static_cast<std::size_t>(n)))
-                sendNow(MidiMessage::noteOff(channel, n));
+                sendNow(MidiMessage::noteOff(channel, n + shift[static_cast<std::size_t>(n)]));
         on.reset();
     }
 }
@@ -976,12 +1091,18 @@ void Engine::playLoopNotes(std::size_t index) {
     auto hi = lo;
     while (hi != events.end() && hi->at == loop.position)
         ++hi;
+    auto& shift = loopShift_[static_cast<std::size_t>(channel)];
+    const int steps = shaping(channel).transposeLoop;  // a Transpose axis set on the loop
     auto play = [&](const NoteEvent& e, bool start) {
         if (start) {
-            sendNow(MidiMessage::noteOn(channel, e.note, e.velocity));
+            if (on.test(e.note))  // the same note again: the one on stops first
+                sendNow(MidiMessage::noteOff(channel, e.note + shift[e.note]));
+            const int note = transposed(e.note, steps);
+            shift[e.note] = static_cast<std::int8_t>(note - e.note);
+            sendNow(MidiMessage::noteOn(channel, note, e.velocity));
             on.set(e.note);
         } else if (on.test(e.note)) {
-            sendNow(MidiMessage::noteOff(channel, e.note));
+            sendNow(MidiMessage::noteOff(channel, e.note + shift[e.note]));
             on.reset(e.note);
         }
     };
@@ -1045,6 +1166,7 @@ void Engine::clearLoop(int channel, int source) {
     loop.state = LoopStatus::State::Empty;
     loop.length = 0;
     loop.stretch = 0;
+    loopShaping_[index] = {-1.0f, -1.0f};
     if (index % kLoopSourceCount == static_cast<std::size_t>(LoopSource::Notes) &&
         overdubChannel_ == static_cast<int>(index / kLoopSourceCount))
         overdubChannel_ = -1;
@@ -1060,6 +1182,8 @@ void Engine::pauseLoops() {
     if (loopsPaused_)
         return;
     loopsPaused_ = true;
+    for (auto& v : loopShaping_)
+        v = {-1.0f, -1.0f};
     fromLoop_ = true;
     for (std::size_t i = 0; i < loops_.size(); ++i)
         silenceLoop(i);  // the notes the note loops have on
@@ -1102,6 +1226,11 @@ void Engine::stopLoops() {
 
 void Engine::toggleFreeze(std::uint8_t axes) {
     auto& frozen = frozen_[static_cast<std::size_t>(channel_)];
+    for (int a = 0; a < kAxisCount; ++a)  // where newly frozen axes stay, for Velocity / Transpose
+        if ((axes & axisBit(static_cast<Axis>(a))) && !(frozen & axisBit(static_cast<Axis>(a))))
+            frozenAt_[static_cast<std::size_t>(channel_)][static_cast<std::size_t>(a)] =
+                isTrigger(static_cast<Axis>(a)) ? triggerPosition_[a == static_cast<int>(Axis::LeftTrigger) ? 0 : 1]
+                                                : stickPosition_[static_cast<std::size_t>(a)];
     frozen = (frozen & axes) == axes ? static_cast<std::uint8_t>(frozen & ~axes)
                                      : static_cast<std::uint8_t>(frozen | axes);
     if (observer_)

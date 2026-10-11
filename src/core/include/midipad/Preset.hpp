@@ -50,18 +50,33 @@ struct TriggerBinding {
     bool isSet() const { return type != ActionType::None; }
 };
 
-// A continuous control sent as a CC, scaled to [min, max] (min > max reverses
-// it); or, with `program`, choosing a Program Change among min..max, sent once
-// the control has stayed on it a moment, never on the way back to rest, and
-// preceded by a Bank Select (CC 0, CC 32) when set.
+// What a continuous control does:
+// - Cc: sends a CC, scaled to [min, max] (min > max reverses it);
+// - Program: chooses a Program Change among min..max, sent once the control has
+//   stayed on it a moment, never on the way back to rest, and preceded by a
+//   Bank Select (CC 0, CC 32) when set;
+// - Velocity: raises the velocity of the notes then played, up to 127 at the
+//   end of its travel, or lowers it, down to 1 (a trigger only raises it);
+// - Transpose: transposes the notes then played, or the note loop's, by up to
+//   transposeDown / transposeUp semitones at the ends of its travel (a trigger
+//   only up); by degrees of the scale when a tonality is chosen.
+// A stick at rest changes nothing; a finger keeps its last value once lifted.
+enum class AxisMode : std::uint8_t { Cc, Program, Velocity, Transpose };
+enum class TransposeTarget : std::uint8_t { Notes, Loop };
+inline constexpr int kMaxTranspose = 24;  // semitones each way
+
 struct AxisBinding {
     bool enabled = false;
     std::uint8_t cc = 0;
     std::uint8_t min = 0;
     std::uint8_t max = 127;
     bool invert = false;
-    bool program = false;
-    std::int16_t bankMsb = -1, bankLsb = -1;  // -1: none
+    AxisMode mode = AxisMode::Cc;
+    std::int16_t bankMsb = -1, bankLsb = -1;  // Program: -1 none
+    std::uint8_t transposeDown = 12, transposeUp = 12;
+    TransposeTarget transposeTarget = TransposeTarget::Notes;
+
+    bool sendsCc() const { return mode == AxisMode::Cc; }
 };
 
 // A stick movement recorded by a LoopRecord button and played back in a loop,

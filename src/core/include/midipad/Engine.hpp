@@ -3,6 +3,7 @@
 #include "midipad/Humanize.hpp"
 #include "midipad/MidiMessage.hpp"
 #include "midipad/Preset.hpp"
+#include "midipad/Scales.hpp"
 
 #include <array>
 #include <bitset>
@@ -85,6 +86,22 @@ public:
     void tick(std::uint64_t nowNs);
 
     void setHumanize(const Humanize& humanize) { humanize_ = humanize; }
+    // The tonality Transpose axes move in, by degrees; none: by semitones.
+    void setKey(const std::optional<Key>& key) { key_ = key; }
+
+    // What the Velocity and Transpose axes do on a channel now, live and from
+    // the loops of their sources: the velocity in [-1, 1] of the way to 127 or
+    // to 1, and the transpositions in steps (degrees of the key, or semitones).
+    struct Shaping {
+        float velocity = 0;
+        int transposeNotes = 0, transposeLoop = 0;
+    };
+    Shaping shaping(int channel) const;
+    // `note` moved by `steps`: degrees of the key (a note outside it first goes
+    // to the nearest one of the key), semitones without a key; kept in range.
+    int transposed(int note, int steps) const;
+    // How many steps a Transpose axis may go for `semitones`.
+    int transposeSteps(int semitones) const;
 
     // Loops, one per LoopSource and channel. A LoopRecord binding held records,
     // on the active channel, each stick, touchpad finger (axis mode) or the
@@ -223,6 +240,19 @@ private:
     std::array<Sounding, kSlotCount> held_{};
     std::array<std::array<Sounding, kSlotCount>, kChannelCount> latched_{};
     std::array<std::uint8_t, kChannelCount> frozen_{};
+    std::array<std::array<float, kAxisCount>, kChannelCount> frozenAt_{};  // where frozen axes stopped
+    std::optional<Key> key_;
+    // Where each finger last was, kept once lifted (Velocity / Transpose axes); 0.5: untouched.
+    std::array<std::array<float, 2>, kFingerCount> fingerHeld_{{{0.5f, 0.5f}, {0.5f, 0.5f}}};
+    // The X, Y a movement loop last played for Velocity / Transpose axes; < 0: none.
+    std::array<std::array<float, 2>, kChannelCount * kLoopSourceCount> loopShaping_ = [] {
+        std::array<std::array<float, 2>, kChannelCount * kLoopSourceCount> none{};
+        for (auto& v : none)
+            v = {-1.0f, -1.0f};
+        return none;
+    }();
+    // Per channel and note of the note loop: how far the note on was transposed.
+    std::array<std::array<std::int8_t, 128>, kChannelCount> loopShift_{};
     std::array<std::array<std::int16_t, 128>, kChannelCount> lastCc_{};
 
     std::uint8_t dpadBits_ = 0;

@@ -158,6 +158,9 @@ LiveState Runtime::live() const {
     s.loopChannels = loopChannels_.load(std::memory_order_relaxed);
     s.loopsPaused = loopsPaused_.load(std::memory_order_relaxed);
     s.stretchHeld = stretchHeld_.load(std::memory_order_relaxed);
+    s.velocityShaping = velocityShaping_.load(std::memory_order_relaxed);
+    s.transposeNotes = transposeNotes_.load(std::memory_order_relaxed);
+    s.transposeLoop = transposeLoop_.load(std::memory_order_relaxed);
     {
         std::lock_guard lock(loopsMutex_);
         s.loops = loops_;
@@ -227,6 +230,10 @@ void Runtime::publish(const GamepadInput& gamepad, const Engine& engine) {
     loopChannels_.store(engine.channelsWithLoops(), std::memory_order_relaxed);
     loopsPaused_.store(engine.loopsPaused(), std::memory_order_relaxed);
     stretchHeld_.store(engine.stretchHeld(), std::memory_order_relaxed);
+    const auto shaping = engine.shaping(engine.channel());
+    velocityShaping_.store(shaping.velocity, std::memory_order_relaxed);
+    transposeNotes_.store(shaping.transposeNotes, std::memory_order_relaxed);
+    transposeLoop_.store(shaping.transposeLoop, std::memory_order_relaxed);
 
     // The loops, if the main thread is not reading them right now.
     std::unique_lock lock(loopsMutex_, std::try_to_lock);
@@ -321,6 +328,10 @@ void Runtime::run(std::stop_token stop, Options options, std::shared_ptr<const P
         engine.setDpadSettle(dpadSettlePress_.load(std::memory_order_relaxed),
                              dpadSettleRelease_.load(std::memory_order_relaxed));
         engine.setHumanize(unpack(humanize_.load(std::memory_order_relaxed)));
+        if (const int key = key_.load(std::memory_order_relaxed); key >= 0)
+            engine.setKey(midipad::Key{key / 256, static_cast<std::size_t>(key % 256)});
+        else
+            engine.setKey(std::nullopt);
         engine.tick(start);
         gamepad.poll(start);
         publish(gamepad, engine);

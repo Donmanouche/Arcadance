@@ -167,42 +167,93 @@ std::string MappingEditor::controlTitle(const std::string& spec) {
     return spec;
 }
 
-bool MappingEditor::drawAxisForm(const char* id, AxisBinding& a, float position) {
+bool MappingEditor::drawAxisForm(const char* id, AxisBinding& a, float position, bool trigger) {
     bool changed = false;
     ImGui::PushID(id);
     changed |= ImGui::Checkbox("Enabled", &a.enabled);
     ImGui::BeginDisabled(!a.enabled);
+    // What the axis does.
+    auto modeRadio = [&](const char* label, AxisMode mode) {
+        ImGui::SameLine();
+        if (ImGui::RadioButton(label, a.mode == mode) && a.mode != mode) {
+            if (mode == AxisMode::Program) {
+                a.min = 0;
+                a.max = 15;
+            } else if (a.mode == AxisMode::Program) {
+                a.min = 0;
+                a.max = 127;
+            }
+            a.mode = mode;
+            changed = true;
+        }
+    };
     ImGui::SameLine(0, ImGui::GetFontSize() * 2);
-    if (ImGui::RadioButton("CC", !a.program) && a.program) {
-        a.program = false;
-        changed = true;
-    }
-    ImGui::SameLine();
-    if (ImGui::RadioButton("Program change", a.program) && !a.program) {
-        a.program = true;
-        a.min = 0;
-        a.max = 15;
-        changed = true;
-    }
-    if (a.program) {
+    ImGui::Dummy(ImVec2(0, 0));
+    modeRadio("CC", AxisMode::Cc);
+    modeRadio("Program change", AxisMode::Program);
+    modeRadio("Velocity", AxisMode::Velocity);
+    modeRadio("Transpose", AxisMode::Transpose);
+    auto hint = [](const char* text) {
+        ImGui::PushStyleColor(ImGuiCol_Text, kHintColor);
+        ImGui::TextWrapped("%s", text);
+        ImGui::PopStyleColor();
+    };
+    switch (a.mode) {
+    case AxisMode::Program:
         changed |= inputProgram("From", a.min);
         ImGui::SameLine();
         changed |= inputProgram("To", a.max);
         changed |= ImGui::Checkbox("Invert", &a.invert);
         changed |= inputBankSelect(a.bankMsb, a.bankLsb);
-        ImGui::PushStyleColor(ImGuiCol_Text, kHintColor);
-        ImGui::TextWrapped("The travel picks a program in this range, in the bank set above; it is sent once the "
-                           "control stays on it a moment, never when it springs back to rest.");
-        ImGui::PopStyleColor();
-    } else {
+        hint("The travel picks a program in this range, in the bank set above; it is sent once the control stays on "
+             "it a moment, never when it springs back to rest.");
+        break;
+    case AxisMode::Velocity:
+        changed |= ImGui::Checkbox("Invert", &a.invert);
+        hint(trigger ? "Pressed, the trigger raises the velocity of the notes then played, from their mapping's "
+                       "velocity up to 127 at the end of its travel."
+                     : "Away from the middle, the velocity of the notes then played rises from their mapping's "
+                       "velocity up to 127 one way, and falls down to 1 the other way. A stick at rest changes "
+                       "nothing; a finger keeps its last value once lifted. A loop of this axis does the same.");
+        break;
+    case AxisMode::Transpose: {
+        if (!trigger) {
+            changed |= inputU7("Down", a.transposeDown, 0, kMaxTranspose);
+            ImGui::SameLine();
+        }
+        changed |= inputU7("Up (semitones)", a.transposeUp, 0, kMaxTranspose);
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted("Transposes");
+        ImGui::SameLine();
+        if (ImGui::RadioButton("the notes played", a.transposeTarget == TransposeTarget::Notes) &&
+            a.transposeTarget != TransposeTarget::Notes) {
+            a.transposeTarget = TransposeTarget::Notes;
+            changed = true;
+        }
+        ImGui::SameLine();
+        if (ImGui::RadioButton("the note loop", a.transposeTarget == TransposeTarget::Loop) &&
+            a.transposeTarget != TransposeTarget::Loop) {
+            a.transposeTarget = TransposeTarget::Loop;
+            changed = true;
+        }
+        changed |= ImGui::Checkbox("Invert", &a.invert);
+        hint(trigger ? "Pressed, the trigger transposes up to this many semitones, by degrees of the scale when a "
+                       "tonality is chosen. Notes take it when they start."
+                     : "Away from the middle, it transposes down or up to these many semitones, by degrees of the "
+                       "scale when a tonality is chosen. Notes take it when they start; the note loop is the active "
+                       "channel's. A stick at rest changes nothing; a finger keeps its last value once lifted.");
+        break;
+    }
+    case AxisMode::Cc:
         changed |= inputU7("CC", a.cc);
         changed |= inputU7("Min", a.min);
         ImGui::SameLine();
         changed |= inputU7("Max", a.max);
         changed |= ImGui::Checkbox("Invert", &a.invert);
+        break;
     }
     ImGui::EndDisabled();
-    if (!a.program)
+    if (a.mode == AxisMode::Cc)
         axisValueBar(a, position, ImGui::GetFontSize() * 14);
     ImGui::PopID();
     return changed;
@@ -263,7 +314,8 @@ bool MappingEditor::drawControl(const std::string& spec, Mapping& m, const LiveS
                 continue;
             if (p.size() == 3)
                 ImGui::SeparatorText(label(*a).c_str());
-            changed |= drawAxisForm(p[i].c_str(), m.axes[static_cast<std::size_t>(*a)], axisPosition(live, *a));
+            changed |= drawAxisForm(p[i].c_str(), m.axes[static_cast<std::size_t>(*a)], axisPosition(live, *a),
+                                    *a == Axis::LeftTrigger || *a == Axis::RightTrigger);
         }
         // A whole stick, or both triggers: their loop too.
         if (p.size() == 3) {
@@ -349,7 +401,7 @@ bool MappingEditor::drawLoopForm(int source, Mapping& m) {
     // The loop plays beside the sticks and fingers: a CC they send too would fight.
     std::string clash;
     auto check = [&](const AxisBinding& b, const std::string& name) {
-        if (b.enabled && (b.cc == loop.ccX || b.cc == loop.ccY))
+        if (b.enabled && b.sendsCc() && ((own.sendsCc() && b.cc == loop.ccX) || (ownY.sendsCc() && b.cc == loop.ccY)))
             clash += (clash.empty() ? "" : ", ") + name + " (CC " + std::to_string(b.cc) + ")";
     };
     for (int a = 0; a < kAxisCount; ++a)
@@ -368,10 +420,17 @@ bool MappingEditor::drawLoopForm(int source, Mapping& m) {
     } else {
         ImGui::PushStyleColor(ImGuiCol_Text, kHintColor);
         const char* what = finger ? "finger" : triggers ? "triggers" : "stick";
-        ImGui::TextWrapped("The loop plays beside the %s, on its own CCs (the %s %s %s and %s).", what, what,
-                           triggers ? "send" : "sends",
-                           own.enabled ? ("CC " + std::to_string(own.cc)).c_str() : "nothing",
-                           ownY.enabled ? ("CC " + std::to_string(ownY.cc)).c_str() : "nothing");
+        // Each axis of the loop: on its loop CC, or as the Velocity / Transpose its axis is set to.
+        auto plays = [](const AxisBinding& axis, int loopCc) {
+            if (axis.enabled && axis.mode == AxisMode::Velocity)
+                return std::string("as Velocity");
+            if (axis.enabled && axis.mode == AxisMode::Transpose)
+                return std::string("as Transpose");
+            return "on CC " + std::to_string(loopCc);
+        };
+        const std::string text = std::string("The loop plays beside the ") + what + ": " + (triggers ? "L2 " : "X ") +
+                                 plays(own, loop.ccX) + ", " + (triggers ? "R2 " : "Y ") + plays(ownY, loop.ccY) + ".";
+        ImGui::TextWrapped("%s", text.c_str());
         ImGui::PopStyleColor();
     }
     if (ImGui::Button("Clear the loop"))

@@ -270,22 +270,42 @@ AxisBinding axisFromJson(const Json& j, const std::string& where) {
         fail(where, "expected an object");
     AxisBinding a;
     a.enabled = true;
-    if (j.contains("program")) {
-        if (!j["program"].is_boolean())
-            fail(where + ".program", "expected true or false");
-        a.program = j["program"].get<bool>();
+    auto flag = [&](const char* key) {
+        if (!j.contains(key))
+            return false;
+        if (!j[key].is_boolean())
+            fail(where + "." + key, "expected true or false");
+        return j[key].get<bool>();
+    };
+    if (flag("program"))
+        a.mode = AxisMode::Program;
+    if (flag("velocity"))
+        a.mode = AxisMode::Velocity;
+    if (j.contains("transpose")) {
+        const std::string at = where + ".transpose";
+        if (!j["transpose"].is_object())
+            fail(at, "expected an object");
+        const Json& t = j["transpose"];
+        a.mode = AxisMode::Transpose;
+        a.transposeDown = readU7(t, "down", 12, at);
+        a.transposeUp = readU7(t, "up", 12, at);
+        if (a.transposeDown > kMaxTranspose || a.transposeUp > kMaxTranspose)
+            fail(at, "expected at most 24 semitones each way");
+        const std::string to = readString(t, "to", "notes", at);
+        if (to == "notes")
+            a.transposeTarget = TransposeTarget::Notes;
+        else if (to == "loop")
+            a.transposeTarget = TransposeTarget::Loop;
+        else
+            fail(at + ".to", "expected \"notes\" or \"loop\"");
     }
-    if (!a.program && !j.contains("cc"))
+    if (a.mode == AxisMode::Cc && !j.contains("cc"))
         fail(where, "missing \"cc\"");
     a.cc = readU7(j, "cc", 0, where);
     a.min = readU7(j, "min", 0, where);
     a.max = readU7(j, "max", 127, where);
-    if (j.contains("invert")) {
-        if (!j["invert"].is_boolean())
-            fail(where + ".invert", "expected true or false");
-        a.invert = j["invert"].get<bool>();
-    }
-    if (a.program) {
+    a.invert = flag("invert");
+    if (a.mode == AxisMode::Program) {
         if (j.contains("bank_msb"))
             a.bankMsb = readU7(j, "bank_msb", 0, where);
         if (j.contains("bank_lsb"))
@@ -296,12 +316,18 @@ AxisBinding axisFromJson(const Json& j, const std::string& where) {
 
 Json axisToJson(const AxisBinding& a) {
     Json j;
-    if (a.program) {
+    if (a.mode == AxisMode::Program) {
         j["program"] = true;
         if (a.bankMsb >= 0)
             j["bank_msb"] = a.bankMsb;
         if (a.bankLsb >= 0)
             j["bank_lsb"] = a.bankLsb;
+    } else if (a.mode == AxisMode::Velocity) {
+        j["velocity"] = true;
+    } else if (a.mode == AxisMode::Transpose) {
+        j["transpose"] = {{"down", a.transposeDown},
+                          {"up", a.transposeUp},
+                          {"to", a.transposeTarget == TransposeTarget::Loop ? "loop" : "notes"}};
     } else {
         j["cc"] = a.cc;
     }

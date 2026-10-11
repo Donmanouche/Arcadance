@@ -66,6 +66,9 @@ struct LiveState {
     std::uint16_t loopChannels = 0;  // Engine::channelsWithLoops()
     bool loopsPaused = false;
     bool stretchHeld = false;  // a LoopStretch binding is held
+    // The Velocity and Transpose axes on the active channel (Engine::shaping).
+    float velocityShaping = 0;
+    int transposeNotes = 0, transposeLoop = 0;
 
     bool isDown(midipad::Button b) const { return (buttons >> static_cast<int>(b)) & 1u; }
     bool isSounding(int slot) const { return (sounding >> slot) & 1u; }
@@ -119,6 +122,10 @@ public:
         dpadSettleRelease_.store(releaseMs, std::memory_order_relaxed);
     }
     void setHumanize(const midipad::Humanize& humanize) { humanize_.store(pack(humanize), std::memory_order_relaxed); }
+    // The tonality Transpose axes move in (Engine::setKey).
+    void setKey(const std::optional<midipad::Key>& key) {
+        key_.store(key ? key->root * 256 + static_cast<int>(key->scale) : -1, std::memory_order_relaxed);
+    }
 
     std::optional<Report> popReport() { return reports_.pop(); }
     std::optional<SentNote> popNote() { return notes_.pop(); }
@@ -168,6 +175,9 @@ private:
     std::atomic<std::uint16_t> loopChannels_{0};
     std::atomic<bool> loopsPaused_{false};
     std::atomic<bool> stretchHeld_{false};
+    std::atomic<int> key_{-1};  // root * 256 + scale, -1: none
+    std::atomic<float> velocityShaping_{0};
+    std::atomic<int> transposeNotes_{0}, transposeLoop_{0};
     mutable std::mutex loopsMutex_;  // the input thread only try_locks it
     std::array<LiveState::Loop, midipad::kLoopSourceCount> loops_{};
     std::array<midipad::NoteInterval, LiveState::kMaxNoteLoopNotes> noteLoop_{};

@@ -42,7 +42,7 @@ private:
     bool drawNoteField(std::uint8_t& note);
     bool drawHumanizeCheckbox(midipad::TriggerBinding& b);
     bool drawLoopForm(int source, midipad::Mapping& m);
-    bool drawAxisForm(const char* id, midipad::AxisBinding& a, float position);
+    bool drawAxisForm(const char* id, midipad::AxisBinding& a, float position, bool trigger = false);
     bool drawFingerForm(int finger, midipad::FingerBinding& f, const LiveState& live);
     const std::vector<midipad::KeyChord>& keyChords();
     bool flats() const { return key_ && midipad::prefersFlats(*key_); }
