@@ -1572,6 +1572,14 @@ void GuiApp::drawOptionsOverlay() {
                 settings_.beatsPerBar = std::clamp(bpb, 1, 16);
                 changed = true;
             }
+            rowLabel("Quantize notes");
+            static constexpr int kGrids[] = {0, 2, 4, 8};
+            const int grid = static_cast<int>(std::find(std::begin(kGrids), std::end(kGrids), settings_.quantize) - std::begin(kGrids));
+            const int quantize = choice("quantize", {"Off", "1/8", "1/16", "1/32"}, grid);
+            if (quantize >= 0 && kGrids[quantize] != settings_.quantize) {
+                settings_.quantize = kGrids[quantize];
+                changed = true;
+            }
             rowLabel("Start / stop sync");
             const int startStop = choice("startstop", {"Off", "On"}, settings_.startStopSync ? 1 : 0);
             if (startStop >= 0 && (startStop == 1) != settings_.startStopSync) {
@@ -1581,7 +1589,9 @@ void GuiApp::drawOptionsOverlay() {
             ImGui::PopFont();
             ImGui::PushFont(medium, 12.0f);
             ImGui::TextColored(color(Theme::kLabel), "With Link on, a loop takes a whole number of these, starts on the\n"
-                                                     "beat and follows the tempo. Play and Stop follow the session.");
+                                                     "beat and follows the tempo; its notes go on the quantize grid as\n"
+                                                     "they are recorded (what you hear live is never delayed). Play and\n"
+                                                     "Stop follow the session.");
             ImGui::PopFont();
             if (changed) {
                 applySync();
@@ -1977,7 +1987,7 @@ int GuiApp::dialogButtons(std::initializer_list<const char*> labels) {
 
 void GuiApp::applySync() {
     runtime_->setLinkStartStopSync(settings_.startStopSync);
-    runtime_->setSync(settings_.snapBeats(), settings_.beatsPerBar);
+    runtime_->setSync(settings_.snapBeats(), settings_.beatsPerBar, settings_.quantize);
     runtime_->setLinkEnabled(settings_.linkEnabled);
 }
 

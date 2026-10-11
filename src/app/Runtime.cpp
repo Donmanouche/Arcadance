@@ -360,7 +360,7 @@ void Runtime::run(std::stop_token stop, Options options, std::shared_ptr<const P
 
         // The beat clock, from the Link session (its calls here are real-time safe).
         const int beatsPerBar = beatsPerBar_.load(std::memory_order_relaxed);
-        engine.setSync(snapBeats_.load(std::memory_order_relaxed), beatsPerBar);
+        engine.setSync(snapBeats_.load(std::memory_order_relaxed), beatsPerBar, quantize_.load(std::memory_order_relaxed));
         if (linkEnabled_.load(std::memory_order_relaxed)) {
             const auto state = link_->link.captureAudioSessionState();
             const auto time = link_->link.clock().micros();

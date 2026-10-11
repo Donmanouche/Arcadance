@@ -443,6 +443,7 @@ void Engine::release(int slot) {
 
 Engine::Sounding Engine::soundingFor(const TriggerBinding& binding, int channel) {
     Sounding s;
+    s.press = ++pressCount_ == 0 ? ++pressCount_ : pressCount_;  // never 0
     s.type = binding.type;
     s.channel = static_cast<std::uint8_t>(channel);
     s.velocity = binding.velocity;
@@ -482,6 +483,11 @@ void Engine::start(const Sounding& s) {
         sendCc(s.channel, s.cc, s.onValue);
         return;
     }
+    // When the first note sounds (a humanized chord spreads its notes).
+    std::uint64_t leadAt = now_;
+    if (s.humanized && s.notes.count > 0)
+        leadAt += static_cast<std::uint64_t>(*std::min_element(s.delayMs.begin(), s.delayMs.begin() + static_cast<std::ptrdiff_t>(s.notes.count))) *
+                  1'000'000u;
     for (std::size_t i = 0; i < s.notes.count; ++i) {
         int velocity = s.velocity;
         std::uint64_t at = now_;
@@ -490,7 +496,7 @@ void Engine::start(const Sounding& s) {
             velocity = std::clamp((s.velocity * percent + 50) / 100, 1, 127);
             at += static_cast<std::uint64_t>(s.delayMs[i]) * 1'000'000u;
         }
-        recordNote(s.channel, s.notes.notes[i], velocity, at);  // into the note loop, if it records
+        recordNote(s.channel, s.notes.notes[i], velocity, at, s.press, leadAt);  // into the note loop, if it records
         sendAt(at, MidiMessage::noteOn(s.channel, s.notes.notes[i], velocity));
     }
 }
@@ -504,7 +510,7 @@ void Engine::stop(const Sounding& s) {
         const MidiMessage off = MidiMessage::noteOff(s.channel, s.notes.notes[i]);
         const bool late = !immediate_ && s.humanized;
         const std::uint64_t at = late ? now_ + static_cast<std::uint64_t>(s.delayMs[i]) * 1'000'000u : now_;
-        recordNote(s.channel, s.notes.notes[i], 0, at);
+        recordNote(s.channel, s.notes.notes[i], 0, at, s.press);
         if (late)
             sendAt(at, off);
         else
@@ -630,6 +636,8 @@ void Engine::endRecordHold() {
                 syncedPhase(loop, playback, beatAt(now_), loop.phase, dir);
                 loop.direction = dir;
                 loop.position = std::clamp(static_cast<int>(loop.phase), 0, loop.length - 1);
+                if (source == static_cast<int>(LoopSource::Notes))
+                    quantizeNoteLoop(channel);
             }
             if (source != static_cast<int>(LoopSource::Notes)) {
                 // Its middle, where a narrower amplitude closes in.
@@ -1226,7 +1234,7 @@ void Engine::silenceLoop(std::size_t index) {
 
 // Records a note played on `channel` at `at` (velocity 0: its release) into
 // the channel's note loop, starting it if Record is held and waits for notes.
-void Engine::recordNote(int channel, int note, int velocity, std::uint64_t at) {
+void Engine::recordNote(int channel, int note, int velocity, std::uint64_t at, std::uint32_t press, std::uint64_t leadAt) {
     constexpr auto kNotes = static_cast<std::size_t>(LoopSource::Notes);
     const std::size_t index = loopIndex(channel, static_cast<int>(kNotes));
     Loop& loop = loops_[index];
@@ -1247,7 +1255,7 @@ void Engine::recordNote(int channel, int note, int velocity, std::uint64_t at) {
             overdubChannel_ = -1;
     }
     if (loop.state == LoopStatus::State::Playing && channel == overdubChannel_) {
-        overdubNote(channel, note, velocity, at);
+        overdubNote(channel, note, velocity, at, press, leadAt);
         return;
     }
     auto& events = noteEvents_[static_cast<std::size_t>(channel)];
@@ -1258,24 +1266,76 @@ void Engine::recordNote(int channel, int note, int velocity, std::uint64_t at) {
     const auto n = static_cast<std::size_t>(note & 0x7F);
     if (velocity > 0)
         noteVelocity_[n] = static_cast<std::uint8_t>(velocity);
-    events.push_back({sample, static_cast<std::uint8_t>(n), noteVelocity_[n], velocity > 0});
+    events.push_back({sample, static_cast<std::uint8_t>(n), noteVelocity_[n], velocity > 0, press});
+}
+
+// The grid step of a synced note loop, in its samples: the loop's beats span
+// its length. 0 when it is free or the quantizer is off.
+double Engine::quantizeStep(const Loop& loop) const {
+    if (quantize_ <= 0 || loop.syncBeats <= 0 || loop.length < 2)
+        return 0;
+    return static_cast<double>(loop.length) / (loop.syncBeats * quantize_);
+}
+
+// Puts the notes of a note loop just recorded on the grid, press by press:
+// its first note on the nearest step (the loop's end wraps to its start), its
+// other notes and releases moved alike, so the lengths and a humanized chord's
+// spread stay as played.
+void Engine::quantizeNoteLoop(int channel) {
+    const Loop& loop = loops_[loopIndex(channel, static_cast<int>(LoopSource::Notes))];
+    const double step = quantizeStep(loop);
+    if (step <= 0)
+        return;
+    auto& events = noteEvents_[static_cast<std::size_t>(channel)];
+    auto slot = [&](std::uint32_t press) -> PressShift& { return pressShift_[press % pressShift_.size()]; };
+    for (const NoteEvent& e : events)  // each press's first note
+        if (e.on && e.press != 0) {
+            PressShift& p = slot(e.press);
+            if (p.press != e.press)
+                p = {e.press, e.at, 0};
+            else
+                p.first = std::min(p.first, e.at);
+        }
+    for (NoteEvent& e : events) {
+        if (e.press == 0 || slot(e.press).press != e.press)
+            continue;  // a release of a note started before the recording
+        const PressShift& p = slot(e.press);
+        int target = static_cast<int>(std::lround(std::round(p.first / step) * step));
+        if (target >= loop.length)
+            target -= loop.length;  // on the loop's start
+        e.at = std::clamp(e.at + target - p.first, 0, loop.length - 1);
+    }
+    for (PressShift& p : pressShift_)
+        p = {};
+    std::stable_sort(events.begin(), events.end(), [](const NoteEvent& a, const NoteEvent& b) { return a.at < b.at; });
 }
 
 // Adds a note played over a channel's note loop where the loop plays it,
 // kept in the loop's order: played backwards, its release is where it starts.
-void Engine::overdubNote(int channel, int note, int velocity, std::uint64_t at) {
+void Engine::overdubNote(int channel, int note, int velocity, std::uint64_t at, std::uint32_t press, std::uint64_t leadAt) {
     const Loop& loop = loops_[loopIndex(channel, static_cast<int>(LoopSource::Notes))];
     auto& events = noteEvents_[static_cast<std::size_t>(channel)];
     if (events.size() >= kMaxNoteEvents || loop.length < 2)
         return;
     constexpr std::uint64_t kStep = 1'000'000'000ull / kLoopRateHz;
     const auto ahead = static_cast<int>((at > now_ ? at - now_ : 0) / kStep);  // a humanized delay
-    const int position = ((loop.position + loop.direction * ahead) % loop.length + loop.length) % loop.length;
+    int position = ((loop.position + loop.direction * ahead) % loop.length + loop.length) % loop.length;
+    // Quantized: the press moves by as much as its first note needs to land on the grid.
+    if (const double step = quantizeStep(loop); step > 0 && press != 0) {
+        PressShift& p = pressShift_[press % pressShift_.size()];
+        if (velocity > 0 && p.press != press) {
+            const auto lead = static_cast<int>((leadAt > now_ ? leadAt - now_ : 0) / kStep);
+            const int first = ((loop.position + loop.direction * lead) % loop.length + loop.length) % loop.length;
+            p = {press, first, static_cast<std::int32_t>(std::lround(std::round(first / step) * step)) - first};
+        }
+        if (p.press == press)
+            position = ((position + p.shift) % loop.length + loop.length) % loop.length;
+    }
     const auto n = static_cast<std::size_t>(note & 0x7F);
     if (velocity > 0)
         noteVelocity_[n] = static_cast<std::uint8_t>(velocity);
     const bool on = loop.direction > 0 ? velocity > 0 : velocity == 0;
-    const NoteEvent event{position, static_cast<std::uint8_t>(n), noteVelocity_[n], on};
+    const NoteEvent event{position, static_cast<std::uint8_t>(n), noteVelocity_[n], on, press};
     const auto where = std::upper_bound(events.begin(), events.end(), position,
                                         [](int at2, const NoteEvent& e) { return at2 < e.at; });
     events.insert(where, event);  // the vector has its capacity: no allocation

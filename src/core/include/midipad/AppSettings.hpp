@@ -37,6 +37,10 @@ struct AppSettings {
     LoopSnap loopSnap = LoopSnap::Beat;
     int beatsPerBar = 4;
     bool startStopSync = true;  // Play / Stop follow, and lead, the Link session's
+    // The notes recorded into a synced note loop (or overdubbed onto it) go on
+    // a grid of this many steps a beat: 0 off, 2 eighth notes, 4 sixteenths,
+    // 8 thirty-seconds (Engine::setSync).
+    int quantize = 0;
     // The snap in beats: 0 for Free.
     int snapBeats() const {
         switch (loopSnap) {

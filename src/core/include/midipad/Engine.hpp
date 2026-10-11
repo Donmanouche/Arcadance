@@ -100,9 +100,15 @@ public:
     // free): their length is rounded to whole snaps (at least one), their start
     // to the nearest snap; they then play from the clock, so they follow its
     // tempo and stay in phase with the session. Free loops play as recorded.
-    void setSync(int snapBeats, int beatsPerBar) {
+    // `quantize` (grid steps a beat: 2 eighth notes, 4 sixteenths, 8
+    // thirty-seconds; 0 off) puts the notes recorded into a synced note loop,
+    // and those overdubbed onto it, on that grid: each press moves as a whole,
+    // its first note on the nearest step, its other notes (a humanized chord)
+    // and its releases by as much. What sounds live is never delayed.
+    void setSync(int snapBeats, int beatsPerBar, int quantize = 0) {
         snapBeats_ = std::max(snapBeats, 0);
         beatsPerBar_ = std::max(beatsPerBar, 1);
+        quantize_ = std::max(quantize, 0);
     }
     int beatsPerBar() const { return beatsPerBar_; }
 
@@ -233,6 +239,7 @@ private:
         ChordNotes notes;
         bool humanized = false;
         std::array<std::uint16_t, 9> delayMs{};  // per note, humanized: the release is delayed alike
+        std::uint32_t press = 0;                 // which press it came from, for the quantizer
 
         bool active() const { return type != ActionType::None; }
     };
@@ -258,11 +265,13 @@ private:
     double beatAt(std::uint64_t t) const { return clock_.beat + (static_cast<double>(t) - static_cast<double>(clockAt_)) * clock_.tempo / 60e9; }
     BeatClock clock_;
     std::uint64_t clockAt_ = 0;
-    int snapBeats_ = 1, beatsPerBar_ = 4;
+    int snapBeats_ = 1, beatsPerBar_ = 4, quantize_ = 0;
     void sendLoopValue(std::size_t loop, float x, float y);
     void playLoopNotes(std::size_t loop);
-    void recordNote(int channel, int note, int velocity, std::uint64_t at);
-    void overdubNote(int channel, int note, int velocity, std::uint64_t at);
+    // `press`: the press the note comes from (0: none); `leadAt`: when the
+    // press's first note sounds, which the quantizer puts on the grid.
+    void recordNote(int channel, int note, int velocity, std::uint64_t at, std::uint32_t press = 0, std::uint64_t leadAt = 0);
+    void overdubNote(int channel, int note, int velocity, std::uint64_t at, std::uint32_t press, std::uint64_t leadAt);
     void emit(const MidiMessage& message, bool fromLoop);  // to the sink, telling the observer of notes
     void silenceLoop(std::size_t loop);
     // Sends `message` at `at` (now if it is not later); in time order.
@@ -352,7 +361,18 @@ private:
         std::int32_t at = 0;  // loop sample
         std::uint8_t note = 0, velocity = 0;
         bool on = false;
+        std::uint32_t press = 0;  // the press it came from (0: none)
     };
+    // The quantizer: a synced note loop's grid step in samples (0: none), and
+    // how far each recent press moved, by press number (slot press % size).
+    double quantizeStep(const Loop& loop) const;
+    void quantizeNoteLoop(int channel);
+    struct PressShift {
+        std::uint32_t press = 0;
+        std::int32_t first = 0, shift = 0;
+    };
+    std::array<PressShift, kMaxNoteEvents> pressShift_{};
+    std::uint32_t pressCount_ = 0;
     std::array<std::vector<NoteEvent>, kChannelCount> noteEvents_;
     std::array<std::bitset<128>, kChannelCount> noteLoopOn_{};
     std::array<std::uint8_t, 128> noteVelocity_{};  // of the last note-on recorded, for its release

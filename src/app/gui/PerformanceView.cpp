@@ -539,18 +539,26 @@ std::string beatsText(double beats, int beatsPerBar) {
     return buf;
 }
 
-// The beat grid of a synced loop over [x0, x1]: a line per beat, stronger on
-// bars, and the bars' numbers along the top.
+// The beat grid of a synced note loop's clip over [x0, x1]: a line per beat,
+// stronger on bars, and the bars' numbers along the top. Where beats would crowd (a loop
+// stretched far), a line per bar, then every 2, 4, 8... bars.
 void beatGrid(ImDrawList* dl, ImFont* font, float x0, float x1, float y0, float y1, double beats, int beatsPerBar) {
     if (beats <= 0 || x1 <= x0)
         return;
-    const int count = static_cast<int>(std::ceil(beats - 1e-6));
-    for (int k = 0; k < count; ++k) {
+    const float perBeat = (x1 - x0) / static_cast<float>(beats);
+    int step = 1;  // beats between lines
+    if (perBeat < px(14)) {
+        step = beatsPerBar;
+        while (static_cast<float>(step) * perBeat < px(14))
+            step *= 2;
+    }
+    const bool numbers = static_cast<float>(std::max(step, beatsPerBar)) * perBeat > px(22);
+    for (int k = 0; k < beats - 1e-6; k += step) {
         const float x = x0 + (x1 - x0) * static_cast<float>(k / beats);
         const bool bar = k % beatsPerBar == 0;
         if (k > 0)
             dl->AddLine(ImVec2(x, y0), ImVec2(x, y1), bar ? IM_COL32(255, 255, 255, 70) : IM_COL32(255, 255, 255, 20), px(bar ? 1.2f : 1.0f));
-        if (bar && (x1 - x0) * static_cast<float>(beatsPerBar / beats) > px(14))
+        if (bar && numbers)
             text(dl, font, px(9), x + px(3), y0 + px(6), T::kDim, std::to_string(k / beatsPerBar + 1), H::Left, V::Middle);
     }
 }
@@ -1274,8 +1282,6 @@ void PerformanceView::drawLoopPanel(ImDrawList* dl, float x, float w, float loop
             return ImVec2(lx0 + t * (lx1 - lx0), upward ? ly1 - v * (ly1 - ly0) : ly0 + v * (ly1 - ly0));
         };
         auto at = [&](int i, int axis) { return curveAt(i, axis, amp); };
-        if (playing)
-            beatGrid(dl, gMedium, lx0, lx1, ga.y + px(2), gb.y - px(2), st.beats, beatsPerBar_);
         for (int axis = 0; axis < 2; ++axis) {
             ImVec2 pts[LiveState::Loop::kPoints];
             if (amp != 1.0f) {
