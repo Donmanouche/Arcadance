@@ -138,6 +138,8 @@ void Runtime::clearLoop(int source) { commands_.push({Command::Kind::ClearLoop, 
 
 void Runtime::stretchLoop(int source, int steps) { commands_.push({Command::Kind::StretchLoop, source, steps}); }
 
+void Runtime::amplifyLoop(int source, int steps) { commands_.push({Command::Kind::AmplifyLoop, source, steps}); }
+
 void Runtime::pauseLoops() { commands_.push({Command::Kind::PauseLoops}); }
 
 void Runtime::playLoops() { commands_.push({Command::Kind::PlayLoops}); }
@@ -315,6 +317,8 @@ void Runtime::run(std::stop_token stop, Options options, std::shared_ptr<const P
                 engine.clearLoop(engine.channel(), command->channel);  // `channel` holds the source
             } else if (command->kind == Command::Kind::StretchLoop) {
                 engine.stretchLoop(engine.channel(), command->channel, command->value);  // `channel` holds the source
+            } else if (command->kind == Command::Kind::AmplifyLoop) {
+                engine.amplifyLoop(engine.channel(), command->channel, command->value);  // `channel` holds the source
             } else if (command->kind == Command::Kind::PauseLoops) {
                 engine.pauseLoops();
             } else if (command->kind == Command::Kind::PlayLoops) {

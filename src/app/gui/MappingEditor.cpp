@@ -553,10 +553,11 @@ bool MappingEditor::drawTriggerEditor(TriggerBinding& b) {
     }
     case ActionType::LoopStretch:
         ImGui::PushStyleColor(ImGuiCol_Text, kHintColor);
-        ImGui::TextWrapped("Hold, then move a stick or a finger on the touchpad left or right to stretch or compress "
-                           "its loop, as Shift + mouse wheel over its LOOP panel does. A stick pushed further turns "
-                           "faster; on the touchpad, each slide of the finger counts. Meanwhile they send no CC. The "
-                           "stretch stays when you release.");
+        ImGui::TextWrapped("Hold, then move a stick or a finger on the touchpad: left or right stretches or compresses "
+                           "its loop in time, as Shift + mouse wheel over its LOOP panel does; up or down widens or "
+                           "narrows its amplitude, as Ctrl + mouse wheel does. Only the way it mostly moves counts. A "
+                           "stick pushed further turns faster; on the touchpad, each slide of the finger counts. "
+                           "Meanwhile they send no CC. What you set stays when you release.");
         ImGui::PopStyleColor();
         break;
     case ActionType::LoopRecord:

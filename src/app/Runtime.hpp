@@ -113,6 +113,7 @@ public:
     void panic();  // also stops the loops, on every channel
     void clearLoop(int source);  // a LoopSource, on the active channel
     void stretchLoop(int source, int steps);  // see Engine::stretchLoop, on the active channel
+    void amplifyLoop(int source, int steps);  // see Engine::amplifyLoop, on the active channel
     void pauseLoops();  // every channel's
     void playLoops();
     void setReportMidi(bool on) { reportMidi_.store(on, std::memory_order_relaxed); }
@@ -135,7 +136,7 @@ public:
 private:
     class Tap;
     struct Command {
-        enum class Kind : std::uint8_t { SetChannel, Panic, ClearLoop, StretchLoop, PauseLoops, PlayLoops } kind;
+        enum class Kind : std::uint8_t { SetChannel, Panic, ClearLoop, StretchLoop, AmplifyLoop, PauseLoops, PlayLoops } kind;
         int channel = 0;
         int value = 0;
     };

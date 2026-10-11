@@ -46,6 +46,7 @@ struct LoopStatus {
     int direction = 1;     // 1 forwards, -1 backwards
     int channel = 0;
     int stretch = 0;       // movement loops: see Engine::stretchFactor
+    int amplitude = 100;   // movement loops: percent of the recorded swing, around its middle
 };
 
 // Turns controller events into MIDI according to the active preset.
@@ -133,17 +134,26 @@ public:
     static constexpr int kMaxStretch = 198, kMinStretch = -38;
     static double stretchFactor(int stretch);  // how many times longer it lasts
     void stretchLoop(int channel, int source, int steps);
-    // While a LoopStretch binding is held, the X axis of a stick or of a
-    // finger on the touchpad (in axis mode) stretches its loops on the active
-    // channel, as Shift + wheel does: a stick works as a wheel kept turning,
-    // faster the further it is pushed (kStretchMinRate to kStretchMaxRate steps
-    // a second beyond kStretchDeadZone); a finger counts a step every
-    // kStretchTouchStep of its slide. Meanwhile they send no CC and start no
-    // recording. Reaching 1x it waits kStretchPauseMs before going on.
+    // A movement loop's swing narrowed around its middle (halfway between its
+    // lowest and highest values), from 100 % (as recorded) down to 0 % (still),
+    // by kAmplitudeStep percent a step; eased in over a few milliseconds, so it
+    // never jumps. Recording the loop again puts it back to 100 %.
+    static constexpr int kAmplitudeStep = 5;
+    void amplifyLoop(int channel, int source, int steps);
+    // While a LoopStretch binding is held, a stick or a finger on the touchpad
+    // (in axis mode) changes its loops on the active channel: along X their
+    // stretch, as Shift + wheel does; along Y their amplitude, as Ctrl + wheel
+    // does (up widens). Only the way it mostly moves counts. A stick works as a
+    // wheel kept turning, faster the further it is pushed (kStretchMinRate to
+    // kStretchMaxRate stretch steps, kAmplitudeMaxRate amplitude steps a second
+    // beyond kStretchDeadZone); a finger counts a step every kStretchTouchStep
+    // of its slide. Meanwhile they send no CC and start no recording. Reaching
+    // 1x the stretch waits kStretchPauseMs before going on.
     static constexpr float kStretchDeadZone = 0.25f;       // of the stick's half travel
     static constexpr double kStretchMinRate = 2, kStretchMaxRate = 40;
     static constexpr float kStretchTouchStep = 0.03f;      // of the touchpad's width
     static constexpr int kStretchPauseMs = 400;
+    static constexpr double kAmplitudeMaxRate = 20;
     bool stretchHeld() const { return stretchHolders_.any(); }
     // The notes of a channel's note loop, at most `max`; returns how many.
     int noteLoopIntervals(int channel, NoteInterval* out, int max) const;
@@ -284,6 +294,9 @@ private:
         int length = 0, position = 0, direction = 1;
         double phase = 0;  // movement loops: the position, between samples
         int stretch = 0;
+        int amplitude = 100;
+        float amplitudeNow = 1;            // eased towards amplitude / 100
+        float middleX = 0.5f, middleY = 0.5f;  // halfway between the lowest and highest samples
         std::uint64_t nextAt = 0;
         int sentX = -1, sentY = -1;
     };
@@ -331,9 +344,9 @@ private:
     // LoopStretch: who holds it, the stick turns not yet a whole step, the
     // finger sliding and where it last counted, when 1x was reached per source.
     std::bitset<kSlotCount> stretchHolders_;
-    std::array<double, 2> stickStretchRest_{};
+    std::array<double, 2> stickStretchRest_{}, stickAmplitudeRest_{};
     int stretchFinger_ = -1;
-    float stretchFingerX_ = 0;
+    float stretchFingerX_ = 0, stretchFingerY_ = 0;
     std::array<std::uint64_t, kLoopSourceCount> stretchPausedUntil_{};
     std::uint64_t lastStretchTick_ = 0;
     void stretchFromControls();

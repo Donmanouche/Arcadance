@@ -1197,8 +1197,12 @@ void GuiApp::drawPerformance(const LiveState& live) {
     const auto clicked = performance_.draw(preset_.forChannel(live.channel), live, settings_.key);
     if (const auto stretch = performance_.takeStretchRequest())  // Shift + wheel over a LOOP panel
         for (int source = 0; source < kLoopSourceCount; ++source)
-            if (stretch->sources & (1u << source))
-                runtime_->stretchLoop(source, stretch->steps);
+            if (stretch->sources & (1u << source)) {
+                if (stretch->amplitude)
+                    runtime_->amplifyLoop(source, stretch->steps);
+                else
+                    runtime_->stretchLoop(source, stretch->steps);
+            }
     ImGui::EndChild();
     ImGui::PopStyleColor();
     drawPerformanceStatus(live, statusH);

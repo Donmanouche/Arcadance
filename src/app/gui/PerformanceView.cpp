@@ -557,7 +557,8 @@ void PerformanceView::click(const std::string& spec) { clicked_ = spec; }
 
 void PerformanceView::stretchWheel(std::uint8_t sources, ImVec2 a, ImVec2 b) {
     const ImGuiIO& io = ImGui::GetIO();
-    if (!io.KeyShift || !ImGui::IsWindowHovered() || !ImGui::IsMouseHoveringRect(a, b))
+    const bool amplitude = io.KeyCtrl && !io.KeyShift;  // Ctrl + wheel: the amplitude
+    if ((!io.KeyShift && !amplitude) || !ImGui::IsWindowHovered() || !ImGui::IsMouseHoveringRect(a, b))
         return;
     // Some systems turn Shift + wheel into a horizontal scroll.
     const float wheel = io.MouseWheel != 0.0f ? io.MouseWheel : io.MouseWheelH;
@@ -571,23 +572,62 @@ void PerformanceView::stretchWheel(std::uint8_t sources, ImVec2 a, ImVec2 b) {
     // Turned quickly, each notch goes further: 100x is 198 steps away.
     wheelStreak_ = time_ - lastWheel_ < 0.12 ? wheelStreak_ + 1 : 0;
     lastWheel_ = time_;
-    const int accel = std::min(1 + wheelStreak_ / 2, 10);
-    stretch_ = StretchRequest{sources, notches * accel};
-    for (std::size_t i = 0; i < stretchShown_.size(); ++i)
+    const int accel = std::min(1 + wheelStreak_ / 2, amplitude ? 4 : 10);
+    stretch_ = StretchRequest{sources, notches * accel, amplitude};
+    auto& shown = amplitude ? amplitudeShown_ : stretchShown_;
+    for (std::size_t i = 0; i < shown.size(); ++i)
         if (sources & (1u << i))
-            stretchShown_[i] = time_;
+            shown[i] = time_;
 }
 
 float PerformanceView::drawStretchChip(ImDrawList* dl, float right, float y, int stretch, ImU32 color) {
-    if (stretch == 0)
-        return right;
-    const std::string label = stretchText(stretch);
+    return stretch == 0 ? right : drawChip(dl, right, y, stretchText(stretch), color);
+}
+
+float PerformanceView::drawAmplitudeChip(ImDrawList* dl, float right, float y, int amplitude, ImU32 color) {
+    return amplitude >= 100 ? right : drawChip(dl, right, y, "AMP " + std::to_string(amplitude) + "%", color);
+}
+
+float PerformanceView::drawChip(ImDrawList* dl, float right, float y, const std::string& label, ImU32 color) {
     const float w = textWidth(gBold, px(10), label) + px(10);
     const ImVec2 a(right - w, y - px(7)), b(right, y + px(7));
     dl->AddRectFilled(a, b, alpha(color, 0.2f), px(7));
     dl->AddRect(a, b, alpha(color, 0.8f), px(7), px(1));
     text(dl, gBold, px(10), (a.x + b.x) * 0.5f, y, T::kText, label, H::Center, V::Middle);
     return a.x;
+}
+
+// While the amplitude changes (and a moment after), a gauge across the bottom
+// of the LOOP box, like the stretch's: 0 % on the left, 100 % on the right.
+void PerformanceView::drawAmplitudeGauge(ImDrawList* dl, ImVec2 ga, ImVec2 gb, std::uint8_t sources, int amplitude, ImU32 color) {
+    double shownAt = -1e9;
+    for (std::size_t i = 0; i < amplitudeShown_.size(); ++i)
+        if (sources & (1u << i))
+            shownAt = std::max(shownAt, amplitudeShown_[i]);
+    const double age = time_ - shownAt;
+    if (age > 1.6)
+        return;
+    const float a = age < 1.2 ? 1.0f : static_cast<float>(1.0 - (age - 1.2) / 0.4);
+    const ImVec2 ba(ga.x + px(6), gb.y - px(34)), bb(gb.x - px(6), gb.y - px(6));
+    dl->AddRectFilled(ba, bb, IM_COL32(0x14, 0x16, 0x19, static_cast<int>(240 * a)), px(5));
+    dl->AddRect(ba, bb, alpha(IM_COL32(0x2E, 0x32, 0x38, 255), a), px(5), px(1));
+    const float x0 = ba.x + px(12), x1 = bb.x - px(12), ty = bb.y - px(9), ly = ba.y + px(9);
+    const float at = x0 + (x1 - x0) * static_cast<float>(std::clamp(amplitude, 0, 100)) / 100.0f;
+    dl->AddLine(ImVec2(x0, ty), ImVec2(x1, ty), alpha(IM_COL32(0x4A, 0x4F, 0x57, 255), a), px(2));
+    dl->AddLine(ImVec2(at, ty), ImVec2(x1, ty), alpha(color, a), px(3));  // what was taken off the full swing
+    dl->AddCircleFilled(ImVec2(at, ty), px(4.5f), alpha(color, a));
+    const std::string value = "AMP " + std::to_string(amplitude) + "%";
+    const float vw = textWidth(gBold, px(10), value);
+    const float vx = std::clamp(at, x0 + vw * 0.5f, x1 - vw * 0.5f);
+    auto fixed = [&](float x, const char* label, H align) {
+        const float w = textWidth(gMedium, px(10), label);
+        const float l = align == H::Left ? x : x - w;
+        if (l + w < vx - vw * 0.5f - px(4) || l > vx + vw * 0.5f + px(4))
+            text(dl, gMedium, px(10), x, ly, alpha(T::kDim, a), label, align, V::Middle);
+    };
+    fixed(x0 - px(6), "0%", H::Left);
+    fixed(x1 + px(6), "100%", H::Right);
+    text(dl, gBold, px(10), vx, ly, alpha(T::kText, a), value, H::Center, V::Middle);
 }
 
 // While the wheel turns (and a moment after), a gauge across the bottom of the
@@ -647,6 +687,11 @@ std::optional<std::string> PerformanceView::draw(const Mapping& mapping, const L
         if (now != before && live.channel == lastStretchChannel_)
             stretchShown_[static_cast<std::size_t>(source)] = time_;
         before = now;
+        const int amp = live.loops[static_cast<std::size_t>(source)].status.amplitude;
+        auto& ampBefore = lastAmplitude_[static_cast<std::size_t>(source)];
+        if (amp != ampBefore && live.channel == lastStretchChannel_)
+            amplitudeShown_[static_cast<std::size_t>(source)] = time_;
+        ampBefore = amp;
     }
     lastStretchChannel_ = live.channel;
 
@@ -1108,10 +1153,13 @@ void PerformanceView::drawLoopPanel(ImDrawList* dl, float x, float w, float loop
         status = waitStatus;
         statusColor = T::kRed;
     } else if (playing) {
-        status = std::string(lb.playback == LoopPlayback::Forward   ? "FWD"
-                             : lb.playback == LoopPlayback::Reverse ? "REV"
-                                                                    : "BACK & FORTH") +
-                 "  \xC2\xB7  " + durationText(seconds * Engine::stretchFactor(st.stretch));
+        // With chips for the stretch, the arrows alone tell the playback.
+        const bool chips = st.stretch != 0 || st.amplitude < 100;
+        status = chips ? durationText(seconds * Engine::stretchFactor(st.stretch))
+                       : std::string(lb.playback == LoopPlayback::Forward   ? "FWD"
+                                     : lb.playback == LoopPlayback::Reverse ? "REV"
+                                                                            : "BACK & FORTH") +
+                             "  \xC2\xB7  " + durationText(seconds * Engine::stretchFactor(st.stretch));
         statusColor = colorX;
     }
     const float statusX = x + w - px(12) - textWidth(gBold, px(10), status);
@@ -1136,8 +1184,11 @@ void PerformanceView::drawLoopPanel(ImDrawList* dl, float x, float w, float loop
         }
     }
     float ruleEnd = status.empty() ? x + w - px(12) : iconX - px(10);
-    if (playing && st.stretch != 0)  // a stretched loop says by how much
-        ruleEnd = drawStretchChip(dl, iconX - px(lb.playback == LoopPlayback::BackAndForth ? 12 : 9), loopY, st.stretch, colorX) - px(6);
+    if (playing && (st.stretch != 0 || st.amplitude < 100)) {  // a stretched loop says by how much
+        float right = iconX - px(lb.playback == LoopPlayback::BackAndForth ? 12 : 9);
+        right = drawStretchChip(dl, right, loopY, st.stretch, colorX) - (st.stretch != 0 ? px(4) : 0.0f);
+        ruleEnd = drawAmplitudeChip(dl, right, loopY, st.amplitude, colorX) - px(6);
+    }
     const float ruleStart = x + px(16) + textWidth(gBold, size, "LOOP");
     if (ruleEnd > ruleStart)
         dl->AddLine(ImVec2(ruleStart, loopY), ImVec2(ruleEnd, loopY), IM_COL32(0x40, 0x44, 0x4B, 255), px(1));
@@ -1154,13 +1205,29 @@ void PerformanceView::drawLoopPanel(ImDrawList* dl, float x, float w, float loop
         // While recording the curve grows over a 4-second window, then fills the box.
         const float lx0 = ga.x + px(6), lx1 = ga.x + px(6) + (gb.x - ga.x - px(12)) * (recording ? std::min(1.0f, seconds / 4.0f) : 1.0f);
         const float ly0 = ga.y + px(5), ly1 = gb.y - px(5);
-        auto at = [&](int i, int axis) {
+        // With a reduced amplitude, each curve closes in on its middle; the
+        // recorded one stays faintly behind.
+        const float amp = playing ? static_cast<float>(st.amplitude) / 100.0f : 1.0f;
+        std::array<float, 2> middle{};
+        for (int axis = 0; axis < 2; ++axis) {
+            const auto& v = axis == 0 ? loop.x : loop.y;
+            const auto [lo, hi] = std::minmax_element(v.begin(), v.begin() + loop.points);
+            middle[static_cast<std::size_t>(axis)] = (static_cast<float>(*lo) + static_cast<float>(*hi)) * 0.5f / 255.0f;
+        }
+        auto curveAt = [&](int i, int axis, float scale) {
             const float t = static_cast<float>(i) / static_cast<float>(loop.points - 1);
-            const float v = static_cast<float>((axis == 0 ? loop.x : loop.y)[static_cast<std::size_t>(i)]) / 255.0f;
+            const float centre = middle[static_cast<std::size_t>(axis)];
+            const float v = centre + (static_cast<float>((axis == 0 ? loop.x : loop.y)[static_cast<std::size_t>(i)]) / 255.0f - centre) * scale;
             return ImVec2(lx0 + t * (lx1 - lx0), upward ? ly1 - v * (ly1 - ly0) : ly0 + v * (ly1 - ly0));
         };
+        auto at = [&](int i, int axis) { return curveAt(i, axis, amp); };
         for (int axis = 0; axis < 2; ++axis) {
             ImVec2 pts[LiveState::Loop::kPoints];
+            if (amp < 1.0f) {
+                for (int i = 0; i < loop.points; ++i)
+                    pts[i] = curveAt(i, axis, 1.0f);
+                dl->AddPolyline(pts, loop.points, alpha(axis == 0 ? colorX : colorY, 0.22f), px(1.4f));
+            }
             for (int i = 0; i < loop.points; ++i)
                 pts[i] = at(i, axis);
             dl->AddPolyline(pts, loop.points, axis == 0 ? colorX : colorY, px(1.8f));
@@ -1191,8 +1258,10 @@ void PerformanceView::drawLoopPanel(ImDrawList* dl, float x, float w, float loop
         text(dl, gBold, px(10), gb.x - px(24), gb.y - px(9), colorY, legendY, H::Right, V::Middle);
         text(dl, gBold, px(10), gb.x - px(42), gb.y - px(9), colorX, legendX, H::Right, V::Middle);
     }
-    if (playing)
+    if (playing) {
         drawStretchGauge(dl, ga, gb, sourceBit, st.stretch, colorX);
+        drawAmplitudeGauge(dl, ga, gb, sourceBit, st.amplitude, colorX);
+    }
     stretchWheel(sourceBit, ImVec2(ga.x, loopY - px(6)), gb);
     if (hoverButton(id, ImVec2(ga.x, loopY - px(6)), gb))
         click(spec);
@@ -1495,9 +1564,13 @@ void PerformanceView::drawTouchpad(const Mapping& m, const LiveState& live, floa
         statusColor = T::kRed;
     } else if (shown >= 0) {
         const LoopPlayback pb = m.loops[static_cast<std::size_t>(2 + shown)].playback;
-        const double seconds = static_cast<double>(loops[shown]->status.length) / Engine::kLoopRateHz;
-        status = std::string(pb == LoopPlayback::Forward ? "FWD" : pb == LoopPlayback::Reverse ? "REV" : "BACK & FORTH") +
-                 "  \xC2\xB7  " + durationText(seconds * Engine::stretchFactor(loops[shown]->status.stretch));
+        const LoopStatus& ls = loops[shown]->status;
+        const double seconds = static_cast<double>(ls.length) / Engine::kLoopRateHz;
+        const std::string length = durationText(seconds * Engine::stretchFactor(ls.stretch));
+        status = ls.stretch != 0 && ls.amplitude < 100
+                     ? length  // room for both chips
+                     : std::string(pb == LoopPlayback::Forward ? "FWD" : pb == LoopPlayback::Reverse ? "REV" : "BACK & FORTH") +
+                           "  \xC2\xB7  " + length;
         statusColor = fingerColors[shown];
     }
     text(dl, gBold, px(11), x + px(12), loopY, T::kDim, "LOOP", H::Left, V::Middle);
@@ -1507,8 +1580,11 @@ void PerformanceView::drawTouchpad(const Mapping& m, const LiveState& live, floa
     if (recording || waiting)
         dl->AddCircleFilled(ImVec2(statusX - px(9), loopY), px(3.5f), alpha(T::kRed, recording ? 1.0f : 0.6f));
     float ruleEnd = status.empty() ? x + w - px(12) : statusX - px(recording || waiting ? 18 : 8);
-    if (!recording && !waiting && shown >= 0 && loops[shown]->status.stretch != 0)
-        ruleEnd = drawStretchChip(dl, statusX - px(6), loopY, loops[shown]->status.stretch, fingerColors[shown]) - px(6);
+    if (!recording && !waiting && shown >= 0 && (loops[shown]->status.stretch != 0 || loops[shown]->status.amplitude < 100)) {
+        const LoopStatus& ls = loops[shown]->status;
+        float right = drawStretchChip(dl, statusX - px(6), loopY, ls.stretch, fingerColors[shown]) - (ls.stretch != 0 ? px(4) : 0.0f);
+        ruleEnd = drawAmplitudeChip(dl, right, loopY, ls.amplitude, fingerColors[shown]) - px(6);
+    }
     const float ruleStart = x + px(16) + textWidth(gBold, px(11), "LOOP");
     if (ruleEnd > ruleStart)
         dl->AddLine(ImVec2(ruleStart, loopY), ImVec2(ruleEnd, loopY), IM_COL32(0x40, 0x44, 0x4B, 255), px(1));
@@ -1530,14 +1606,34 @@ void PerformanceView::drawTouchpad(const Mapping& m, const LiveState& live, floa
         if (state(f) == LoopStatus::State::Empty || L.points < 2)
             continue;
         drewAny = true;
-        auto at = [&](int i) {
-            return ImVec2(pa.x + static_cast<float>(L.x[static_cast<std::size_t>(i)]) / 255.0f * (pb.x - pa.x),
-                          pa.y + static_cast<float>(L.y[static_cast<std::size_t>(i)]) / 255.0f * (pb.y - pa.y));
+        // With a reduced amplitude the path closes in on its middle; the recorded one stays faintly behind.
+        const float amp = state(f) == LoopStatus::State::Playing ? static_cast<float>(L.status.amplitude) / 100.0f : 1.0f;
+        float mx = 0.5f, my = 0.5f;
+        {
+            float x0 = 1, x1 = 0, y0 = 1, y1 = 0;
+            for (int i = 0; i < L.points; ++i) {
+                if (!L.on[static_cast<std::size_t>(i)])
+                    continue;
+                const float vx = static_cast<float>(L.x[static_cast<std::size_t>(i)]) / 255.0f, vy = static_cast<float>(L.y[static_cast<std::size_t>(i)]) / 255.0f;
+                x0 = std::min(x0, vx), x1 = std::max(x1, vx), y0 = std::min(y0, vy), y1 = std::max(y1, vy);
+            }
+            if (x0 <= x1)
+                mx = (x0 + x1) * 0.5f, my = (y0 + y1) * 0.5f;
+        }
+        auto pathAt = [&](int i, float scale) {
+            const float vx = mx + (static_cast<float>(L.x[static_cast<std::size_t>(i)]) / 255.0f - mx) * scale;
+            const float vy = my + (static_cast<float>(L.y[static_cast<std::size_t>(i)]) / 255.0f - my) * scale;
+            return ImVec2(pa.x + vx * (pb.x - pa.x), pa.y + vy * (pb.y - pa.y));
         };
+        auto at = [&](int i) { return pathAt(i, amp); };
         // The path, broken where the finger was lifted.
-        for (int i = 1; i < L.points; ++i)
-            if (L.on[static_cast<std::size_t>(i)] && L.on[static_cast<std::size_t>(i - 1)])
-                dl->AddLine(at(i - 1), at(i), alpha(fingerColors[f], 0.6f), px(1.6f));
+        for (int i = 1; i < L.points; ++i) {
+            if (!L.on[static_cast<std::size_t>(i)] || !L.on[static_cast<std::size_t>(i - 1)])
+                continue;
+            if (amp < 1.0f)
+                dl->AddLine(pathAt(i - 1, 1.0f), pathAt(i, 1.0f), alpha(fingerColors[f], 0.18f), px(1.2f));
+            dl->AddLine(at(i - 1), at(i), alpha(fingerColors[f], 0.6f), px(1.6f));
+        }
         // Where it plays now (or the newest point while recording).
         const int i = state(f) == LoopStatus::State::Recording
                           ? L.points - 1
@@ -1584,8 +1680,10 @@ void PerformanceView::drawTouchpad(const Mapping& m, const LiveState& live, floa
         }
     }
     constexpr auto kFingerLoops = static_cast<std::uint8_t>((1u << 2) | (1u << 3));
-    if (shown >= 0 && !recording)
+    if (shown >= 0 && !recording) {
         drawStretchGauge(dl, ga, gb, kFingerLoops, loops[shown]->status.stretch, fingerColors[shown]);
+        drawAmplitudeGauge(dl, ga, gb, kFingerLoops, loops[shown]->status.amplitude, fingerColors[shown]);
+    }
     stretchWheel(kFingerLoops, ImVec2(ga.x, loopY - px(6)), gb);
     if (hoverButton("##touchloop", ImVec2(ga.x, loopY - px(6)), gb))
         click("fingers");

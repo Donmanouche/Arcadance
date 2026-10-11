@@ -62,10 +62,12 @@ public:
                                     const std::optional<midipad::Key>& key);
     // Shift + mouse wheel over a movement loop's LOOP panel, during the last
     // draw(): the loops to stretch (a bit per LoopSource) and by how many steps
-    // (see Engine::stretchLoop; up stretches, down compresses).
+    // (see Engine::stretchLoop; up stretches, down compresses). Ctrl + wheel:
+    // their amplitude instead (Engine::amplifyLoop; up widens).
     struct StretchRequest {
         std::uint8_t sources = 0;
         int steps = 0;
+        bool amplitude = false;
     };
     std::optional<StretchRequest> takeStretchRequest() { return std::exchange(stretch_, std::nullopt); }
 
@@ -98,6 +100,10 @@ private:
     void stretchWheel(std::uint8_t sources, ImVec2 a, ImVec2 b);
     void drawStretchGauge(ImDrawList* dl, ImVec2 ga, ImVec2 gb, std::uint8_t sources, int stretch, ImU32 color);
     float drawStretchChip(ImDrawList* dl, float right, float y, int stretch, ImU32 color);  // returns its left edge
+    // The same for the amplitude (percent of the recorded swing): chip "AMP 60%", gauge 0-100 %.
+    float drawAmplitudeChip(ImDrawList* dl, float right, float y, int amplitude, ImU32 color);
+    void drawAmplitudeGauge(ImDrawList* dl, ImVec2 ga, ImVec2 gb, std::uint8_t sources, int amplitude, ImU32 color);
+    float drawChip(ImDrawList* dl, float right, float y, const std::string& label, ImU32 color);
 
     // Smooths a displayed value towards its target; `id` names it across frames.
     float smooth(int id, float target, float speed = 14.0f);
@@ -113,6 +119,16 @@ private:
     double lastWheel_ = -1e9;       // when the last notch turned, for the acceleration
     int wheelStreak_ = 0;           // notches turned in a quick row
     std::array<int, 8> lastStretch_{};  // per LoopSource, on lastStretchChannel_
+    std::array<int, 8> lastAmplitude_ = [] {
+        std::array<int, 8> full{};
+        full.fill(100);
+        return full;
+    }();
+    std::array<double, 8> amplitudeShown_ = [] {  // per LoopSource: when its amplitude last changed
+        std::array<double, 8> never{};
+        never.fill(-1e9);
+        return never;
+    }();
     int lastStretchChannel_ = -1;
     std::array<double, 8> stretchShown_ = [] {  // per LoopSource: when its stretch last changed
         std::array<double, 8> never{};

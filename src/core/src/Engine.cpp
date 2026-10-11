@@ -226,15 +226,29 @@ void Engine::touchMoved(int finger, float x, float y) {
     if (stretchHeld() && binding.mode == TouchMode::Axis) {
         // The finger stretches the finger loops: a step per kStretchTouchStep of
         // its slide, right stretches. One finger at a time, from where it lands.
+        // Along Y (up widens) the amplitude, whichever way it mostly slid.
         if (stretchFinger_ < 0) {
             stretchFinger_ = finger;
             stretchFingerX_ = x;
+            stretchFingerY_ = y;
         } else if (stretchFinger_ == finger) {
-            const int steps = static_cast<int>((x - stretchFingerX_) / kStretchTouchStep);
-            if (steps != 0) {
-                stretchFingerX_ += static_cast<float>(steps) * kStretchTouchStep;
-                stretchPausing(static_cast<int>(LoopSource::Finger1), steps);
-                stretchPausing(static_cast<int>(LoopSource::Finger2), steps);
+            const float dx = x - stretchFingerX_, dy = stretchFingerY_ - y;
+            if (std::abs(dx) >= std::abs(dy)) {
+                const int steps = static_cast<int>(dx / kStretchTouchStep);
+                if (steps != 0) {
+                    stretchFingerX_ += static_cast<float>(steps) * kStretchTouchStep;
+                    stretchFingerY_ = y;
+                    stretchPausing(static_cast<int>(LoopSource::Finger1), steps);
+                    stretchPausing(static_cast<int>(LoopSource::Finger2), steps);
+                }
+            } else {
+                const int steps = static_cast<int>(dy / kStretchTouchStep);
+                if (steps != 0) {
+                    stretchFingerY_ -= static_cast<float>(steps) * kStretchTouchStep;
+                    stretchFingerX_ = x;
+                    amplifyLoop(channel_, static_cast<int>(LoopSource::Finger1), steps);
+                    amplifyLoop(channel_, static_cast<int>(LoopSource::Finger2), steps);
+                }
             }
         }
         return;
@@ -369,6 +383,7 @@ void Engine::press(int slot) {
     case ActionType::LoopStretch:
         if (stretchHolders_.none()) {
             stickStretchRest_ = {};
+            stickAmplitudeRest_ = {};
             stretchFinger_ = -1;
             lastStretchTick_ = now_;
         }
@@ -603,6 +618,21 @@ void Engine::endRecordHold() {
             const LoopPlayback playback = preset_->forChannel(channel).loops[static_cast<std::size_t>(source)].playback;
             loop.position = playback == LoopPlayback::Reverse ? loop.length - 1 : 0;
             loop.phase = loop.position;
+            if (source != static_cast<int>(LoopSource::Notes)) {
+                // Its middle, where a narrower amplitude closes in.
+                std::uint16_t lx = 0xFFFE, hx = 0, ly = 0xFFFE, hy = 0;
+                for (int k = 0; k < loop.length; ++k) {
+                    const auto at = static_cast<std::size_t>(k);
+                    if (loop.x[at] == kLifted)
+                        continue;
+                    lx = std::min(lx, loop.x[at]), hx = std::max(hx, loop.x[at]);
+                    ly = std::min(ly, loop.y[at]), hy = std::max(hy, loop.y[at]);
+                }
+                if (lx <= hx) {
+                    loop.middleX = (static_cast<float>(lx) + static_cast<float>(hx)) * 0.5f / 65534.0f;
+                    loop.middleY = (static_cast<float>(ly) + static_cast<float>(hy)) * 0.5f / 65534.0f;
+                }
+            }
             loop.direction = playback == LoopPlayback::Reverse ? -1 : 1;
             loop.nextAt = now_;
             loop.sentX = loop.sentY = -1;
@@ -646,6 +676,8 @@ void Engine::runLoops() {
         loop.state = LoopStatus::State::Recording;
         loop.length = 0;
         loop.stretch = 0;
+        loop.amplitude = 100;
+        loop.amplitudeNow = 1;
         loopShaping_[index] = {-1.0f, -1.0f};
         loop.nextAt = now_;
         recordedThisHold_ = true;
@@ -858,6 +890,15 @@ Engine::Shaping Engine::shaping(int channel) const {
     return sh;
 }
 
+void Engine::amplifyLoop(int channel, int source, int steps) {
+    if (source < 0 || source >= kLoopSourceCount || source == static_cast<int>(LoopSource::Notes))
+        return;
+    Loop& loop = loops_[loopIndex(std::clamp(channel, 0, kChannelCount - 1), source)];
+    if (loop.state != LoopStatus::State::Playing)
+        return;
+    loop.amplitude = std::clamp(loop.amplitude + steps * kAmplitudeStep, 0, 100);
+}
+
 // Stretches a loop of the active channel, waiting kStretchPauseMs at 1x when it
 // gets there, so a stick held over makes it easy to stop on.
 void Engine::stretchPausing(int source, int steps) {
@@ -879,20 +920,36 @@ void Engine::stretchFromControls() {
     if (!stretchHeld())
         return;
     for (int source = 0; source < 2; ++source) {
-        auto& rest = stickStretchRest_[static_cast<std::size_t>(source)];
-        const float d = (stickPosition_[static_cast<std::size_t>(source * 2)] - 0.5f) * 2.0f;  // -1 left .. 1 right
-        const float out = std::abs(d);
+        const auto i = static_cast<std::size_t>(source);
+        auto& rest = stickStretchRest_[i];
+        auto& ampRest = stickAmplitudeRest_[i];
+        const float dx = (stickPosition_[i * 2] - 0.5f) * 2.0f;         // -1 left .. 1 right
+        const float dy = (0.5f - stickPosition_[i * 2 + 1]) * 2.0f;     // -1 down .. 1 up
+        const bool alongX = std::abs(dx) >= std::abs(dy);               // only the way it mostly moves
+        const float d = alongX ? dx : dy, out = std::abs(d);
         if (out <= kStretchDeadZone) {
-            rest = 0;
+            rest = ampRest = 0;
             continue;
         }
         const double t = static_cast<double>((out - kStretchDeadZone) / (1.0f - kStretchDeadZone));
-        const double rate = kStretchMinRate + (kStretchMaxRate - kStretchMinRate) * t * t;
-        rest += (d > 0 ? rate : -rate) * dt;
-        const int steps = static_cast<int>(rest);
-        if (steps != 0) {
-            rest -= steps;
-            stretchPausing(source, steps);
+        if (alongX) {
+            ampRest = 0;
+            const double rate = kStretchMinRate + (kStretchMaxRate - kStretchMinRate) * t * t;
+            rest += (d > 0 ? rate : -rate) * dt;
+            const int steps = static_cast<int>(rest);
+            if (steps != 0) {
+                rest -= steps;
+                stretchPausing(source, steps);
+            }
+        } else {
+            rest = 0;
+            const double rate = kStretchMinRate + (kAmplitudeMaxRate - kStretchMinRate) * t * t;
+            ampRest += (d > 0 ? rate : -rate) * dt;
+            const int steps = static_cast<int>(ampRest);
+            if (steps != 0) {
+                ampRest -= steps;
+                amplifyLoop(channel_, source, steps);
+            }
         }
     }
 }
@@ -904,6 +961,13 @@ void Engine::stretchFromControls() {
 void Engine::playMovementLoop(std::size_t index, LoopPlayback playback) {
     Loop& loop = loops_[index];
     const int length = loop.length;
+    // The amplitude eases in: at most a tenth of the full swing a step (50 ms for all of it).
+    const float target = static_cast<float>(loop.amplitude) / 100.0f;
+    loop.amplitudeNow += std::clamp(target - loop.amplitudeNow, -0.1f, 0.1f);
+    auto send = [&](float x, float y) {
+        const float a = loop.amplitudeNow;
+        sendLoopValue(index, loop.middleX + (x - loop.middleX) * a, loop.middleY + (y - loop.middleY) * a);
+    };
     const double step = 1.0 / stretchFactor(loop.stretch);
     auto at = [&](const std::vector<std::uint16_t>& v, int k) { return v[static_cast<std::size_t>(loopSampleIndex(k, length, playback))]; };
     auto value = [](std::uint16_t v) { return static_cast<float>(v) / 65534.0f; };
@@ -923,7 +987,7 @@ void Engine::playMovementLoop(std::size_t index, LoopPlayback playback) {
                 const float p3 = at(v, i + 2) == kLifted ? p2 : value(at(v, i + 2));
                 return std::clamp(monotoneCubic(p0, p1, p2, p3, f), 0.0f, 1.0f);
             };
-            sendLoopValue(index, interpolate(loop.x), interpolate(loop.y));
+            send(interpolate(loop.x), interpolate(loop.y));
         }
     } else {
         // The samples this step passes over, in the playing direction.
@@ -940,7 +1004,7 @@ void Engine::playMovementLoop(std::size_t index, LoopPlayback playback) {
             ++on;
         }
         if (on > 0)
-            sendLoopValue(index, sx / static_cast<float>(on), sy / static_cast<float>(on));
+            send(sx / static_cast<float>(on), sy / static_cast<float>(on));
     }
 
     // Move on.
@@ -1149,7 +1213,7 @@ LoopStatus Engine::loopStatus(int channel, int source) const {
     const Loop& loop = loops_[loopIndex(channel, source)];
     const bool waiting = waiting_[static_cast<std::size_t>(source)] && holdChannel_ == channel;
     const bool overdub = source == static_cast<int>(LoopSource::Notes) && overdubChannel_ == channel;
-    return {loop.state, waiting, overdub, loop.length, loop.position, loop.direction, channel, loop.stretch};
+    return {loop.state, waiting, overdub, loop.length, loop.position, loop.direction, channel, loop.stretch, loop.amplitude};
 }
 
 float Engine::loopSample(int channel, int source, int axis, int index) const {
@@ -1166,6 +1230,8 @@ void Engine::clearLoop(int channel, int source) {
     loop.state = LoopStatus::State::Empty;
     loop.length = 0;
     loop.stretch = 0;
+    loop.amplitude = 100;
+    loop.amplitudeNow = 1;
     loopShaping_[index] = {-1.0f, -1.0f};
     if (index % kLoopSourceCount == static_cast<std::size_t>(LoopSource::Notes) &&
         overdubChannel_ == static_cast<int>(index / kLoopSourceCount))
