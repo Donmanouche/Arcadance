@@ -50,6 +50,7 @@ Engine::Engine(MidiSink& sink) : sink_(sink) {
     }
     for (auto& events : noteEvents_)
         events.reserve(kMaxNoteEvents);
+    spans_.reserve(kMaxNoteEvents);
     program_.fill(-1);
     pendingProgram_.fill(-1);
     axisProgram_.fill(-1);
@@ -620,6 +621,7 @@ void Engine::endRecordHold() {
                 for (int n = 0; n < 128; ++n)
                     if (held.test(static_cast<std::size_t>(n)) && events.size() < kMaxNoteEvents)
                         events.push_back({loop.length - 1, static_cast<std::uint8_t>(n), noteVelocity_[static_cast<std::size_t>(n)], false});
+                tidyNoteLoop(channel);
             }
             loop.state = LoopStatus::State::Playing;
             const LoopPlayback playback = preset_->forChannel(channel).loops[static_cast<std::size_t>(source)].playback;
@@ -636,8 +638,10 @@ void Engine::endRecordHold() {
                 syncedPhase(loop, playback, beatAt(now_), loop.phase, dir);
                 loop.direction = dir;
                 loop.position = std::clamp(static_cast<int>(loop.phase), 0, loop.length - 1);
-                if (source == static_cast<int>(LoopSource::Notes))
+                if (source == static_cast<int>(LoopSource::Notes)) {
                     quantizeNoteLoop(channel);
+                    tidyNoteLoop(channel);
+                }
             }
             if (source != static_cast<int>(LoopSource::Notes)) {
                 // Its middle, where a narrower amplitude closes in.
@@ -1339,6 +1343,81 @@ void Engine::overdubNote(int channel, int note, int velocity, std::uint64_t at, 
     const auto where = std::upper_bound(events.begin(), events.end(), position,
                                         [](int at2, const NoteEvent& e) { return at2 < e.at; });
     events.insert(where, event);  // the vector has its capacity: no allocation
+    if (velocity == 0)  // a note complete
+        tidyNoteLoop(channel);
+}
+
+void Engine::tidyNoteLoop(int channel) {
+    const Loop& loop = loops_[loopIndex(channel, static_cast<int>(LoopSource::Notes))];
+    auto& events = noteEvents_[static_cast<std::size_t>(channel)];
+    if (loop.length < 2)
+        return;
+    // The notes as spans: each release closes the note of its press (a
+    // release of no press, the first one on of its pitch).
+    spans_.clear();
+    constexpr int kOpen = 8;  // notes of one pitch on at once, at most
+    std::array<std::array<std::int16_t, kOpen>, 128> open{};
+    std::array<std::uint8_t, 128> openCount{};
+    for (const NoteEvent& e : events) {
+        auto& list = open[e.note];
+        auto& count = openCount[e.note];
+        if (e.on) {
+            if (count < kOpen)
+                list[count++] = static_cast<std::int16_t>(spans_.size());
+            spans_.push_back({e.at, -1, e.note, e.velocity, e.press});
+            continue;
+        }
+        int found = -1;
+        for (int k = 0; k < count && found < 0; ++k)
+            if (spans_[static_cast<std::size_t>(list[static_cast<std::size_t>(k)])].press == e.press)
+                found = k;
+        if (found < 0 && e.press == 0 && count > 0)
+            found = 0;
+        if (found < 0) {
+            spans_.push_back({-1, e.at, e.note, e.velocity, e.press});  // its note is not in the loop: kept as it is
+            continue;
+        }
+        spans_[static_cast<std::size_t>(list[static_cast<std::size_t>(found)])].end = e.at;
+        std::copy(list.begin() + found + 1, list.begin() + count, list.begin() + found);
+        --count;
+    }
+    // Overlaps on a pitch: the earlier note ends where the next starts; two
+    // starting together merge.
+    std::array<int, 128> last;
+    last.fill(-1);
+    for (std::size_t k = 0; k < spans_.size(); ++k) {
+        NoteSpan& s = spans_[k];
+        if (s.start < 0)
+            continue;
+        if (int& l = last[s.note]; l >= 0) {
+            NoteSpan& prev = spans_[static_cast<std::size_t>(l)];
+            if (prev.end < 0 || prev.end > s.start) {
+                if (prev.start >= s.start) {
+                    s.end = prev.end < 0 || s.end < 0 ? -1 : std::max(prev.end, s.end);
+                    prev.start = -2;  // merged into `s`
+                } else {
+                    prev.end = s.start;
+                }
+            }
+        }
+        last[s.note] = static_cast<int>(k);
+    }
+    events.clear();
+    for (const NoteSpan& s : spans_) {
+        if (s.start == -2)
+            continue;
+        if (s.start < 0) {
+            events.push_back({s.end, s.note, s.velocity, false, s.press});
+            continue;
+        }
+        const int start = std::min(s.start, loop.length - 2);  // room for its release after it
+        events.push_back({start, s.note, s.velocity, true, s.press});
+        if (s.end >= 0)
+            events.push_back({std::clamp(s.end, start + 1, loop.length - 1), s.note, s.velocity, false, s.press});
+    }
+    // In loop order; where a note ends and the next starts, the release first.
+    std::stable_sort(events.begin(), events.end(),
+                     [](const NoteEvent& a, const NoteEvent& b) { return a.at != b.at ? a.at < b.at : !a.on && b.on; });
 }
 
 // A note loop at its current step: its notes there start or stop; played

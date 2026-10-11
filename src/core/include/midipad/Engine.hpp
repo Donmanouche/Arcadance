@@ -373,6 +373,16 @@ private:
     };
     std::array<PressShift, kMaxNoteEvents> pressShift_{};
     std::uint32_t pressCount_ = 0;
+    // Keeps the notes of one pitch in a note loop from overlapping: a note
+    // still on when the next one of its pitch starts ends there, and two that
+    // start together become one. `spans_` is its scratch room, allocated once.
+    void tidyNoteLoop(int channel);
+    struct NoteSpan {
+        std::int32_t start = 0, end = 0;  // start < 0: a release alone; end < 0: still on
+        std::uint8_t note = 0, velocity = 0;
+        std::uint32_t press = 0;
+    };
+    std::vector<NoteSpan> spans_;
     std::array<std::vector<NoteEvent>, kChannelCount> noteEvents_;
     std::array<std::bitset<128>, kChannelCount> noteLoopOn_{};
     std::array<std::uint8_t, 128> noteVelocity_{};  // of the last note-on recorded, for its release
