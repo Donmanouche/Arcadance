@@ -100,7 +100,7 @@ private:
     void stretchWheel(std::uint8_t sources, ImVec2 a, ImVec2 b);
     void drawStretchGauge(ImDrawList* dl, ImVec2 ga, ImVec2 gb, std::uint8_t sources, int stretch, ImU32 color);
     float drawStretchChip(ImDrawList* dl, float right, float y, int stretch, ImU32 color);  // returns its left edge
-    // The same for the amplitude (percent of the recorded swing): chip "AMP 60%", gauge 0-100 %.
+    // The same for the amplitude (percent of the recorded swing): chip "AMP 60%", gauge 0-800 %.
     float drawAmplitudeChip(ImDrawList* dl, float right, float y, int amplitude, ImU32 color);
     void drawAmplitudeGauge(ImDrawList* dl, ImVec2 ga, ImVec2 gb, std::uint8_t sources, int amplitude, ImU32 color);
     float drawChip(ImDrawList* dl, float right, float y, const std::string& label, ImU32 color);

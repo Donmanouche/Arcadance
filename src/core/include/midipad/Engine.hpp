@@ -134,12 +134,19 @@ public:
     static constexpr int kMaxStretch = 198, kMinStretch = -38;
     static double stretchFactor(int stretch);  // how many times longer it lasts
     void stretchLoop(int channel, int source, int steps);
-    // A movement loop's swing narrowed around its middle (halfway between its
-    // lowest and highest values), from 100 % (as recorded) down to 0 % (still),
-    // by kAmplitudeStep percent a step; eased in over a few milliseconds, so it
-    // never jumps. Recording the loop again puts it back to 100 %.
-    static constexpr int kAmplitudeStep = 5;
+    // A movement loop's swing narrowed or widened around its middle (halfway
+    // between its lowest and highest values): from 0 % (still) through 100 % (as
+    // recorded) up to kMaxAmplitude, by kAmplitudeStep percent a step below 100 %
+    // and kAmplitudeStepAbove above. Widened, what would pass the ends of the
+    // travel is softly clipped: it bends towards them, then stays flat there
+    // (see shapeAmplitude). Eased in, so it never jumps. Moving across 100 %
+    // stops there. Recording the loop again puts it back to 100 %.
+    static constexpr int kAmplitudeStep = 5, kAmplitudeStepAbove = 25, kMaxAmplitude = 800;
     void amplifyLoop(int channel, int source, int steps);
+    // One recorded value `v` in [0, 1] with the amplitude `a` (1 = as recorded)
+    // around `middle`, softly clipped to [0, 1] when widened. Shared with the
+    // view, which draws what plays.
+    static float shapeAmplitude(float v, float middle, float a);
     // While a LoopStretch binding is held, a stick or a finger on the touchpad
     // (in axis mode) changes its loops on the active channel: along X their
     // stretch, as Shift + wheel does; along Y their amplitude, as Ctrl + wheel
@@ -351,6 +358,8 @@ private:
     std::uint64_t lastStretchTick_ = 0;
     void stretchFromControls();
     void stretchPausing(int source, int steps);
+    void amplifyPausing(int source, int steps);
+    std::array<std::uint64_t, kLoopSourceCount> amplitudePausedUntil_{};
     bool recordedThisHold_ = false;
     std::array<std::optional<Zone>, kFingerCount> fingerZone_{};
     std::array<bool, 2> triggerDown_{};

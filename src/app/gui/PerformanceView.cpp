@@ -585,7 +585,7 @@ float PerformanceView::drawStretchChip(ImDrawList* dl, float right, float y, int
 }
 
 float PerformanceView::drawAmplitudeChip(ImDrawList* dl, float right, float y, int amplitude, ImU32 color) {
-    return amplitude >= 100 ? right : drawChip(dl, right, y, "AMP " + std::to_string(amplitude) + "%", color);
+    return amplitude == 100 ? right : drawChip(dl, right, y, "AMP " + std::to_string(amplitude) + "%", color);
 }
 
 float PerformanceView::drawChip(ImDrawList* dl, float right, float y, const std::string& label, ImU32 color) {
@@ -598,7 +598,8 @@ float PerformanceView::drawChip(ImDrawList* dl, float right, float y, const std:
 }
 
 // While the amplitude changes (and a moment after), a gauge across the bottom
-// of the LOOP box, like the stretch's: 0 % on the left, 100 % on the right.
+// of the LOOP box, like the stretch's: 0 % on the left, 100 % (as recorded)
+// marked, up to 800 % on the right.
 void PerformanceView::drawAmplitudeGauge(ImDrawList* dl, ImVec2 ga, ImVec2 gb, std::uint8_t sources, int amplitude, ImU32 color) {
     double shownAt = -1e9;
     for (std::size_t i = 0; i < amplitudeShown_.size(); ++i)
@@ -612,21 +613,30 @@ void PerformanceView::drawAmplitudeGauge(ImDrawList* dl, ImVec2 ga, ImVec2 gb, s
     dl->AddRectFilled(ba, bb, IM_COL32(0x14, 0x16, 0x19, static_cast<int>(240 * a)), px(5));
     dl->AddRect(ba, bb, alpha(IM_COL32(0x2E, 0x32, 0x38, 255), a), px(5), px(1));
     const float x0 = ba.x + px(12), x1 = bb.x - px(12), ty = bb.y - px(9), ly = ba.y + px(9);
-    const float at = x0 + (x1 - x0) * static_cast<float>(std::clamp(amplitude, 0, 100)) / 100.0f;
+    // 0-100 % on the first third, 100-800 % on the rest.
+    auto xAt = [&](int pct) {
+        const float f = pct <= 100 ? 0.35f * static_cast<float>(pct) / 100.0f
+                                   : 0.35f + 0.65f * static_cast<float>(pct - 100) / static_cast<float>(Engine::kMaxAmplitude - 100);
+        return x0 + (x1 - x0) * f;
+    };
+    const float one = xAt(100), at = xAt(std::clamp(amplitude, 0, Engine::kMaxAmplitude));
     dl->AddLine(ImVec2(x0, ty), ImVec2(x1, ty), alpha(IM_COL32(0x4A, 0x4F, 0x57, 255), a), px(2));
-    dl->AddLine(ImVec2(at, ty), ImVec2(x1, ty), alpha(color, a), px(3));  // what was taken off the full swing
+    dl->AddLine(ImVec2(one, ty - px(4)), ImVec2(one, ty + px(4)), alpha(T::kDim, a), px(1.5f));
+    dl->AddLine(ImVec2(std::min(one, at), ty), ImVec2(std::max(one, at), ty), alpha(color, a), px(3));  // away from as recorded
     dl->AddCircleFilled(ImVec2(at, ty), px(4.5f), alpha(color, a));
     const std::string value = "AMP " + std::to_string(amplitude) + "%";
     const float vw = textWidth(gBold, px(10), value);
     const float vx = std::clamp(at, x0 + vw * 0.5f, x1 - vw * 0.5f);
     auto fixed = [&](float x, const char* label, H align) {
         const float w = textWidth(gMedium, px(10), label);
-        const float l = align == H::Left ? x : x - w;
+        const float l = align == H::Left ? x : align == H::Right ? x - w : x - w * 0.5f;
         if (l + w < vx - vw * 0.5f - px(4) || l > vx + vw * 0.5f + px(4))
             text(dl, gMedium, px(10), x, ly, alpha(T::kDim, a), label, align, V::Middle);
     };
     fixed(x0 - px(6), "0%", H::Left);
-    fixed(x1 + px(6), "100%", H::Right);
+    if (amplitude != 100)
+        fixed(one, "100%", H::Center);
+    fixed(x1 + px(6), "800%", H::Right);
     text(dl, gBold, px(10), vx, ly, alpha(T::kText, a), value, H::Center, V::Middle);
 }
 
@@ -1154,7 +1164,7 @@ void PerformanceView::drawLoopPanel(ImDrawList* dl, float x, float w, float loop
         statusColor = T::kRed;
     } else if (playing) {
         // With chips for the stretch, the arrows alone tell the playback.
-        const bool chips = st.stretch != 0 || st.amplitude < 100;
+        const bool chips = st.stretch != 0 || st.amplitude != 100;
         status = chips ? durationText(seconds * Engine::stretchFactor(st.stretch))
                        : std::string(lb.playback == LoopPlayback::Forward   ? "FWD"
                                      : lb.playback == LoopPlayback::Reverse ? "REV"
@@ -1184,7 +1194,7 @@ void PerformanceView::drawLoopPanel(ImDrawList* dl, float x, float w, float loop
         }
     }
     float ruleEnd = status.empty() ? x + w - px(12) : iconX - px(10);
-    if (playing && (st.stretch != 0 || st.amplitude < 100)) {  // a stretched loop says by how much
+    if (playing && (st.stretch != 0 || st.amplitude != 100)) {  // a stretched loop says by how much
         float right = iconX - px(lb.playback == LoopPlayback::BackAndForth ? 12 : 9);
         right = drawStretchChip(dl, right, loopY, st.stretch, colorX) - (st.stretch != 0 ? px(4) : 0.0f);
         ruleEnd = drawAmplitudeChip(dl, right, loopY, st.amplitude, colorX) - px(6);
@@ -1205,8 +1215,9 @@ void PerformanceView::drawLoopPanel(ImDrawList* dl, float x, float w, float loop
         // While recording the curve grows over a 4-second window, then fills the box.
         const float lx0 = ga.x + px(6), lx1 = ga.x + px(6) + (gb.x - ga.x - px(12)) * (recording ? std::min(1.0f, seconds / 4.0f) : 1.0f);
         const float ly0 = ga.y + px(5), ly1 = gb.y - px(5);
-        // With a reduced amplitude, each curve closes in on its middle; the
-        // recorded one stays faintly behind.
+        // With another amplitude each curve closes in on its middle, or widens
+        // and bends flat against the ends, as it plays; the recorded one stays
+        // faintly behind.
         const float amp = playing ? static_cast<float>(st.amplitude) / 100.0f : 1.0f;
         std::array<float, 2> middle{};
         for (int axis = 0; axis < 2; ++axis) {
@@ -1217,13 +1228,13 @@ void PerformanceView::drawLoopPanel(ImDrawList* dl, float x, float w, float loop
         auto curveAt = [&](int i, int axis, float scale) {
             const float t = static_cast<float>(i) / static_cast<float>(loop.points - 1);
             const float centre = middle[static_cast<std::size_t>(axis)];
-            const float v = centre + (static_cast<float>((axis == 0 ? loop.x : loop.y)[static_cast<std::size_t>(i)]) / 255.0f - centre) * scale;
+            const float v = Engine::shapeAmplitude(static_cast<float>((axis == 0 ? loop.x : loop.y)[static_cast<std::size_t>(i)]) / 255.0f, centre, scale);
             return ImVec2(lx0 + t * (lx1 - lx0), upward ? ly1 - v * (ly1 - ly0) : ly0 + v * (ly1 - ly0));
         };
         auto at = [&](int i, int axis) { return curveAt(i, axis, amp); };
         for (int axis = 0; axis < 2; ++axis) {
             ImVec2 pts[LiveState::Loop::kPoints];
-            if (amp < 1.0f) {
+            if (amp != 1.0f) {
                 for (int i = 0; i < loop.points; ++i)
                     pts[i] = curveAt(i, axis, 1.0f);
                 dl->AddPolyline(pts, loop.points, alpha(axis == 0 ? colorX : colorY, 0.22f), px(1.4f));
@@ -1567,7 +1578,7 @@ void PerformanceView::drawTouchpad(const Mapping& m, const LiveState& live, floa
         const LoopStatus& ls = loops[shown]->status;
         const double seconds = static_cast<double>(ls.length) / Engine::kLoopRateHz;
         const std::string length = durationText(seconds * Engine::stretchFactor(ls.stretch));
-        status = ls.stretch != 0 && ls.amplitude < 100
+        status = ls.stretch != 0 && ls.amplitude != 100
                      ? length  // room for both chips
                      : std::string(pb == LoopPlayback::Forward ? "FWD" : pb == LoopPlayback::Reverse ? "REV" : "BACK & FORTH") +
                            "  \xC2\xB7  " + length;
@@ -1580,7 +1591,7 @@ void PerformanceView::drawTouchpad(const Mapping& m, const LiveState& live, floa
     if (recording || waiting)
         dl->AddCircleFilled(ImVec2(statusX - px(9), loopY), px(3.5f), alpha(T::kRed, recording ? 1.0f : 0.6f));
     float ruleEnd = status.empty() ? x + w - px(12) : statusX - px(recording || waiting ? 18 : 8);
-    if (!recording && !waiting && shown >= 0 && (loops[shown]->status.stretch != 0 || loops[shown]->status.amplitude < 100)) {
+    if (!recording && !waiting && shown >= 0 && (loops[shown]->status.stretch != 0 || loops[shown]->status.amplitude != 100)) {
         const LoopStatus& ls = loops[shown]->status;
         float right = drawStretchChip(dl, statusX - px(6), loopY, ls.stretch, fingerColors[shown]) - (ls.stretch != 0 ? px(4) : 0.0f);
         ruleEnd = drawAmplitudeChip(dl, right, loopY, ls.amplitude, fingerColors[shown]) - px(6);
@@ -1606,7 +1617,7 @@ void PerformanceView::drawTouchpad(const Mapping& m, const LiveState& live, floa
         if (state(f) == LoopStatus::State::Empty || L.points < 2)
             continue;
         drewAny = true;
-        // With a reduced amplitude the path closes in on its middle; the recorded one stays faintly behind.
+        // With another amplitude the path closes in on its middle or widens against the edges; the recorded one stays faintly behind.
         const float amp = state(f) == LoopStatus::State::Playing ? static_cast<float>(L.status.amplitude) / 100.0f : 1.0f;
         float mx = 0.5f, my = 0.5f;
         {
@@ -1621,8 +1632,8 @@ void PerformanceView::drawTouchpad(const Mapping& m, const LiveState& live, floa
                 mx = (x0 + x1) * 0.5f, my = (y0 + y1) * 0.5f;
         }
         auto pathAt = [&](int i, float scale) {
-            const float vx = mx + (static_cast<float>(L.x[static_cast<std::size_t>(i)]) / 255.0f - mx) * scale;
-            const float vy = my + (static_cast<float>(L.y[static_cast<std::size_t>(i)]) / 255.0f - my) * scale;
+            const float vx = Engine::shapeAmplitude(static_cast<float>(L.x[static_cast<std::size_t>(i)]) / 255.0f, mx, scale);
+            const float vy = Engine::shapeAmplitude(static_cast<float>(L.y[static_cast<std::size_t>(i)]) / 255.0f, my, scale);
             return ImVec2(pa.x + vx * (pb.x - pa.x), pa.y + vy * (pb.y - pa.y));
         };
         auto at = [&](int i) { return pathAt(i, amp); };
@@ -1630,7 +1641,7 @@ void PerformanceView::drawTouchpad(const Mapping& m, const LiveState& live, floa
         for (int i = 1; i < L.points; ++i) {
             if (!L.on[static_cast<std::size_t>(i)] || !L.on[static_cast<std::size_t>(i - 1)])
                 continue;
-            if (amp < 1.0f)
+            if (amp != 1.0f)
                 dl->AddLine(pathAt(i - 1, 1.0f), pathAt(i, 1.0f), alpha(fingerColors[f], 0.18f), px(1.2f));
             dl->AddLine(at(i - 1), at(i), alpha(fingerColors[f], 0.6f), px(1.6f));
         }

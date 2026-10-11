@@ -246,8 +246,8 @@ void Engine::touchMoved(int finger, float x, float y) {
                 if (steps != 0) {
                     stretchFingerY_ -= static_cast<float>(steps) * kStretchTouchStep;
                     stretchFingerX_ = x;
-                    amplifyLoop(channel_, static_cast<int>(LoopSource::Finger1), steps);
-                    amplifyLoop(channel_, static_cast<int>(LoopSource::Finger2), steps);
+                    amplifyPausing(static_cast<int>(LoopSource::Finger1), steps);
+                    amplifyPausing(static_cast<int>(LoopSource::Finger2), steps);
                 }
             }
         }
@@ -896,7 +896,47 @@ void Engine::amplifyLoop(int channel, int source, int steps) {
     Loop& loop = loops_[loopIndex(std::clamp(channel, 0, kChannelCount - 1), source)];
     if (loop.state != LoopStatus::State::Playing)
         return;
-    loop.amplitude = std::clamp(loop.amplitude + steps * kAmplitudeStep, 0, 100);
+    // Step by step: 5 % below 100 %, 25 % above; across 100 % it stops there.
+    int a = loop.amplitude;
+    const int dir = steps > 0 ? 1 : -1;
+    for (int i = 0; i != steps; i += dir) {
+        const int next = dir > 0 ? (a < 100 ? a + kAmplitudeStep : a + kAmplitudeStepAbove)
+                                 : (a > 100 ? a - kAmplitudeStepAbove : a - kAmplitudeStep);
+        if ((a < 100 && next > 100) || (a > 100 && next < 100) || (a != 100 && next == 100)) {
+            a = 100;
+            break;
+        }
+        a = std::clamp(next, 0, kMaxAmplitude);
+    }
+    loop.amplitude = a;
+}
+
+float Engine::shapeAmplitude(float v, float middle, float a) {
+    float out = middle + (v - middle) * a;
+    if (a <= 1.0f)
+        return std::clamp(out, 0.0f, 1.0f);
+    // A soft knee near each end, growing with the amplitude (nothing at 100 %,
+    // a tenth of the travel from 200 %): the curve bends towards the end, then
+    // stays flat on it.
+    const float k = 0.1f * std::min(1.0f, a - 1.0f);
+    if (out > 1.0f - k)
+        out = 1.0f - k * std::exp(-(out - (1.0f - k)) / k);
+    else if (out < k)
+        out = k * std::exp((out - k) / k);
+    return std::clamp(out, 0.0f, 1.0f);
+}
+
+// Changes a loop's amplitude on the active channel, waiting kStretchPauseMs at
+// 100 % when it gets there, like the stretch at 1x.
+void Engine::amplifyPausing(int source, int steps) {
+    const auto i = static_cast<std::size_t>(source);
+    if (now_ < amplitudePausedUntil_[i])
+        return;
+    const Loop& loop = loops_[loopIndex(channel_, source)];
+    const int before = loop.amplitude;
+    amplifyLoop(channel_, source, steps);
+    if (before != 100 && loop.amplitude == 100)
+        amplitudePausedUntil_[i] = now_ + static_cast<std::uint64_t>(kStretchPauseMs) * 1'000'000u;
 }
 
 // Stretches a loop of the active channel, waiting kStretchPauseMs at 1x when it
@@ -948,7 +988,7 @@ void Engine::stretchFromControls() {
             const int steps = static_cast<int>(ampRest);
             if (steps != 0) {
                 ampRest -= steps;
-                amplifyLoop(channel_, source, steps);
+                amplifyPausing(source, steps);
             }
         }
     }
@@ -961,12 +1001,14 @@ void Engine::stretchFromControls() {
 void Engine::playMovementLoop(std::size_t index, LoopPlayback playback) {
     Loop& loop = loops_[index];
     const int length = loop.length;
-    // The amplitude eases in: at most a tenth of the full swing a step (50 ms for all of it).
+    // The amplitude eases in: at most a tenth of the recorded swing a step
+    // (50 ms from 100 % to 0 %), faster when widening far.
     const float target = static_cast<float>(loop.amplitude) / 100.0f;
-    loop.amplitudeNow += std::clamp(target - loop.amplitudeNow, -0.1f, 0.1f);
+    const float ease = 0.1f * std::max(1.0f, std::max(target, loop.amplitudeNow) / 2.0f);
+    loop.amplitudeNow += std::clamp(target - loop.amplitudeNow, -ease, ease);
     auto send = [&](float x, float y) {
         const float a = loop.amplitudeNow;
-        sendLoopValue(index, loop.middleX + (x - loop.middleX) * a, loop.middleY + (y - loop.middleY) * a);
+        sendLoopValue(index, shapeAmplitude(x, loop.middleX, a), shapeAmplitude(y, loop.middleY, a));
     };
     const double step = 1.0 / stretchFactor(loop.stretch);
     auto at = [&](const std::vector<std::uint16_t>& v, int k) { return v[static_cast<std::size_t>(loopSampleIndex(k, length, playback))]; };
