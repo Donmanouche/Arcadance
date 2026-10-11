@@ -102,6 +102,7 @@ void Engine::setDpadSettle(int pressMs, int releaseMs) {
 
 void Engine::tick(std::uint64_t nowNs) {
     now_ = nowNs;
+    clockAt_ = nowNs;  // the beat clock was given for this time
     if (pendingHatDir_ && now_ >= pendingHatAt_) {
         const auto dir = pendingHatDir_;
         pendingHatDir_.reset();
@@ -618,6 +619,18 @@ void Engine::endRecordHold() {
             const LoopPlayback playback = preset_->forChannel(channel).loops[static_cast<std::size_t>(source)].playback;
             loop.position = playback == LoopPlayback::Reverse ? loop.length - 1 : 0;
             loop.phase = loop.position;
+            // With the beat clock: a whole number of snaps, starting on the nearest one.
+            loop.syncBeats = 0;
+            if (clock_.on && snapBeats_ > 0) {
+                const double snap = snapBeats_;
+                const double recorded = beatAt(now_) - loop.startBeat;
+                loop.syncBeats = std::max(1.0, std::round(recorded / snap)) * snap;
+                loop.anchorBeat = std::round(loop.startBeat / snap) * snap;
+                int dir = 1;
+                syncedPhase(loop, playback, beatAt(now_), loop.phase, dir);
+                loop.direction = dir;
+                loop.position = std::clamp(static_cast<int>(loop.phase), 0, loop.length - 1);
+            }
             if (source != static_cast<int>(LoopSource::Notes)) {
                 // Its middle, where a narrower amplitude closes in.
                 std::uint16_t lx = 0xFFFE, hx = 0, ly = 0xFFFE, hy = 0;
@@ -675,6 +688,8 @@ void Engine::runLoops() {
         Loop& loop = loops_[index];
         loop.state = LoopStatus::State::Recording;
         loop.length = 0;
+        loop.syncBeats = 0;
+        loop.startBeat = beatAt(now_);
         loop.stretch = 0;
         loop.amplitude = 100;
         loop.amplitudeNow = 1;
@@ -715,10 +730,60 @@ void Engine::runLoops() {
             }
             // The playback as it is now: it can change while playing.
             const LoopPlayback playback = preset_->forChannel(channel).loops[static_cast<std::size_t>(source)].playback;
+            // A synced loop goes where the beat clock says (at this step's time).
+            const bool synced = loop.syncBeats > 0 && clock_.on;
+            double phase = 0;
+            int dir = 1;
+            if (synced)
+                syncedPhase(loop, playback, beatAt(loop.nextAt - kStep), phase, dir);
             if (source != static_cast<int>(LoopSource::Notes)) {
                 fromLoop_ = true;
-                playMovementLoop(i, playback);
+                playMovementLoop(i, playback, synced ? &phase : nullptr, dir);
                 fromLoop_ = false;
+                continue;
+            }
+            if (synced) {
+                // Step the note loop to where the clock is, playing the notes on
+                // the way; after a jump (a pause, the session moved), go straight there.
+                const int target = std::clamp(static_cast<int>(phase), 0, loop.length - 1);
+                int ahead = 0;
+                if (playback == LoopPlayback::BackAndForth) {
+                    // Straight there: the clock turns it round at the ends.
+                    ahead = std::abs(target - loop.position);
+                    if (target != loop.position)
+                        dir = target > loop.position ? 1 : -1;
+                } else {
+                    ahead = dir > 0 ? (target - loop.position + loop.length) % loop.length
+                                    : (loop.position - target + loop.length) % loop.length;
+                }
+                if (ahead > std::max(4, loop.length / 4)) {
+                    fromLoop_ = true;
+                    silenceLoop(i);
+                    fromLoop_ = false;
+                    loop.position = target;
+                    loop.direction = dir;
+                    continue;
+                }
+                loop.direction = dir;
+                for (int k = 0; k < ahead; ++k) {
+                    fromLoop_ = true;
+                    playLoopNotes(i);
+                    fromLoop_ = false;
+                    const int next = loop.position + dir;
+                    bool startsOver = false;
+                    if (playback == LoopPlayback::BackAndForth) {
+                        loop.position = std::clamp(next, 0, loop.length - 1);
+                        startsOver = loop.position == 0 && dir < 0;
+                    } else {
+                        loop.position = (next + loop.length) % loop.length;
+                        startsOver = dir > 0 ? loop.position == 0 : loop.position == loop.length - 1;
+                    }
+                    if (startsOver) {
+                        fromLoop_ = true;
+                        silenceLoop(i);  // what still sounds stops when the loop starts over
+                        fromLoop_ = false;
+                    }
+                }
                 continue;
             }
             fromLoop_ = true;
@@ -994,11 +1059,28 @@ void Engine::stretchFromControls() {
     }
 }
 
+void Engine::syncedPhase(const Loop& loop, LoopPlayback playback, double beat, double& phase, int& direction) const {
+    const double span = loop.syncBeats * stretchFactor(loop.stretch);  // one pass, in beats
+    const double u = (beat - loop.anchorBeat) / span;
+    const double length = loop.length;
+    if (playback == LoopPlayback::BackAndForth) {
+        const double p = u - 2.0 * std::floor(u / 2.0);  // [0, 2)
+        direction = p < 1.0 ? 1 : -1;
+        phase = (p < 1.0 ? p : 2.0 - p) * (length - 1);
+        return;
+    }
+    const double f = u - std::floor(u);  // [0, 1)
+    direction = playback == LoopPlayback::Reverse ? -1 : 1;
+    phase = playback == LoopPlayback::Reverse ? (1.0 - f) * length : f * length;
+    if (phase >= length)
+        phase -= length;
+}
+
 // Plays one step of a movement loop: sends its value at the current point,
 // then moves on by one sample, divided by the stretch factor. Slower than
 // recorded, the value is interpolated between samples; faster, it is the
 // average of the samples passed over, so nothing flickers.
-void Engine::playMovementLoop(std::size_t index, LoopPlayback playback) {
+void Engine::playMovementLoop(std::size_t index, LoopPlayback playback, const double* syncedPhase, int syncedDirection) {
     Loop& loop = loops_[index];
     const int length = loop.length;
     // The amplitude eases in: at most a tenth of the recorded swing a step
@@ -1010,7 +1092,15 @@ void Engine::playMovementLoop(std::size_t index, LoopPlayback playback) {
         const float a = loop.amplitudeNow;
         sendLoopValue(index, shapeAmplitude(x, loop.middleX, a), shapeAmplitude(y, loop.middleY, a));
     };
-    const double step = 1.0 / stretchFactor(loop.stretch);
+    double step = 1.0 / stretchFactor(loop.stretch);
+    if (syncedPhase) {
+        // Synced: the clock gives the point; the step is how far it moved since.
+        double moved = std::abs(*syncedPhase - loop.phase);
+        moved = std::min(moved, static_cast<double>(length) - moved);
+        step = std::max(moved, 1e-6);
+        loop.phase = *syncedPhase;
+        loop.direction = syncedDirection;
+    }
     auto at = [&](const std::vector<std::uint16_t>& v, int k) { return v[static_cast<std::size_t>(loopSampleIndex(k, length, playback))]; };
     auto value = [](std::uint16_t v) { return static_cast<float>(v) / 65534.0f; };
 
@@ -1049,7 +1139,11 @@ void Engine::playMovementLoop(std::size_t index, LoopPlayback playback) {
             send(sx / static_cast<float>(on), sy / static_cast<float>(on));
     }
 
-    // Move on.
+    // Move on (a synced loop is moved by the clock).
+    if (syncedPhase) {
+        loop.position = std::clamp(static_cast<int>(loop.phase), 0, std::max(0, length - 1));
+        return;
+    }
     if (length < 2) {
         loop.phase = 0;
     } else if (playback == LoopPlayback::Forward) {
@@ -1143,6 +1237,8 @@ void Engine::recordNote(int channel, int note, int velocity, std::uint64_t at) {
         silenceLoop(index);
         loop.state = LoopStatus::State::Recording;
         loop.length = 0;
+        loop.syncBeats = 0;
+        loop.startBeat = beatAt(now_);
         loop.nextAt = now_;
         noteRecordStart_ = now_;
         noteEvents_[static_cast<std::size_t>(channel)].clear();
@@ -1255,7 +1351,8 @@ LoopStatus Engine::loopStatus(int channel, int source) const {
     const Loop& loop = loops_[loopIndex(channel, source)];
     const bool waiting = waiting_[static_cast<std::size_t>(source)] && holdChannel_ == channel;
     const bool overdub = source == static_cast<int>(LoopSource::Notes) && overdubChannel_ == channel;
-    return {loop.state, waiting, overdub, loop.length, loop.position, loop.direction, channel, loop.stretch, loop.amplitude};
+    return {loop.state, waiting, overdub, loop.length, loop.position, loop.direction, channel, loop.stretch, loop.amplitude,
+            loop.syncBeats > 0 ? loop.syncBeats * stretchFactor(loop.stretch) : 0.0};
 }
 
 float Engine::loopSample(int channel, int source, int axis, int index) const {

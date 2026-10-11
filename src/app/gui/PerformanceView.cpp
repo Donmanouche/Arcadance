@@ -520,6 +520,41 @@ std::string stretchText(int stretch) {
     return buf;
 }
 
+// A synced loop's length: "1 BEAT", "3 BEATS", "1 BAR", "2.5 BARS".
+std::string beatsText(double beats, int beatsPerBar) {
+    char buf[24];
+    const double bars = beats / beatsPerBar;
+    const bool wholeBeats = std::abs(beats - std::round(beats)) < 1e-6;
+    const bool halfBars = std::abs(bars * 2 - std::round(bars * 2)) < 1e-6;
+    if (halfBars && bars >= 1.0) {
+        if (std::abs(bars - std::round(bars)) < 1e-6)
+            std::snprintf(buf, sizeof buf, "%d %s", static_cast<int>(std::round(bars)), std::round(bars) == 1 ? "BAR" : "BARS");
+        else
+            std::snprintf(buf, sizeof buf, "%.1f BARS", bars);
+    } else if (wholeBeats) {
+        std::snprintf(buf, sizeof buf, "%d %s", static_cast<int>(std::round(beats)), std::round(beats) == 1 ? "BEAT" : "BEATS");
+    } else {
+        std::snprintf(buf, sizeof buf, "%.1f BEATS", beats);
+    }
+    return buf;
+}
+
+// The beat grid of a synced loop over [x0, x1]: a line per beat, stronger on
+// bars, and the bars' numbers along the top.
+void beatGrid(ImDrawList* dl, ImFont* font, float x0, float x1, float y0, float y1, double beats, int beatsPerBar) {
+    if (beats <= 0 || x1 <= x0)
+        return;
+    const int count = static_cast<int>(std::ceil(beats - 1e-6));
+    for (int k = 0; k < count; ++k) {
+        const float x = x0 + (x1 - x0) * static_cast<float>(k / beats);
+        const bool bar = k % beatsPerBar == 0;
+        if (k > 0)
+            dl->AddLine(ImVec2(x, y0), ImVec2(x, y1), bar ? IM_COL32(255, 255, 255, 70) : IM_COL32(255, 255, 255, 20), px(bar ? 1.2f : 1.0f));
+        if (bar && (x1 - x0) * static_cast<float>(beatsPerBar / beats) > px(14))
+            text(dl, font, px(9), x + px(3), y0 + px(6), T::kDim, std::to_string(k / beatsPerBar + 1), H::Left, V::Middle);
+    }
+}
+
 // A loop's length as shown, stretched: "4.0 s", "12:30 min".
 std::string durationText(double seconds) {
     char buf[24];
@@ -689,6 +724,7 @@ std::optional<std::string> PerformanceView::draw(const Mapping& mapping, const L
     flats_ = key && prefersFlats(*key);
     clicked_.reset();
     stretch_.reset();
+    beatsPerBar_ = std::max(live.beatsPerBar, 1);
     trackFrozenPositions(live);
     // A stretch that changed, from the wheel or the controller, shows its gauge.
     for (int source = 0; source < kLoopSourceCount; ++source) {
@@ -792,8 +828,8 @@ void PerformanceView::drawPianoRoll(const Mapping& m, const LiveState& live, flo
         statusColor = T::kRed;
     } else if (clip) {
         status = std::string(st.overdub ? "OVERDUB  " : "LOOP  ") +
-                 (lb.playback == LoopPlayback::Forward ? "FWD" : lb.playback == LoopPlayback::Reverse ? "REV" : "BACK & FORTH") +
-                 "  \xC2\xB7  " + seconds;
+                 (lb.playback == LoopPlayback::Forward ? "FWD" : lb.playback == LoopPlayback::Reverse ? "REV" : "B&F") +
+                 "  \xC2\xB7  " + (st.beats > 0 ? beatsText(st.beats, beatsPerBar_) : std::string(seconds));
         statusColor = st.overdub ? T::kOrange : kViolet;
     }
 
@@ -848,10 +884,14 @@ void PerformanceView::drawPianoRoll(const Mapping& m, const LiveState& live, flo
 
     bool any = false;
     if (clip) {
-        // Half-second lines from the loop's start, which is marked.
-        const float halfSecond = static_cast<float>(Engine::kLoopRateHz) * 0.5f;
-        for (float s2 = halfSecond; s2 < static_cast<float>(st.length); s2 += halfSecond)
-            dl->AddLine(ImVec2(xAtSample(s2), ay0), ImVec2(xAtSample(s2), ay1), IM_COL32(255, 255, 255, 18));
+        // Synced: the beats and bars of the loop. Free: half-second lines. From the loop's start, which is marked.
+        if (st.beats > 0) {
+            beatGrid(dl, gMedium, gx0, ax1, ay0, ay1, st.beats, beatsPerBar_);
+        } else {
+            const float halfSecond = static_cast<float>(Engine::kLoopRateHz) * 0.5f;
+            for (float s2 = halfSecond; s2 < static_cast<float>(st.length); s2 += halfSecond)
+                dl->AddLine(ImVec2(xAtSample(s2), ay0), ImVec2(xAtSample(s2), ay1), IM_COL32(255, 255, 255, 18));
+        }
         dl->AddLine(ImVec2(gx0, ay0), ImVec2(gx0, ay1), IM_COL32(255, 255, 255, 90), px(1.2f));
         text(dl, gMedium, px(8), gx0 + px(3), ay1 - px(6), T::kDim, "start", H::Left, V::Middle);
         // Beneath the loop, what is played live scrolls by as without a loop, from
@@ -1165,11 +1205,13 @@ void PerformanceView::drawLoopPanel(ImDrawList* dl, float x, float w, float loop
     } else if (playing) {
         // With chips for the stretch, the arrows alone tell the playback.
         const bool chips = st.stretch != 0 || st.amplitude != 100;
-        status = chips ? durationText(seconds * Engine::stretchFactor(st.stretch))
+        const std::string length = st.beats > 0 ? beatsText(st.beats, beatsPerBar_)
+                                                : durationText(seconds * Engine::stretchFactor(st.stretch));
+        status = chips ? length
                        : std::string(lb.playback == LoopPlayback::Forward   ? "FWD"
                                      : lb.playback == LoopPlayback::Reverse ? "REV"
-                                                                            : "BACK & FORTH") +
-                             "  \xC2\xB7  " + durationText(seconds * Engine::stretchFactor(st.stretch));
+                                                                            : "B&F") +
+                             "  \xC2\xB7  " + length;
         statusColor = colorX;
     }
     const float statusX = x + w - px(12) - textWidth(gBold, px(10), status);
@@ -1232,6 +1274,8 @@ void PerformanceView::drawLoopPanel(ImDrawList* dl, float x, float w, float loop
             return ImVec2(lx0 + t * (lx1 - lx0), upward ? ly1 - v * (ly1 - ly0) : ly0 + v * (ly1 - ly0));
         };
         auto at = [&](int i, int axis) { return curveAt(i, axis, amp); };
+        if (playing)
+            beatGrid(dl, gMedium, lx0, lx1, ga.y + px(2), gb.y - px(2), st.beats, beatsPerBar_);
         for (int axis = 0; axis < 2; ++axis) {
             ImVec2 pts[LiveState::Loop::kPoints];
             if (amp != 1.0f) {
@@ -1577,10 +1621,11 @@ void PerformanceView::drawTouchpad(const Mapping& m, const LiveState& live, floa
         const LoopPlayback pb = m.loops[static_cast<std::size_t>(2 + shown)].playback;
         const LoopStatus& ls = loops[shown]->status;
         const double seconds = static_cast<double>(ls.length) / Engine::kLoopRateHz;
-        const std::string length = durationText(seconds * Engine::stretchFactor(ls.stretch));
+        const std::string length = ls.beats > 0 ? beatsText(ls.beats, beatsPerBar_)
+                                                : durationText(seconds * Engine::stretchFactor(ls.stretch));
         status = ls.stretch != 0 && ls.amplitude != 100
                      ? length  // room for both chips
-                     : std::string(pb == LoopPlayback::Forward ? "FWD" : pb == LoopPlayback::Reverse ? "REV" : "BACK & FORTH") +
+                     : std::string(pb == LoopPlayback::Forward ? "FWD" : pb == LoopPlayback::Reverse ? "REV" : "B&F") +
                            "  \xC2\xB7  " + length;
         statusColor = fingerColors[shown];
     }
@@ -1747,7 +1792,7 @@ void PerformanceView::drawPadLanes(ImDrawList* dl, const Mapping& m, const LiveS
     } else if (playing) {
         const LoopPlayback pb = m.loops[static_cast<std::size_t>(LoopSource::Notes)].playback;
         status = std::string(st.overdub ? "OVERDUB  " : "") +
-                 (pb == LoopPlayback::Forward ? "FWD" : pb == LoopPlayback::Reverse ? "REV" : "BACK & FORTH") + "  \xC2\xB7  " + seconds;
+                 (pb == LoopPlayback::Forward ? "FWD" : pb == LoopPlayback::Reverse ? "REV" : "B&F") + "  \xC2\xB7  " + seconds;
         statusColor = st.overdub ? T::kOrange : kViolet;
     }
     text(dl, gBold, px(11), x + px(12), loopY, T::kDim, "LOOP", H::Left, V::Middle);

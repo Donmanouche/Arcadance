@@ -247,6 +247,7 @@ private:
     bool beginDialog(const char* title, ImGuiWindowFlags flags = ImGuiWindowFlags_AlwaysAutoResize);
     void endDialog();
     int dialogButtons(std::initializer_list<const char*> labels);  // the one clicked, or -1
+    void applySync();  // the Link settings, to the runtime
     void drawDialogs();
     void drawNameDialog();
     void drawUnsavedDialog();
@@ -402,6 +403,7 @@ bool GuiApp::init() {
                                              std::lock_guard lock(pendingLogMutex_);
                                              pendingLog_.push_back(line);
                                          });
+    applySync();
 
     if (!SDL_CreateWindowAndRenderer("MidiPad", 1080, 846, SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY,
                                      &window_, &renderer_)) {
@@ -1034,7 +1036,7 @@ void GuiApp::drawPerformance(const LiveState& live) {
     ImGui::SameLine(0, px(14));
     {
         const float groupW = px(150) + px(16) + medium->CalcTextSizeA(px(12), FLT_MAX, 0, "PRESET").x + px(8) + px(26) * 2 + px(180) +
-                             px(14) + px(70);  // then Play and Stop
+                             px(14) + px(70) + px(10) + px(200);  // then Play and Stop, then LINK
         const float centered = winPos.x + (winW - groupW) * 0.5f;
         ImGui::SetCursorScreenPos(ImVec2(std::max(ImGui::GetCursorScreenPos().x, centered), ImGui::GetCursorScreenPos().y));
     }
@@ -1167,6 +1169,47 @@ void GuiApp::drawPerformance(const LiveState& live) {
         if (transport("##loopsstop", false))
             runtime_->pauseLoops();
         ImGui::SetItemTooltip("Stops every channel's loops, keeping them");
+
+        // LINK: free, or the Link session's tempo, peers and beat; a click switches.
+        {
+            ImGui::SameLine(0, px(10));
+            const ImVec2 q = ImGui::GetCursorScreenPos();
+            const float lw = px(200), lh = px(32);
+            const bool clicked = ImGui::InvisibleButton("##link", ImVec2(lw, lh));
+            const bool hovered = ImGui::IsItemHovered();
+            const bool on = live.linkEnabled;
+            dl->AddRectFilled(q, ImVec2(q.x + lw, q.y + lh),
+                              on ? (Theme::kGreen & ~IM_COL32_A_MASK) | IM_COL32(0, 0, 0, 40) : hovered ? Theme::kControlBorder : Theme::kControl,
+                              px(5));
+            dl->AddRect(q, ImVec2(q.x + lw, q.y + lh), on ? Theme::kGreen : Theme::kControlBorder, px(5), px(on ? 1.3f : 1.0f));
+            const float cy = q.y + lh * 0.5f;
+            const ImVec2 lsz = bold->CalcTextSizeA(px(13), FLT_MAX, 0, "LINK");
+            dl->AddText(bold, px(13), ImVec2(q.x + px(10), cy - lsz.y * 0.5f), on ? Theme::kGreen : Theme::kLabel, "LINK");
+            char info[48];
+            if (on)
+                std::snprintf(info, sizeof info, "%.1f BPM \xC2\xB7 %d", live.tempo, live.linkPeers);
+            else
+                std::snprintf(info, sizeof info, "FREE");
+            const ImVec2 isz = medium->CalcTextSizeA(px(13), FLT_MAX, 0, info);
+            dl->AddText(medium, px(13), ImVec2(q.x + px(18) + lsz.x, cy - isz.y * 0.5f), on ? Theme::kText : Theme::kDim, info);
+            if (on) {  // the beats of the bar: the one playing lit, the first white
+                const int beats = std::clamp(live.beatsPerBar, 1, 8);
+                const int now = static_cast<int>(std::floor(live.beat)) % std::max(live.beatsPerBar, 1);
+                const float sq = px(8), gap = px(4);
+                float x = q.x + lw - px(10) - static_cast<float>(beats) * (sq + gap) + gap;
+                for (int b = 0; b < beats; ++b, x += sq + gap) {
+                    const ImU32 c = b == now ? (b == 0 ? IM_COL32_WHITE : Theme::kGreen) : IM_COL32(0x3A, 0x3E, 0x45, 255);
+                    dl->AddRectFilled(ImVec2(x, cy - sq * 0.5f), ImVec2(x + sq, cy + sq * 0.5f), c, px(1.5f));
+                }
+            }
+            if (clicked) {
+                settings_.linkEnabled = !settings_.linkEnabled;
+                applySync();
+                persistSettings();
+            }
+            ImGui::SetItemTooltip(on ? "Ableton Link: tempo and beat shared with the session. Click to run free."
+                                     : "Free: MidiPad keeps its own time. Click to join the Ableton Link session.");
+        }
 
         if (dirty_) {
             ImGui::SameLine(0, px(8));
@@ -1459,6 +1502,90 @@ void GuiApp::drawOptionsOverlay() {
         }
         if (virmidi::supported())
             drawVirMidiSection(false);
+        endCard();
+
+        // Sync: Ableton Link, and how loops snap to its beat.
+        beginCard("##cardsync", "SYNC", Theme::kGreen);
+        {
+            const LiveState live = runtime_->live();
+            ImGui::PushFont(medium, 12.0f);
+            ImGui::TextColored(color(Theme::kLabel), live.linkEnabled
+                                   ? "Ableton Link shares tempo and beat with your DAW and other apps on this network."
+                                   : "Free: MidiPad keeps its own time. Turn Link on to follow your DAW's tempo and beat.");
+            ImGui::PopFont();
+            ImGui::Spacing();
+            ImGui::PushFont(medium, 13.0f);
+            // A row of buttons, one lit: returns the one clicked, or -1.
+            auto choice = [&](const char* id, std::initializer_list<const char*> labels, int current) {
+                int clicked = -1, i = 0;
+                ImGui::PushID(id);
+                ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(px(4), px(4)));
+                for (const char* label : labels) {
+                    const bool selected = i == current;
+                    ImGui::PushStyleColor(ImGuiCol_Button, color(selected ? (Theme::kGreen & ~IM_COL32_A_MASK) | IM_COL32(0, 0, 0, 110)
+                                                                          : Theme::kControl));
+                    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, color(selected ? Theme::kGreen : Theme::kControlBorder));
+                    ImGui::PushStyleColor(ImGuiCol_Border, color(selected ? Theme::kGreen : Theme::kControlBorder));
+                    if (ImGui::Button(label))
+                        clicked = i;
+                    ImGui::PopStyleColor(3);
+                    ImGui::SameLine();
+                    ++i;
+                }
+                ImGui::PopStyleVar();
+                ImGui::NewLine();
+                ImGui::PopID();
+                return clicked;
+            };
+            auto rowLabel = [&](const char* text) {
+                ImGui::AlignTextToFramePadding();
+                ImGui::TextColored(color(Theme::kLabel), "%s", text);
+                ImGui::SameLine(px(150));
+            };
+            bool changed = false;
+            rowLabel("Ableton Link");
+            const int link = choice("link", {"Off", "On"}, settings_.linkEnabled ? 1 : 0);
+            if (link >= 0 && (link == 1) != settings_.linkEnabled) {
+                settings_.linkEnabled = link == 1;
+                changed = true;
+            }
+            if (live.linkEnabled) {
+                ImGui::SameLine(0, 0);
+                ImGui::SetCursorPosY(ImGui::GetCursorPosY() - ImGui::GetFrameHeightWithSpacing());
+                ImGui::SetCursorPosX(px(150) + px(120));
+                ImGui::AlignTextToFramePadding();
+                ImGui::TextColored(color(Theme::kGreen), "%d %s \xC2\xB7 %.1f BPM", live.linkPeers,
+                                   live.linkPeers == 1 ? "peer" : "peers", live.tempo);
+            }
+            rowLabel("Loops snap to");
+            const int snap = choice("snap", {"Free", "1 beat", "1 bar", "2 bars", "4 bars"}, static_cast<int>(settings_.loopSnap));
+            if (snap >= 0 && snap != static_cast<int>(settings_.loopSnap)) {
+                settings_.loopSnap = static_cast<AppSettings::LoopSnap>(snap);
+                changed = true;
+            }
+            rowLabel("Beats per bar");
+            ImGui::SetNextItemWidth(px(110));
+            int bpb = settings_.beatsPerBar;
+            if (ImGui::InputInt("##bpb", &bpb)) {
+                settings_.beatsPerBar = std::clamp(bpb, 1, 16);
+                changed = true;
+            }
+            rowLabel("Start / stop sync");
+            const int startStop = choice("startstop", {"Off", "On"}, settings_.startStopSync ? 1 : 0);
+            if (startStop >= 0 && (startStop == 1) != settings_.startStopSync) {
+                settings_.startStopSync = startStop == 1;
+                changed = true;
+            }
+            ImGui::PopFont();
+            ImGui::PushFont(medium, 12.0f);
+            ImGui::TextColored(color(Theme::kLabel), "With Link on, a loop takes a whole number of these, starts on the\n"
+                                                     "beat and follows the tempo. Play and Stop follow the session.");
+            ImGui::PopFont();
+            if (changed) {
+                applySync();
+                persistSettings();
+            }
+        }
         endCard();
 
         // D-pad: how long a direction must hold before it plays.
@@ -1844,6 +1971,12 @@ int GuiApp::dialogButtons(std::initializer_list<const char*> labels) {
     }
     ImGui::PopFont();
     return clicked;
+}
+
+void GuiApp::applySync() {
+    runtime_->setLinkStartStopSync(settings_.startStopSync);
+    runtime_->setSync(settings_.snapBeats(), settings_.beatsPerBar);
+    runtime_->setLinkEnabled(settings_.linkEnabled);
 }
 
 void GuiApp::drawDialogs() {

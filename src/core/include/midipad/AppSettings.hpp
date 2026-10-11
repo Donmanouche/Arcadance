@@ -29,6 +29,25 @@ struct AppSettings {
 
     Humanize humanize;  // off on every channel by default
 
+    // Sync: Ableton Link shares tempo and beat with the DAW. With it, loops
+    // snap to `loopSnap` (their length rounded to it, their start on it); without
+    // it, MidiPad runs free.
+    bool linkEnabled = false;
+    enum class LoopSnap { Free, Beat, Bar, TwoBars, FourBars };
+    LoopSnap loopSnap = LoopSnap::Beat;
+    int beatsPerBar = 4;
+    bool startStopSync = true;  // Play / Stop follow, and lead, the Link session's
+    // The snap in beats: 0 for Free.
+    int snapBeats() const {
+        switch (loopSnap) {
+        case LoopSnap::Free: return 0;
+        case LoopSnap::Beat: return 1;
+        case LoopSnap::Bar: return beatsPerBar;
+        case LoopSnap::TwoBars: return 2 * beatsPerBar;
+        case LoopSnap::FourBars: return 4 * beatsPerBar;
+        }
+        return 0;
+    }
 };
 
 // Missing or unreadable values keep the ones of `defaults`.

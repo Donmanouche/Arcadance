@@ -47,6 +47,7 @@ struct LoopStatus {
     int channel = 0;
     int stretch = 0;       // movement loops: see Engine::stretchFactor
     int amplitude = 100;   // movement loops: percent of the recorded swing, around its middle
+    double beats = 0;      // synced to the beat clock: its length in beats (stretched); 0: free
 };
 
 // Turns controller events into MIDI according to the active preset.
@@ -87,6 +88,24 @@ public:
     void tick(std::uint64_t nowNs);
 
     void setHumanize(const Humanize& humanize) { humanize_ = humanize; }
+    // Sync. The beat clock of a Link session, given before each tick: whether
+    // it runs, its tempo (beats a minute) and the beat at that tick's time.
+    struct BeatClock {
+        bool on = false;
+        double tempo = 120;
+        double beat = 0;
+    };
+    void setBeatClock(const BeatClock& clock) { clock_ = clock; }
+    // Loops recorded while the clock runs snap to `snapBeats` (0: they stay
+    // free): their length is rounded to whole snaps (at least one), their start
+    // to the nearest snap; they then play from the clock, so they follow its
+    // tempo and stay in phase with the session. Free loops play as recorded.
+    void setSync(int snapBeats, int beatsPerBar) {
+        snapBeats_ = std::max(snapBeats, 0);
+        beatsPerBar_ = std::max(beatsPerBar, 1);
+    }
+    int beatsPerBar() const { return beatsPerBar_; }
+
     // The tonality Transpose axes move in, by degrees; none: by semitones.
     void setKey(const std::optional<Key>& key) { key_ = key; }
 
@@ -235,7 +254,11 @@ private:
     void beginRecordHold();
     void endRecordHold();
     void runLoops();
-    void playMovementLoop(std::size_t loop, LoopPlayback playback);
+    void playMovementLoop(std::size_t loop, LoopPlayback playback, const double* syncedPhase = nullptr, int syncedDirection = 1);
+    double beatAt(std::uint64_t t) const { return clock_.beat + (static_cast<double>(t) - static_cast<double>(clockAt_)) * clock_.tempo / 60e9; }
+    BeatClock clock_;
+    std::uint64_t clockAt_ = 0;
+    int snapBeats_ = 1, beatsPerBar_ = 4;
     void sendLoopValue(std::size_t loop, float x, float y);
     void playLoopNotes(std::size_t loop);
     void recordNote(int channel, int note, int velocity, std::uint64_t at);
@@ -302,12 +325,15 @@ private:
         double phase = 0;  // movement loops: the position, between samples
         int stretch = 0;
         int amplitude = 100;
+        double syncBeats = 0, anchorBeat = 0, startBeat = 0;  // synced: length, where it starts on the clock
         float amplitudeNow = 1;            // eased towards amplitude / 100
         float middleX = 0.5f, middleY = 0.5f;  // halfway between the lowest and highest samples
         std::uint64_t nextAt = 0;
         int sentX = -1, sentY = -1;
     };
     static constexpr std::uint16_t kLifted = 0xFFFF;
+    // A synced loop's place now, from the beat clock: its phase in samples and the way it goes.
+    void syncedPhase(const Loop& loop, LoopPlayback playback, double beat, double& phase, int& direction) const;
     static constexpr std::size_t loopIndex(int channel, int source) {
         return static_cast<std::size_t>(channel * kLoopSourceCount + source);
     }

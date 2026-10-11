@@ -69,6 +69,11 @@ struct LiveState {
     // The Velocity and Transpose axes on the active channel (Engine::shaping).
     float velocityShaping = 0;
     int transposeNotes = 0, transposeLoop = 0;
+    // Ableton Link: whether it is on, the session's tempo, the beat now, how
+    // many other apps take part; the beats of a bar MidiPad counts.
+    bool linkEnabled = false;
+    double tempo = 120, beat = 0;
+    int linkPeers = 0, beatsPerBar = 4;
 
     bool isDown(midipad::Button b) const { return (buttons >> static_cast<int>(b)) & 1u; }
     bool isSounding(int slot) const { return (sounding >> slot) & 1u; }
@@ -128,6 +133,17 @@ public:
         key_.store(key ? key->root * 256 + static_cast<int>(key->scale) : -1, std::memory_order_relaxed);
     }
 
+    // Ableton Link. Off, MidiPad runs free. On, it joins the session on the
+    // local network: loops recorded then snap to `snapBeats` (0: free) and
+    // play from its beat; with start / stop sync, Play and Stop follow the
+    // session and lead it.
+    void setLinkEnabled(bool on);
+    void setLinkStartStopSync(bool on);
+    void setSync(int snapBeats, int beatsPerBar) {
+        snapBeats_.store(snapBeats, std::memory_order_relaxed);
+        beatsPerBar_.store(beatsPerBar, std::memory_order_relaxed);
+    }
+
     std::optional<Report> popReport() { return reports_.pop(); }
     std::optional<SentNote> popNote() { return notes_.pop(); }
     LiveState live() const;
@@ -177,6 +193,11 @@ private:
     std::atomic<bool> loopsPaused_{false};
     std::atomic<bool> stretchHeld_{false};
     std::atomic<int> key_{-1};  // root * 256 + scale, -1: none
+    struct LinkSession;  // ableton::Link, kept out of this header
+    std::unique_ptr<LinkSession> link_;
+    std::atomic<bool> linkEnabled_{false}, startStopSync_{true};
+    std::atomic<int> snapBeats_{1}, beatsPerBar_{4};
+    std::atomic<double> tempo_{120}, beat_{0};
     std::atomic<float> velocityShaping_{0};
     std::atomic<int> transposeNotes_{0}, transposeLoop_{0};
     mutable std::mutex loopsMutex_;  // the input thread only try_locks it

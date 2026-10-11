@@ -35,6 +35,10 @@ Written in C++20, Linux first; Windows and macOS packages are planned.
   multitimbral setup.
 - **Program Change** from a button (fixed, next, previous) or by sweeping an
   axis through a range of programs, with optional Bank Select.
+- **Ableton Link sync, or none.** Join the tempo of Live, Bitwig, a phone app or
+  any Link peer on the network: loops snap to whole beats (1 beat, 3 beats,
+  1 bar, 2.5 bars…), start on the beat, follow tempo changes, and Play / Stop
+  can follow the session. With Link off, MidiPad plays free as before.
 - **Humanize** velocity and timing per channel.
 - **Built for the stage.** One window that plays and edits at the same time, a
   1 kHz real-time input thread, a PANIC button, and a headless mode without any
@@ -47,7 +51,7 @@ Written in C++20, Linux first; Windows and macOS packages are planned.
 ## Building
 
 Requirements: CMake 3.25 or newer, Ninja, a C++20 compiler (GCC 13 tested). The
-libraries (nlohmann/json, SDL3, RtMidi, Dear ImGui) are downloaded by CMake. On Linux you need the ALSA headers (`libasound2-dev` on Debian and
+libraries (nlohmann/json, SDL3, RtMidi, Dear ImGui, Ableton Link) are downloaded by CMake. On Linux you need the ALSA headers (`libasound2-dev` on Debian and
 Ubuntu); JACK is optional.
 
 ```bash
@@ -93,7 +97,8 @@ The window is an animated view built for the stage, which plays while it edits.
   plays).
 - A strip of pads for the buttons (✕ ○ □ △ in PlayStation colours): they flash
   on every press and stay lit while their note or chord sounds.
-- At the top: the ☰ menu, the channel, the preset, ▶ / ■ for the loops, PANIC.
+- At the top: the ☰ menu, the channel, the preset, ▶ / ■ for the loops, LINK
+  (the tempo, the peers and the beat; click to turn Link on or off), PANIC.
 - At the bottom: the MIDI output on the left, the controller on the right.
 
 Click a control (a pad, a D-pad direction, a touchpad zone, an axis pill, a
@@ -116,7 +121,8 @@ available; a note or chord outside the scale is flagged.
 
 **Options** (☰ menu): the MIDI interface (a drop-down showing the name under
 which each port is seen; a saved port that is missing shows in red), the
-VirMIDI ports, the D-pad delay, humanization and the presets folder.
+VirMIDI ports, SYNC (Ableton Link, the loops' snap, beats per bar, start / stop
+sync), the D-pad delay, humanization and the presets folder.
 
 ![The Options window](docs/media/options.png)
 
@@ -184,3 +190,8 @@ active and the error is printed.
 | `--stats` | print the measured processing times on exit |
 | `--poll-hz N` | controller readings per second (default: 1000) |
 | `--list-ports` | list the MIDI output ports |
+
+## License
+
+MidiPad is free software under the [GNU General Public License v3](LICENSE).
+It uses [Ableton Link](https://github.com/Ableton/link) (GPL v2 or later).

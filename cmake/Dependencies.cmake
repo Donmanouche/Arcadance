@@ -45,6 +45,22 @@ if(MIDIPAD_BUILD_APP)
 
     FetchContent_MakeAvailable(SDL3 rtmidi imgui)
 
+    # Ableton Link (GPL v2 or later): tempo, beat and phase shared with the
+    # DAW and other apps on the local network. Header-only, with asio.
+    FetchContent_Declare(link
+        GIT_REPOSITORY https://github.com/Ableton/link.git
+        GIT_TAG Link-4.1
+        GIT_SHALLOW TRUE
+        GIT_SUBMODULES "modules/asio-standalone")
+    FetchContent_GetProperties(link)
+    if(NOT link_POPULATED)
+        FetchContent_Populate(link)
+    endif()
+    # Its config sets CMAKE_CXX_STANDARD to 17 for everyone: keep ours.
+    set(MIDIPAD_CXX_STANDARD ${CMAKE_CXX_STANDARD})
+    include(${link_SOURCE_DIR}/AbletonLinkConfig.cmake)
+    set(CMAKE_CXX_STANDARD ${MIDIPAD_CXX_STANDARD})
+
     # Dear ImGui has no CMake project: build it with its SDL3 backends.
     add_library(imgui STATIC
         ${imgui_SOURCE_DIR}/imgui.cpp

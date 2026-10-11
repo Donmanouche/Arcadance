@@ -114,6 +114,7 @@ private:
     float dt_ = 0;
     bool flats_ = false;
     std::optional<std::string> clicked_;
+    int beatsPerBar_ = 4;  // of the sync, for the loops' beat grids
     std::optional<StretchRequest> stretch_;
     float wheelRest_ = 0;           // a partial wheel notch (touchpads scroll by fractions)
     double lastWheel_ = -1e9;       // when the last notch turned, for the acceleration

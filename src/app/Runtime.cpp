@@ -6,6 +6,7 @@
 #include "midipad/Notes.hpp"
 
 #include <SDL3/SDL.h>
+#include <ableton/Link.hpp>
 
 #include <cmath>
 #include <cstdio>
@@ -102,11 +103,15 @@ private:
     std::shared_ptr<MidiOutput> output_;
 };
 
+struct Runtime::LinkSession {
+    ableton::Link link{120.0};
+};
+
 Runtime::Runtime(std::shared_ptr<MidiOutput> output, std::shared_ptr<const Preset> preset, Options options, Log log)
     : log_(std::move(log)), reportMidi_(options.reportMidi), reportButtons_(options.reportButtons),
       dpadSettlePress_(options.dpadSettlePressMs), dpadSettleRelease_(options.dpadSettleReleaseMs),
       humanize_(pack(options.humanize)),
-      output_(output), channel_(options.channel) {
+      output_(output), channel_(options.channel), link_(std::make_unique<LinkSession>()) {
     pendingOutput_ = std::move(output);
     thread_ = std::jthread([this, options, preset](std::stop_token stop) { run(stop, options, preset); });
 }
@@ -131,6 +136,16 @@ void Runtime::setOutput(std::shared_ptr<MidiOutput> output) {
 }
 
 void Runtime::setChannel(int channel) { commands_.push({Command::Kind::SetChannel, channel}); }
+
+void Runtime::setLinkEnabled(bool on) {
+    link_->link.enable(on);
+    linkEnabled_.store(on, std::memory_order_relaxed);
+}
+
+void Runtime::setLinkStartStopSync(bool on) {
+    link_->link.enableStartStopSync(on);
+    startStopSync_.store(on, std::memory_order_relaxed);
+}
 
 void Runtime::panic() { commands_.push({Command::Kind::Panic}); }
 
@@ -163,6 +178,11 @@ LiveState Runtime::live() const {
     s.velocityShaping = velocityShaping_.load(std::memory_order_relaxed);
     s.transposeNotes = transposeNotes_.load(std::memory_order_relaxed);
     s.transposeLoop = transposeLoop_.load(std::memory_order_relaxed);
+    s.linkEnabled = linkEnabled_.load(std::memory_order_relaxed);
+    s.tempo = tempo_.load(std::memory_order_relaxed);
+    s.beat = beat_.load(std::memory_order_relaxed);
+    s.linkPeers = s.linkEnabled ? static_cast<int>(link_->link.numPeers()) : 0;
+    s.beatsPerBar = beatsPerBar_.load(std::memory_order_relaxed);
     {
         std::lock_guard lock(loopsMutex_);
         s.loops = loops_;
@@ -289,6 +309,7 @@ void Runtime::run(std::stop_token stop, Options options, std::shared_ptr<const P
         report(r);
     });
 
+    bool linkPlaying = false, linkPlayingKnown = false;  // the Link session's transport, as last seen
     const std::uint64_t period = 1'000'000'000ull / static_cast<std::uint64_t>(std::max(options.pollHz, 1));
     std::uint64_t next = SDL_GetTicksNS();
     while (!stop.stop_requested()) {
@@ -319,16 +340,49 @@ void Runtime::run(std::stop_token stop, Options options, std::shared_ptr<const P
                 engine.stretchLoop(engine.channel(), command->channel, command->value);  // `channel` holds the source
             } else if (command->kind == Command::Kind::AmplifyLoop) {
                 engine.amplifyLoop(engine.channel(), command->channel, command->value);  // `channel` holds the source
-            } else if (command->kind == Command::Kind::PauseLoops) {
-                engine.pauseLoops();
-            } else if (command->kind == Command::Kind::PlayLoops) {
-                engine.playLoops();
+            } else if (command->kind == Command::Kind::PauseLoops || command->kind == Command::Kind::PlayLoops) {
+                const bool play = command->kind == Command::Kind::PlayLoops;
+                if (linkEnabled_.load(std::memory_order_relaxed) && startStopSync_.load(std::memory_order_relaxed)) {
+                    // Through the session: the engine follows it below, with the other apps.
+                    auto state = link_->link.captureAudioSessionState();
+                    state.setIsPlaying(play, link_->link.clock().micros());
+                    link_->link.commitAudioSessionState(state);
+                } else if (play) {
+                    engine.playLoops();
+                } else {
+                    engine.pauseLoops();
+                }
             } else {
                 engine.releaseAll();
                 engine.stopLoops();
             }
         }
 
+        // The beat clock, from the Link session (its calls here are real-time safe).
+        const int beatsPerBar = beatsPerBar_.load(std::memory_order_relaxed);
+        engine.setSync(snapBeats_.load(std::memory_order_relaxed), beatsPerBar);
+        if (linkEnabled_.load(std::memory_order_relaxed)) {
+            const auto state = link_->link.captureAudioSessionState();
+            const auto time = link_->link.clock().micros();
+            const double tempo = state.tempo();
+            const double beat = state.beatAtTime(time, beatsPerBar);
+            engine.setBeatClock({true, tempo, beat});
+            tempo_.store(tempo, std::memory_order_relaxed);
+            beat_.store(beat, std::memory_order_relaxed);
+            // Start / stop sync: the loops follow the session's transport.
+            const bool playing = state.isPlaying();
+            if (startStopSync_.load(std::memory_order_relaxed) && linkPlayingKnown && playing != linkPlaying) {
+                if (playing)
+                    engine.playLoops();
+                else
+                    engine.pauseLoops();
+            }
+            linkPlaying = playing;
+            linkPlayingKnown = true;
+        } else {
+            engine.setBeatClock({});
+            linkPlayingKnown = false;
+        }
         engine.setDpadSettle(dpadSettlePress_.load(std::memory_order_relaxed),
                              dpadSettleRelease_.load(std::memory_order_relaxed));
         engine.setHumanize(unpack(humanize_.load(std::memory_order_relaxed)));

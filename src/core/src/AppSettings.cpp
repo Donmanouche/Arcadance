@@ -84,6 +84,19 @@ AppSettings loadSettings(const std::filesystem::path& file, AppSettings s) {
     h.velocityMaxPercent = std::clamp(h.velocityMaxPercent, h.velocityMinPercent, 100);
     h.delayMinMs = std::clamp(h.delayMinMs, 0, Humanize::kMaxDelayMs);
     h.delayMaxMs = std::clamp(h.delayMaxMs, h.delayMinMs, Humanize::kMaxDelayMs);
+    read(j, "link_enabled", s.linkEnabled);
+    std::string snap;
+    read(j, "loop_snap", snap);
+    static constexpr std::pair<const char*, AppSettings::LoopSnap> kSnaps[] = {
+        {"free", AppSettings::LoopSnap::Free},     {"beat", AppSettings::LoopSnap::Beat},
+        {"bar", AppSettings::LoopSnap::Bar},       {"2bars", AppSettings::LoopSnap::TwoBars},
+        {"4bars", AppSettings::LoopSnap::FourBars}};
+    for (const auto& [name, value] : kSnaps)
+        if (snap == name)
+            s.loopSnap = value;
+    read(j, "beats_per_bar", s.beatsPerBar);
+    s.beatsPerBar = std::clamp(s.beatsPerBar, 1, 16);
+    read(j, "start_stop_sync", s.startStopSync);
     if (s.virtualPortName.empty())
         s.virtualPortName = "MidiPad";
     return s;
@@ -110,6 +123,11 @@ void saveSettings(const AppSettings& s, const std::filesystem::path& file) {
     j["humanize_velocity_max"] = s.humanize.velocityMaxPercent;
     j["humanize_delay_min_ms"] = s.humanize.delayMinMs;
     j["humanize_delay_max_ms"] = s.humanize.delayMaxMs;
+    j["link_enabled"] = s.linkEnabled;
+    static constexpr const char* kSnapNames[] = {"free", "beat", "bar", "2bars", "4bars"};
+    j["loop_snap"] = kSnapNames[static_cast<int>(s.loopSnap)];
+    j["beats_per_bar"] = s.beatsPerBar;
+    j["start_stop_sync"] = s.startStopSync;
 
     std::filesystem::create_directories(file.parent_path());
     std::ofstream out(file);

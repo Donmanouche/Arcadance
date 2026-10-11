@@ -9,7 +9,10 @@ add_library(midipad_platform STATIC
 target_include_directories(midipad_platform PUBLIC .)
 target_link_libraries(midipad_platform
     PUBLIC midipad::core SDL3::SDL3 rtmidi
-    PRIVATE midipad_warnings)
+    PRIVATE midipad_warnings Ableton::Link)
+# Link's headers are third-party code: no warnings from them.
+get_target_property(MIDIPAD_LINK_INCLUDES Ableton::Link INTERFACE_INCLUDE_DIRECTORIES)
+set_target_properties(Ableton::Link PROPERTIES INTERFACE_SYSTEM_INCLUDE_DIRECTORIES "${MIDIPAD_LINK_INCLUDES}")
 
 include(${PROJECT_SOURCE_DIR}/cmake/EmbedFile.cmake)
 set(MIDIPAD_FONT_SOURCE ${CMAKE_CURRENT_BINARY_DIR}/RobotoMedium.cpp)
