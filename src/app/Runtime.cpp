@@ -413,15 +413,19 @@ void Runtime::run(std::stop_token stop, Options options, std::shared_ptr<const P
                 loopsToLoad_.clear();
             } else if (command->kind == Command::Kind::PauseLoops || command->kind == Command::Kind::PlayLoops) {
                 const bool play = command->kind == Command::Kind::PlayLoops;
+                // The loops at once, whatever the session does: they play even
+                // while it is stopped, so asking it to stop may change nothing.
+                if (play)
+                    engine.playLoops();
+                else
+                    engine.pauseLoops();
                 if (clock_.load(std::memory_order_relaxed) == ClockMode::Link && startStopSync_.load(std::memory_order_relaxed)) {
-                    // Through the session: the engine follows it below, with the other apps.
+                    // And the session, for the other apps; MidiPad is already there.
                     auto state = link_->link.captureAudioSessionState();
                     state.setIsPlaying(play, link_->link.clock().micros());
                     link_->link.commitAudioSessionState(state);
-                } else if (play) {
-                    engine.playLoops();
-                } else {
-                    engine.pauseLoops();
+                    linkPlaying = play;
+                    linkPlayingKnown = true;
                 }
             } else {
                 engine.releaseAll();
