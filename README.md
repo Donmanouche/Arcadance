@@ -24,6 +24,10 @@ Written in C++20, Linux first; Windows and macOS packages are planned.
   layer chords on channel 1, a bass line on channel 2, a filter sweep on top.
   Overdub, forward / reverse / back-and-forth playback, Play and Stop for every
   loop at once.
+- **Edit loops in the piano roll.** Move a note, a chord or a selection in time
+  and pitch, or delete it, while the loop plays, without recording again.
+- **Sessions.** Save every channel's loops, the preset, the tonality and the
+  tempo in one file, and open them again later.
 - **Chords made easy.** Named chords (`Fm9`, `Dbmaj7#11`, `Eb9sus4`…) with octave
   and doubled bass root; choose a tonality and the editor offers only the notes
   and chords of the scale.
@@ -35,10 +39,13 @@ Written in C++20, Linux first; Windows and macOS packages are planned.
   multitimbral setup.
 - **Program Change** from a button (fixed, next, previous) or by sweeping an
   axis through a range of programs, with optional Bank Select.
-- **Ableton Link sync, or none.** Join the tempo of Live, Bitwig, a phone app or
-  any Link peer on the network: loops snap to whole beats (1 beat, 3 beats,
-  1 bar, 2.5 bars…), start on the beat, follow tempo changes, and Play / Stop
-  can follow the session. With Link off, MidiPad plays free as before.
+- **Play in time: internal clock, Ableton Link, or free.** Run MidiPad's own
+  clock, or join the tempo of your DAW, a phone app or any Link peer on the
+  network. Loops snap to whole beats (1 beat, 3 beats, 1 bar, 2.5 bars…), start
+  on the beat and follow tempo changes; their notes can be quantized to 1/8,
+  1/16 or 1/32 without delaying what you hear. Set the tempo with the mouse
+  wheel, type it, or tap it (TAP, or a controller button); with Link, the other
+  apps follow. Without a clock, MidiPad plays free.
 - **Humanize** velocity and timing per channel.
 - **Built for the stage.** One window that plays and edits at the same time, a
   1 kHz real-time input thread, a PANIC button, and a headless mode without any
@@ -97,8 +104,10 @@ The window is an animated view built for the stage, which plays while it edits.
   plays).
 - A strip of pads for the buttons (✕ ○ □ △ in PlayStation colours): they flash
   on every press and stay lit while their note or chord sounds.
-- At the top: the ☰ menu, the channel, the preset, ▶ / ■ for the loops, LINK
-  (the tempo, the peers and the beat; click to turn Link on or off), PANIC.
+- At the top: the ☰ menu (sessions, Options, About), the channel, the preset,
+  ▶ / ■ for the loops, the clock (LINK or CLOCK: the tempo, which the wheel
+  turns and a double-click types, and the beat; click to turn it off or on),
+  TAP, PANIC.
 - At the bottom: the MIDI output on the left, the controller on the right.
 
 Click a control (a pad, a D-pad direction, a touchpad zone, an axis pill, a
@@ -121,15 +130,17 @@ available; a note or chord outside the scale is flagged.
 
 **Options** (☰ menu): the MIDI interface (a drop-down showing the name under
 which each port is seen; a saved port that is missing shows in red), the
-VirMIDI ports, SYNC (Ableton Link, the loops' snap, beats per bar, start / stop
-sync), the D-pad delay, humanization and the presets folder.
+VirMIDI ports, SYNC (the clock: free, internal or Ableton Link; the loops'
+snap; beats per bar; the note quantizer; start / stop sync), the D-pad delay,
+humanization and the presets folder.
 
 ![The Options window](docs/media/options.png)
 
 Settings (presets folder, last preset, output, options) are kept in
 `~/.local/share/MidiPad/MidiPad/settings.json`. The default presets folder is
 `~/.local/share/MidiPad/MidiPad/presets` (`midipad path/to/preset.json` uses
-that preset's folder instead).
+that preset's folder instead). Sessions are saved as `.midipad` files in
+`~/.local/share/MidiPad/MidiPad/Sessions`.
 
 ### VirMIDI ports (Linux)
 
