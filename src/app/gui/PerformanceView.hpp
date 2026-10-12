@@ -12,6 +12,7 @@
 #include <optional>
 #include <string>
 #include <utility>
+#include <vector>
 
 // The animated view: one module per part of the controller (sticks, triggers,
 // D-pad, touchpad) with a live "screen" and knobs showing the CCs sent, and a
@@ -70,6 +71,20 @@ public:
         bool amplitude = false;
     };
     std::optional<StretchRequest> takeStretchRequest() { return std::exchange(stretch_, std::nullopt); }
+    // Editing the note loop in its clip, during the last draw(). With Shift:
+    // dragging a note moves it, or the selection it belongs to, as a block
+    // (its first note onto the quantize grid when there is one); dragging over
+    // empty space selects the notes in a rectangle; Ctrl + click adds or takes
+    // out a note; a double-click selects the chord it belongs to. A
+    // right-click removes a note, or the selection it belongs to. A click
+    // elsewhere or Escape clears the selection.
+    struct NoteEdit {
+        std::vector<midipad::LoopNoteRef> notes;
+        bool remove = false;
+        int samples = 0, semitones = 0;  // moved by
+    };
+    std::optional<NoteEdit> takeNoteEdit() { return std::exchange(noteEdit_, std::nullopt); }
+    void setQuantize(int stepsPerBeat) { quantize_ = stepsPerBeat; }  // AppSettings::quantize
 
 private:
     struct Trail {
@@ -116,6 +131,20 @@ private:
     std::optional<std::string> clicked_;
     int beatsPerBar_ = 4;  // of the sync, for the loops' beat grids
     std::optional<StretchRequest> stretch_;
+    std::optional<NoteEdit> noteEdit_;
+    int quantize_ = 0;
+    struct NoteDrag {
+        std::vector<midipad::NoteInterval> notes;  // the notes moving together
+        float grabSample = 0;  // where the mouse took them, in loop samples
+        float grabY = 0;
+        int samples = 0, semitones = 0;  // where they go, so far
+    };
+    std::optional<NoteDrag> drag_;
+    std::vector<midipad::LoopNoteRef> selection_;  // in the active channel's note loop
+    int selectionChannel_ = -1;
+    double lastNoteEdit_ = -1e9;
+    std::optional<ImVec2> bandFrom_;  // a selection rectangle being drawn, from there
+    bool selected(const midipad::NoteInterval& n) const;
     float wheelRest_ = 0;           // a partial wheel notch (touchpads scroll by fractions)
     double lastWheel_ = -1e9;       // when the last notch turned, for the acceleration
     int wheelStreak_ = 0;           // notches turned in a quick row

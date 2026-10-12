@@ -33,3 +33,4 @@ add_executable(midipad
     ${MIDIPAD_FONT_CONDENSED_SOURCE}
 )
 target_link_libraries(midipad PRIVATE midipad_platform imgui midipad_warnings)
+target_compile_definitions(midipad PRIVATE MIDIPAD_VERSION="${PROJECT_VERSION}")

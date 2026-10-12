@@ -643,21 +643,8 @@ void Engine::endRecordHold() {
                     tidyNoteLoop(channel);
                 }
             }
-            if (source != static_cast<int>(LoopSource::Notes)) {
-                // Its middle, where a narrower amplitude closes in.
-                std::uint16_t lx = 0xFFFE, hx = 0, ly = 0xFFFE, hy = 0;
-                for (int k = 0; k < loop.length; ++k) {
-                    const auto at = static_cast<std::size_t>(k);
-                    if (loop.x[at] == kLifted)
-                        continue;
-                    lx = std::min(lx, loop.x[at]), hx = std::max(hx, loop.x[at]);
-                    ly = std::min(ly, loop.y[at]), hy = std::max(hy, loop.y[at]);
-                }
-                if (lx <= hx) {
-                    loop.middleX = (static_cast<float>(lx) + static_cast<float>(hx)) * 0.5f / 65534.0f;
-                    loop.middleY = (static_cast<float>(ly) + static_cast<float>(hy)) * 0.5f / 65534.0f;
-                }
-            }
+            if (source != static_cast<int>(LoopSource::Notes))
+                findMiddle(loop);
             loop.direction = playback == LoopPlayback::Reverse ? -1 : 1;
             loop.nextAt = now_;
             loop.sentX = loop.sentY = -1;
@@ -1457,6 +1444,97 @@ void Engine::playLoopNotes(std::size_t index) {
         }
 }
 
+bool Engine::findLoopNote(int channel, int start, int note, int& on, int& off) const {
+    const auto& events = noteEvents_[static_cast<std::size_t>(channel)];
+    on = off = -1;
+    for (std::size_t i = 0; i < events.size(); ++i)
+        if (events[i].on && events[i].at == start && events[i].note == note) {
+            on = static_cast<int>(i);
+            break;
+        }
+    if (on < 0)
+        return false;
+    for (std::size_t i = static_cast<std::size_t>(on) + 1; i < events.size(); ++i)
+        if (events[i].note == note) {  // notes of a pitch never overlap: its release
+            if (!events[i].on)
+                off = static_cast<int>(i);
+            break;
+        }
+    return true;
+}
+
+void Engine::silenceLoopNote(int channel, int note) {
+    auto& on = noteLoopOn_[static_cast<std::size_t>(channel)];
+    if (!on.test(static_cast<std::size_t>(note)))
+        return;
+    fromLoop_ = true;
+    sendNow(MidiMessage::noteOff(channel, note + loopShift_[static_cast<std::size_t>(channel)][static_cast<std::size_t>(note)]));
+    fromLoop_ = false;
+    on.reset(static_cast<std::size_t>(note));
+}
+
+bool Engine::moveLoopNotes(int channel, const std::vector<LoopNoteRef>& notes, int samples, int semitones) {
+    channel = std::clamp(channel, 0, kChannelCount - 1);
+    const Loop& loop = loops_[loopIndex(channel, static_cast<int>(LoopSource::Notes))];
+    if (loop.state != LoopStatus::State::Playing || loop.length < 2)
+        return false;
+    auto& events = noteEvents_[static_cast<std::size_t>(channel)];
+    // The notes there, by index (note on, release or -1), and how far the
+    // group may go: all of it inside the loop and the MIDI range.
+    struct Found {
+        int on, off;
+    };
+    std::vector<Found> found;
+    int first = loop.length, last = 0, low = 127, high = 0;
+    for (const LoopNoteRef& ref : notes) {
+        int on = -1, off = -1;
+        if (!findLoopNote(channel, ref.start, ref.note, on, off))
+            continue;
+        found.push_back({on, off});
+        const int end = off >= 0 ? std::max(events[static_cast<std::size_t>(off)].at, ref.start + 1) : ref.start + 1;
+        first = std::min(first, ref.start);
+        last = std::max(last, end);
+        low = std::min<int>(low, ref.note);
+        high = std::max<int>(high, ref.note);
+    }
+    if (found.empty())
+        return false;
+    samples = std::clamp(samples, -first, std::max(loop.length - 1 - last, -first));
+    semitones = std::clamp(semitones, -low, 127 - high);
+    for (const Found& f : found) {
+        silenceLoopNote(channel, events[static_cast<std::size_t>(f.on)].note);
+        silenceLoopNote(channel, std::clamp(events[static_cast<std::size_t>(f.on)].note + semitones, 0, 127));
+    }
+    for (const Found& f : found)
+        for (const int i : {f.on, f.off}) {
+            if (i < 0)
+                continue;
+            auto& e = events[static_cast<std::size_t>(i)];
+            e.at = std::clamp(e.at + samples, 0, loop.length - 1);
+            e.note = static_cast<std::uint8_t>(std::clamp(e.note + semitones, 0, 127));
+        }
+    tidyNoteLoop(channel);  // in order again; notes they land on are cut short
+    return true;
+}
+
+bool Engine::removeLoopNotes(int channel, const std::vector<LoopNoteRef>& notes) {
+    channel = std::clamp(channel, 0, kChannelCount - 1);
+    auto& events = noteEvents_[static_cast<std::size_t>(channel)];
+    bool any = false;
+    for (const LoopNoteRef& ref : notes) {
+        int on = -1, off = -1;
+        if (!findLoopNote(channel, ref.start, ref.note, on, off))
+            continue;
+        silenceLoopNote(channel, ref.note);
+        events[static_cast<std::size_t>(on)].at = -1;  // marked, removed below
+        if (off >= 0)
+            events[static_cast<std::size_t>(off)].at = -1;
+        any = true;
+    }
+    events.erase(std::remove_if(events.begin(), events.end(), [](const NoteEvent& e) { return e.at < 0; }), events.end());
+    return any;
+}
+
 int Engine::noteLoopIntervals(int channel, NoteInterval* out, int max) const {
     channel = std::clamp(channel, 0, kChannelCount - 1);
     const Loop& loop = loops_[loopIndex(channel, static_cast<int>(LoopSource::Notes))];
@@ -1470,7 +1548,7 @@ int Engine::noteLoopIntervals(int channel, NoteInterval* out, int max) const {
             if (count == max)
                 break;
             open[e.note] = count;
-            out[count++] = {e.at, -1, e.note, e.velocity, false};
+            out[count++] = {e.at, -1, e.note, e.velocity, false, e.press};
         } else if (open[e.note] >= 0) {
             out[open[e.note]].end = std::max(e.at, out[open[e.note]].start + 1);
             open[e.note] = -1;
@@ -1553,6 +1631,90 @@ void Engine::playLoops() {
             loop.sentX = loop.sentY = -1;
         }
     }
+}
+
+// Its middle, where the amplitude closes in or widens.
+void Engine::findMiddle(Loop& loop) {
+    std::uint16_t lx = 0xFFFE, hx = 0, ly = 0xFFFE, hy = 0;
+    for (int k = 0; k < loop.length; ++k) {
+        const auto at = static_cast<std::size_t>(k);
+        if (loop.x[at] == kLifted)
+            continue;
+        lx = std::min(lx, loop.x[at]), hx = std::max(hx, loop.x[at]);
+        ly = std::min(ly, loop.y[at]), hy = std::max(hy, loop.y[at]);
+    }
+    if (lx <= hx) {
+        loop.middleX = (static_cast<float>(lx) + static_cast<float>(hx)) * 0.5f / 65534.0f;
+        loop.middleY = (static_cast<float>(ly) + static_cast<float>(hy)) * 0.5f / 65534.0f;
+    }
+}
+
+std::vector<SessionLoop> Engine::sessionLoops() const {
+    std::vector<SessionLoop> out;
+    for (int channel = 0; channel < kChannelCount; ++channel) {
+        for (int source = 0; source < kLoopSourceCount; ++source) {
+            const Loop& loop = loops_[loopIndex(channel, source)];
+            if (loop.state != LoopStatus::State::Playing || loop.length < 2)
+                continue;
+            SessionLoop l;
+            l.channel = channel;
+            l.source = static_cast<LoopSource>(source);
+            l.length = loop.length;
+            l.syncBeats = loop.syncBeats;
+            l.anchorBeat = loop.anchorBeat;
+            if (l.source == LoopSource::Notes) {
+                for (const NoteEvent& e : noteEvents_[static_cast<std::size_t>(channel)])
+                    l.notes.push_back({e.at, e.note, e.velocity, e.on, e.press});
+            } else {
+                l.stretch = loop.stretch;
+                l.amplitude = loop.amplitude;
+                l.x.assign(loop.x.begin(), loop.x.begin() + loop.length);
+                l.y.assign(loop.y.begin(), loop.y.begin() + loop.length);
+            }
+            out.push_back(std::move(l));
+        }
+    }
+    return out;
+}
+
+void Engine::loadSessionLoops(const std::vector<SessionLoop>& loops) {
+    waiting_.fill(false);
+    recordHolders_.reset();
+    overdubChannel_ = -1;
+    fromLoop_ = true;
+    for (std::size_t i = 0; i < loops_.size(); ++i)
+        clearLoop(static_cast<int>(i / kLoopSourceCount), static_cast<int>(i % kLoopSourceCount));
+    fromLoop_ = false;
+    for (const SessionLoop& l : loops) {
+        if (l.channel < 0 || l.channel >= kChannelCount || l.length < 2 || l.length > kMaxLoopSamples)
+            continue;
+        const int source = static_cast<int>(l.source);
+        Loop& loop = loops_[loopIndex(l.channel, source)];
+        if (l.source == LoopSource::Notes) {
+            auto& events = noteEvents_[static_cast<std::size_t>(l.channel)];
+            events.clear();
+            for (const SessionLoop::Note& n : l.notes)
+                if (events.size() < kMaxNoteEvents)
+                    events.push_back({std::clamp(n.at, 0, l.length - 1), static_cast<std::uint8_t>(n.note & 0x7F), n.velocity, n.on, n.press});
+            for (const SessionLoop::Note& n : l.notes)  // new presses never take a number of these
+                pressCount_ = std::max(pressCount_, n.press);
+        } else {
+            if (static_cast<int>(l.x.size()) < l.length || static_cast<int>(l.y.size()) < l.length)
+                continue;
+            std::copy(l.x.begin(), l.x.begin() + l.length, loop.x.begin());
+            std::copy(l.y.begin(), l.y.begin() + l.length, loop.y.begin());
+            loop.stretch = std::clamp(l.stretch, kMinStretch, kMaxStretch);
+            loop.amplitude = std::clamp(l.amplitude, 0, kMaxAmplitude);
+            loop.amplitudeNow = static_cast<float>(loop.amplitude) / 100.0f;
+        }
+        loop.length = l.length;
+        loop.syncBeats = l.syncBeats;
+        loop.anchorBeat = l.anchorBeat;
+        loop.state = LoopStatus::State::Playing;
+        if (l.source != LoopSource::Notes)
+            findMiddle(loop);
+    }
+    playLoops();  // from their start; synced ones take their place from the beat clock
 }
 
 std::uint16_t Engine::channelsWithLoops() const {

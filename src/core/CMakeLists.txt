@@ -8,6 +8,7 @@ add_library(midipad_core STATIC
     src/PresetIO.cpp
     src/PresetLibrary.cpp
     src/Scales.cpp
+    src/Session.cpp
 )
 add_library(midipad::core ALIAS midipad_core)
 

@@ -9,11 +9,13 @@
 #include <atomic>
 #include <cstdint>
 #include <functional>
+#include <future>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
 #include <thread>
+#include <vector>
 
 // Something the input thread reports to the main thread.
 struct Report {
@@ -117,6 +119,15 @@ public:
     void setChannel(int channel);
     void panic();  // also stops the loops, on every channel
     void clearLoop(int source);  // a LoopSource, on the active channel
+    // Editing the active channel's note loop (Engine::moveLoopNotes,
+    // removeLoopNotes), in the order asked.
+    void moveLoopNotes(std::vector<midipad::LoopNoteRef> notes, int samples, int semitones);
+    void removeLoopNotes(std::vector<midipad::LoopNoteRef> notes);
+    // Session files: the loops of every channel as the input thread has them
+    // (nothing if it does not answer within a second), and loops to play
+    // instead of all of them, after any preset given before.
+    std::optional<std::vector<midipad::SessionLoop>> sessionLoops();
+    void loadSessionLoops(std::vector<midipad::SessionLoop> loops);
     void stretchLoop(int source, int steps);  // see Engine::stretchLoop, on the active channel
     void amplifyLoop(int source, int steps);  // see Engine::amplifyLoop, on the active channel
     void pauseLoops();  // every channel's
@@ -154,7 +165,10 @@ public:
 private:
     class Tap;
     struct Command {
-        enum class Kind : std::uint8_t { SetChannel, Panic, ClearLoop, StretchLoop, AmplifyLoop, PauseLoops, PlayLoops } kind;
+        enum class Kind : std::uint8_t {
+            SetChannel, Panic, ClearLoop, StretchLoop, AmplifyLoop, PauseLoops, PlayLoops, SaveLoops, LoadLoops,
+            EditNotes
+        } kind;
         int channel = 0;
         int value = 0;
     };
@@ -181,6 +195,15 @@ private:
     std::shared_ptr<const midipad::Preset> pendingPreset_;
     std::shared_ptr<MidiOutput> pendingOutput_;
     std::atomic<bool> hasPending_{false};
+    std::mutex sessionMutex_;  // the loops going to and from a session file
+    std::optional<std::promise<std::vector<midipad::SessionLoop>>> loopsWanted_;
+    std::vector<midipad::SessionLoop> loopsToLoad_;
+    struct NoteEdit {
+        std::vector<midipad::LoopNoteRef> notes;
+        bool remove = false;
+        int samples = 0, semitones = 0;
+    };
+    std::vector<NoteEdit> noteEdits_;  // under sessionMutex_, oldest first
 
     // Published by the input thread after each poll.
     std::atomic<bool> connected_{false}, hasTouchpad_{false};

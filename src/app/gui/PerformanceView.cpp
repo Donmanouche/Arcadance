@@ -891,6 +891,7 @@ void PerformanceView::drawPianoRoll(const Mapping& m, const LiveState& live, flo
     }
 
     bool any = false;
+    int noteHovered = -1;  // the loop note under the mouse
     if (clip) {
         // Synced: the beats and bars of the loop. Free: half-second lines. From the loop's start, which is marked.
         if (st.beats > 0) {
@@ -919,9 +920,39 @@ void PerformanceView::drawPianoRoll(const Mapping& m, const LiveState& live, flo
         }
         if (liveShown)
             dl->AddLine(ImVec2(ax1 - px(1), ay0), ImVec2(ax1 - px(1), ay1), alpha(T::kCyan, 0.3f), px(1.2f));
+        // Notes being moved: where they go so far, the group as a block inside
+        // the loop and the MIDI range, its first note on the quantize grid.
+        const ImVec2 mouse = ImGui::GetIO().MousePos;
+        const float sampleAt = (mouse.x - gx0) / std::max(ax1 - gx0, 1.0f) * static_cast<float>(st.length);
+        if (drag_) {
+            int first = st.length, last = 0, lowest = 127, highest = 0;
+            for (const NoteInterval& n : drag_->notes) {
+                first = std::min(first, static_cast<int>(n.start));
+                last = std::max(last, std::max(static_cast<int>(n.end), static_cast<int>(n.start) + 1));
+                lowest = std::min<int>(lowest, n.note);
+                highest = std::max<int>(highest, n.note);
+            }
+            double moved = static_cast<double>(sampleAt - drag_->grabSample);
+            if (quantize_ > 0 && st.beats > 0) {
+                const double step = static_cast<double>(st.length) / (st.beats * quantize_);
+                moved = std::round((first + moved) / step) * step - first;
+            }
+            drag_->samples = std::clamp(static_cast<int>(std::lround(moved)), -first, std::max(st.length - 1 - last, -first));
+            drag_->semitones = std::clamp(static_cast<int>(std::lround((drag_->grabY - mouse.y) / rowH)), -lowest, 127 - highest);
+        }
         // The loop's notes; lit while the playhead crosses them; orange while
-        // being added in overdub (from their start to the playhead).
+        // being added in overdub (from their start to the playhead); outlined
+        // when selected, faint while being moved.
         const auto pos = static_cast<float>(st.position);
+        int hovered = -1;
+        auto moving = [&](const NoteInterval& n) {
+            if (!drag_)
+                return false;
+            for (const NoteInterval& other : drag_->notes)
+                if (other.start == n.start && other.note == n.note)
+                    return true;
+            return false;
+        };
         for (int i = 0; i < live.noteLoopCount; ++i) {
             const NoteInterval& n = live.noteLoop[static_cast<std::size_t>(i)];
             const float yb = yOf(n.note);
@@ -931,13 +962,53 @@ void PerformanceView::drawPianoRoll(const Mapping& m, const LiveState& live, flo
                 dl->AddRectFilled(ImVec2(xa, yb - rowH + 0.5f), ImVec2(std::max(xb, xa + px(2)), yb - 0.5f), T::kOrange, px(1));
                 continue;
             }
+            const bool dragged = moving(n);
             const bool lit = pos >= static_cast<float>(n.start) && pos < static_cast<float>(n.end);
             const ImVec2 na(xAtSample(static_cast<float>(n.start)), yb - rowH + 0.5f);
             const ImVec2 nb(std::max(xAtSample(static_cast<float>(n.end)), na.x + px(2)), yb - 0.5f);
-            dl->AddRectFilled(na, nb, lit ? mix(kViolet, IM_COL32_WHITE, 0.45f) : alpha(kViolet, 0.6f + 0.4f * static_cast<float>(n.velocity) / 127.0f), px(1));
-            if (lit)
+            if (mouse.x >= na.x - px(2) && mouse.x <= std::max(nb.x, na.x + px(4)) + px(2) && mouse.y >= na.y - 1 && mouse.y <= nb.y + 1)
+                hovered = i;
+            const ImU32 fill = lit ? mix(kViolet, IM_COL32_WHITE, 0.45f) : alpha(kViolet, 0.6f + 0.4f * static_cast<float>(n.velocity) / 127.0f);
+            dl->AddRectFilled(na, nb, dragged ? alpha(kViolet, 0.25f) : fill, px(1));
+            if (!dragged && selected(n))
+                dl->AddRect(ImVec2(na.x - 1, na.y - 1), ImVec2(nb.x + 1, nb.y + 1), IM_COL32_WHITE, px(1), px(1.5f));
+            else if (lit && !dragged)
                 dl->AddRect(ImVec2(na.x - 1, na.y - 1), ImVec2(nb.x + 1, nb.y + 1), IM_COL32(255, 255, 255, 150), px(1), px(1));
         }
+        if (drag_) {  // where they go
+            for (const NoteInterval& n : drag_->notes) {
+                const float yb = yOf(n.note + drag_->semitones);
+                const int start = n.start + drag_->samples, end = std::max(static_cast<int>(n.end), static_cast<int>(n.start) + 1) + drag_->samples;
+                const ImVec2 na(xAtSample(static_cast<float>(start)), yb - rowH + 0.5f);
+                const ImVec2 nb(std::max(xAtSample(static_cast<float>(end)), na.x + px(2)), yb - 0.5f);
+                dl->AddRectFilled(na, nb, mix(kViolet, IM_COL32_WHITE, 0.3f), px(1));
+                dl->AddRect(ImVec2(na.x - 1, na.y - 1), ImVec2(nb.x + 1, nb.y + 1), IM_COL32_WHITE, px(1), px(1));
+            }
+        } else if (hovered >= 0 && ImGui::GetIO().KeyShift && ImGui::IsWindowHovered()) {
+            const NoteInterval& n = live.noteLoop[static_cast<std::size_t>(hovered)];
+            const float yb = yOf(n.note);
+            dl->AddRect(ImVec2(xAtSample(static_cast<float>(n.start)) - 2, yb - rowH - 1.5f),
+                        ImVec2(std::max(xAtSample(static_cast<float>(n.end)), xAtSample(static_cast<float>(n.start)) + px(2)) + 2, yb + 1.5f),
+                        IM_COL32(255, 255, 255, 200), px(1), px(1));
+        }
+        if (bandFrom_) {  // the selection rectangle
+            const ImVec2 ra(std::min(bandFrom_->x, mouse.x), std::min(bandFrom_->y, mouse.y));
+            const ImVec2 rb(std::max(bandFrom_->x, mouse.x), std::max(bandFrom_->y, mouse.y));
+            dl->AddRectFilled(ra, rb, IM_COL32(255, 255, 255, 25));
+            dl->AddRect(ra, rb, IM_COL32(255, 255, 255, 160), 0.0f, px(1));
+            if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+                for (int i = 0; i < live.noteLoopCount; ++i) {
+                    const NoteInterval& n = live.noteLoop[static_cast<std::size_t>(i)];
+                    const float yb = yOf(n.note);
+                    const float xa = xAtSample(static_cast<float>(n.start));
+                    const float xb = std::max(xAtSample(static_cast<float>(n.end)), xa + px(2));
+                    if (xb >= ra.x && xa <= rb.x && yb >= ra.y && yb - rowH <= rb.y && !selected(n))
+                        selection_.push_back({n.start, n.note});
+                }
+                bandFrom_.reset();
+            }
+        }
+        noteHovered = hovered;
         any = true;
     } else {
         // Half-second lines, scrolling with time.
@@ -974,8 +1045,106 @@ void PerformanceView::drawPianoRoll(const Mapping& m, const LiveState& live, flo
         dl->AddRectFilled(ImVec2(ax1 - tw - px(12), ay0 + px(3)), ImVec2(ax1 - px(3), ay0 + px(17)), IM_COL32(0x20, 0x22, 0x26, 230), px(4));
         text(dl, gBold, px(10), ax1 - px(7), ay0 + px(10), statusColor, status, H::Right, V::Middle);
     }
-    if (hoverButton("##pianoroll", ImVec2(ax0, ay0), ImVec2(ax1, ay1)))
+    const bool pressed = hoverButton("##pianoroll", ImVec2(ax0, ay0), ImVec2(ax1, ay1));
+    const bool hovering = ImGui::IsItemHovered();
+    if (!clip || live.channel != selectionChannel_) {
+        drag_.reset();
+        bandFrom_.reset();
+        selection_.clear();
+        selectionChannel_ = live.channel;
+    }
+    if (!clip) {
+        if (pressed)
+            click("notes");
+        return;
+    }
+    const ImGuiIO& io = ImGui::GetIO();
+    const ImVec2 mouse = io.MousePos;
+    const float sampleAt = (mouse.x - gx0) / std::max(ax1 - gx0, 1.0f) * static_cast<float>(st.length);
+    // The selection keeps only notes still there (once an edit had time to land).
+    if (time_ - lastNoteEdit_ > 0.5)
+        std::erase_if(selection_, [&](const LoopNoteRef& r) {
+            for (int i = 0; i < live.noteLoopCount; ++i)
+                if (live.noteLoop[static_cast<std::size_t>(i)].start == r.start && live.noteLoop[static_cast<std::size_t>(i)].note == r.note)
+                    return false;
+            return true;
+        });
+    auto noteAt = [&](int i) -> const NoteInterval& { return live.noteLoop[static_cast<std::size_t>(i)]; };
+    if (hovering && noteHovered >= 0 && io.KeyShift)
+        ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll);
+    if (pressed && io.KeyShift && noteHovered >= 0) {
+        const NoteInterval& n = noteAt(noteHovered);
+        if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+            // Its chord: the notes of the same press (or, unknown, starting with it).
+            drag_.reset();
+            selection_.clear();
+            for (int i = 0; i < live.noteLoopCount; ++i) {
+                const NoteInterval& other = noteAt(i);
+                if (n.press != 0 ? other.press == n.press : std::abs(other.start - n.start) <= Engine::kLoopRateHz / 10)
+                    selection_.push_back({other.start, other.note});
+            }
+        } else if (io.KeyCtrl) {
+            if (selected(n))
+                std::erase_if(selection_, [&](const LoopNoteRef& r) { return r.start == n.start && r.note == n.note; });
+            else
+                selection_.push_back({n.start, n.note});
+        } else {
+            if (!selected(n))
+                selection_ = {{n.start, n.note}};
+            NoteDrag d;
+            for (int i = 0; i < live.noteLoopCount; ++i)
+                if (selected(noteAt(i)))
+                    d.notes.push_back(noteAt(i));
+            d.grabSample = sampleAt;
+            d.grabY = mouse.y;
+            drag_ = std::move(d);
+        }
+    } else if (pressed && io.KeyShift) {
+        bandFrom_ = mouse;
+        if (!io.KeyCtrl)
+            selection_.clear();
+    } else if (pressed && !selection_.empty()) {
+        selection_.clear();
+    } else if (pressed) {
         click("notes");
+    }
+    if (hovering && noteHovered >= 0 && !drag_ && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
+        const NoteInterval& n = noteAt(noteHovered);
+        NoteEdit edit;
+        edit.remove = true;
+        if (selected(n))
+            edit.notes = std::exchange(selection_, {});
+        else
+            edit.notes = {{n.start, n.note}};
+        noteEdit_ = std::move(edit);
+        lastNoteEdit_ = time_;
+    }
+    if (!selection_.empty() && !drag_ && ImGui::IsKeyPressed(ImGuiKey_Escape) && !ImGui::IsAnyItemActive() &&
+        !ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId))
+        selection_.clear();
+    if (drag_ && !ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+        if (drag_->samples != 0 || drag_->semitones != 0) {
+            NoteEdit edit;
+            for (const NoteInterval& n : drag_->notes)
+                edit.notes.push_back({n.start, n.note});
+            edit.samples = drag_->samples;
+            edit.semitones = drag_->semitones;
+            for (LoopNoteRef& r : selection_) {  // the selection moves with them
+                r.start += drag_->samples;
+                r.note = static_cast<std::uint8_t>(std::clamp(r.note + drag_->semitones, 0, 127));
+            }
+            noteEdit_ = std::move(edit);
+            lastNoteEdit_ = time_;
+        }
+        drag_.reset();
+    }
+}
+
+bool PerformanceView::selected(const NoteInterval& n) const {
+    for (const LoopNoteRef& r : selection_)
+        if (r.start == n.start && r.note == n.note)
+            return true;
+    return false;
 }
 
 // A block without a title bar, like the piano roll's.

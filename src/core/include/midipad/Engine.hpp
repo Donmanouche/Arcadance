@@ -3,6 +3,7 @@
 #include "midipad/Humanize.hpp"
 #include "midipad/MidiMessage.hpp"
 #include "midipad/Preset.hpp"
+#include "midipad/Session.hpp"
 #include "midipad/Scales.hpp"
 
 #include <array>
@@ -34,6 +35,13 @@ struct NoteInterval {
     std::int32_t start = 0, end = 0;
     std::uint8_t note = 0, velocity = 0;
     bool open = false;  // not released yet (being recorded): `end` is the loop's end
+    std::uint32_t press = 0;  // the press it came from: a chord's notes share it (0: unknown)
+};
+
+// A note of a note loop: the one starting at sample `start` with pitch `note`.
+struct LoopNoteRef {
+    std::int32_t start = 0;
+    std::uint8_t note = 0;
 };
 
 // What a loop is doing, for display.
@@ -189,6 +197,19 @@ public:
     bool stretchHeld() const { return stretchHolders_.any(); }
     // The notes of a channel's note loop, at most `max`; returns how many.
     int noteLoopIntervals(int channel, NoteInterval* out, int max) const;
+    // Editing a note loop: notes moved together by `samples` and `semitones`
+    // (their lengths and the gaps between them kept, the group inside the loop
+    // and the MIDI range, as a block), or removed. Notes they then cut short
+    // or sounding now stop. False when none of them is there.
+    bool moveLoopNotes(int channel, const std::vector<LoopNoteRef>& notes, int samples, int semitones);
+    bool removeLoopNotes(int channel, const std::vector<LoopNoteRef>& notes);
+    // One note: moved to `newStart` and `newNote`, or removed.
+    bool moveLoopNote(int channel, int start, int note, int newStart, int newNote) {
+        return moveLoopNotes(channel, {{start, static_cast<std::uint8_t>(note)}}, newStart - start, newNote - note);
+    }
+    bool removeLoopNote(int channel, int start, int note) {
+        return removeLoopNotes(channel, {{start, static_cast<std::uint8_t>(note)}});
+    }
     static constexpr int kMaxNoteEvents = 4096;  // per note loop
     void stopLoops(int channel);
     // A bit per channel where a loop plays or records.
@@ -200,6 +221,12 @@ public:
     void pauseLoops();
     void playLoops();
     bool loopsPaused() const { return loopsPaused_; }
+    // Session files. The loops of every channel that play, as they are (their
+    // stretch, amplitude and sync included), and back: loading one replaces
+    // every loop and plays them (synced ones on the beat clock again).
+    // Both allocate.
+    std::vector<SessionLoop> sessionLoops() const;
+    void loadSessionLoops(const std::vector<SessionLoop>& loops);
     void seedRandom(std::uint64_t seed) { random_ = seed ? seed : 0x9E3779B97F4A7C15ull; }
 
     void buttonChanged(Button button, bool pressed);
@@ -341,6 +368,7 @@ private:
         int sentX = -1, sentY = -1;
     };
     static constexpr std::uint16_t kLifted = 0xFFFF;
+    static void findMiddle(Loop& loop);  // a movement loop's middle, from its samples
     // A synced loop's place now, from the beat clock: its phase in samples and the way it goes.
     void syncedPhase(const Loop& loop, LoopPlayback playback, double beat, double& phase, int& direction) const;
     static constexpr std::size_t loopIndex(int channel, int source) {
@@ -377,6 +405,9 @@ private:
     // still on when the next one of its pitch starts ends there, and two that
     // start together become one. `spans_` is its scratch room, allocated once.
     void tidyNoteLoop(int channel);
+    // The note on at `start` with pitch `note` and its release (-1: none), by index.
+    bool findLoopNote(int channel, int start, int note, int& on, int& off) const;
+    void silenceLoopNote(int channel, int note);
     struct NoteSpan {
         std::int32_t start = 0, end = 0;  // start < 0: a release alone; end < 0: still on
         std::uint8_t note = 0, velocity = 0;

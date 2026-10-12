@@ -8,6 +8,7 @@
 #include <SDL3/SDL.h>
 #include <ableton/Link.hpp>
 
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 
@@ -154,6 +155,46 @@ void Runtime::clearLoop(int source) { commands_.push({Command::Kind::ClearLoop, 
 void Runtime::stretchLoop(int source, int steps) { commands_.push({Command::Kind::StretchLoop, source, steps}); }
 
 void Runtime::amplifyLoop(int source, int steps) { commands_.push({Command::Kind::AmplifyLoop, source, steps}); }
+
+std::optional<std::vector<midipad::SessionLoop>> Runtime::sessionLoops() {
+    std::future<std::vector<midipad::SessionLoop>> answer;
+    {
+        std::lock_guard lock(sessionMutex_);
+        loopsWanted_.emplace();
+        answer = loopsWanted_->get_future();
+    }
+    commands_.push({Command::Kind::SaveLoops});
+    if (answer.wait_for(std::chrono::seconds(1)) != std::future_status::ready) {
+        std::lock_guard lock(sessionMutex_);
+        loopsWanted_.reset();
+        return std::nullopt;
+    }
+    return answer.get();
+}
+
+void Runtime::loadSessionLoops(std::vector<midipad::SessionLoop> loops) {
+    {
+        std::lock_guard lock(sessionMutex_);
+        loopsToLoad_ = std::move(loops);
+    }
+    commands_.push({Command::Kind::LoadLoops});
+}
+
+void Runtime::moveLoopNotes(std::vector<midipad::LoopNoteRef> notes, int samples, int semitones) {
+    {
+        std::lock_guard lock(sessionMutex_);
+        noteEdits_.push_back({std::move(notes), false, samples, semitones});
+    }
+    commands_.push({Command::Kind::EditNotes});
+}
+
+void Runtime::removeLoopNotes(std::vector<midipad::LoopNoteRef> notes) {
+    {
+        std::lock_guard lock(sessionMutex_);
+        noteEdits_.push_back({std::move(notes), true, 0, 0});
+    }
+    commands_.push({Command::Kind::EditNotes});
+}
 
 void Runtime::pauseLoops() { commands_.push({Command::Kind::PauseLoops}); }
 
@@ -340,6 +381,26 @@ void Runtime::run(std::stop_token stop, Options options, std::shared_ptr<const P
                 engine.stretchLoop(engine.channel(), command->channel, command->value);  // `channel` holds the source
             } else if (command->kind == Command::Kind::AmplifyLoop) {
                 engine.amplifyLoop(engine.channel(), command->channel, command->value);  // `channel` holds the source
+            } else if (command->kind == Command::Kind::EditNotes) {
+                std::lock_guard lock(sessionMutex_);
+                if (!noteEdits_.empty()) {
+                    const NoteEdit& edit = noteEdits_.front();
+                    if (edit.remove)
+                        engine.removeLoopNotes(engine.channel(), edit.notes);
+                    else
+                        engine.moveLoopNotes(engine.channel(), edit.notes, edit.samples, edit.semitones);
+                    noteEdits_.erase(noteEdits_.begin());
+                }
+            } else if (command->kind == Command::Kind::SaveLoops) {
+                std::lock_guard lock(sessionMutex_);
+                if (loopsWanted_) {
+                    loopsWanted_->set_value(engine.sessionLoops());
+                    loopsWanted_.reset();
+                }
+            } else if (command->kind == Command::Kind::LoadLoops) {
+                std::lock_guard lock(sessionMutex_);
+                engine.loadSessionLoops(loopsToLoad_);
+                loopsToLoad_.clear();
             } else if (command->kind == Command::Kind::PauseLoops || command->kind == Command::Kind::PlayLoops) {
                 const bool play = command->kind == Command::Kind::PlayLoops;
                 if (linkEnabled_.load(std::memory_order_relaxed) && startStopSync_.load(std::memory_order_relaxed)) {

@@ -17,6 +17,7 @@
 #include "midipad/PresetIO.hpp"
 #include "midipad/PresetLibrary.hpp"
 #include "midipad/Scales.hpp"
+#include "midipad/Session.hpp"
 #include "midipad/Notes.hpp"
 
 #include <SDL3/SDL.h>
@@ -36,6 +37,7 @@
 #include <iostream>
 #include <memory>
 #include <mutex>
+#include <nlohmann/json.hpp>
 #include <optional>
 #include <utility>
 
@@ -54,11 +56,77 @@ namespace {
 constexpr float kFontSize = 16.0f;
 constexpr ImVec4 kHintColor{0.65f, 0.65f, 0.7f, 1.0f};
 constexpr ImVec4 kErrorColor{1.0f, 0.45f, 0.4f, 1.0f};
+constexpr ImVec4 kWarningColor{1.0f, 0.78f, 0.35f, 1.0f};
 
 fs::path prefPath() {
     char* path = SDL_GetPrefPath("MidiPad", "MidiPad");
     fs::path result = path ? fs::path(path) : fs::current_path();
     SDL_free(path);
+    return result;
+}
+
+// "0.21" as numbers, for comparing versions; a leading "v" is skipped.
+std::vector<int> versionNumbers(std::string_view text) {
+    std::vector<int> out;
+    if (!text.empty() && (text[0] == 'v' || text[0] == 'V'))
+        text.remove_prefix(1);
+    int n = 0;
+    bool any = false;
+    for (char c : text) {
+        if (std::isdigit(static_cast<unsigned char>(c))) {
+            n = n * 10 + (c - '0');
+            any = true;
+        } else if (c == '.') {
+            out.push_back(n);
+            n = 0;
+        } else {
+            break;
+        }
+    }
+    if (any)
+        out.push_back(n);
+    return out;
+}
+
+constexpr const char* kReleasesUrl = "https://github.com/Donmanouche/MidiPad/releases/latest";
+
+// Asks GitHub for the latest release (through curl, so MidiPad links no
+// network library): what to tell the user.
+struct UpdateCheck {
+    bool ok = false;
+    bool newer = false;
+    std::string message;
+};
+
+UpdateCheck checkForUpdates() {
+    UpdateCheck result;
+    std::string reply;
+    if (FILE* pipe = popen("curl -fsSL --max-time 10 -H 'Accept: application/vnd.github+json' "
+                           "https://api.github.com/repos/Donmanouche/MidiPad/releases/latest 2>/dev/null",
+                           "r")) {
+        char buffer[4096];
+        std::size_t n = 0;
+        while ((n = std::fread(buffer, 1, sizeof buffer, pipe)) > 0)
+            reply.append(buffer, n);
+        pclose(pipe);
+    }
+    std::string tag;
+    try {
+        const auto json = nlohmann::json::parse(reply);
+        if (json.contains("tag_name") && json["tag_name"].is_string())
+            tag = json["tag_name"].get<std::string>();
+    } catch (const std::exception&) {
+    }
+    if (tag.empty()) {
+        result.message = "Could not reach GitHub. Check the connection (and that curl is installed),\n"
+                         "or look at the releases page.";
+        return result;
+    }
+    result.ok = true;
+    const std::string latest = tag[0] == 'v' || tag[0] == 'V' ? tag.substr(1) : tag;
+    result.newer = versionNumbers(latest) > versionNumbers(MIDIPAD_VERSION);
+    result.message = result.newer ? "MidiPad " + latest + " is available."
+                                  : "You have the latest version.";
     return result;
 }
 
@@ -223,7 +291,7 @@ public:
     int run();
 
 private:
-    enum class NameDialog { None, New, SaveAs };
+    enum class NameDialog { None, New, SaveAs, SessionSaveAs };
     enum class FolderTarget { None, Presets };
 
     bool init();
@@ -244,7 +312,9 @@ private:
     // Every window over the view looks like the Options panel.
     void pushWindowLook();
     void popWindowLook();
+    // False when closed; dialogDismissed_ then tells whether its close button just closed it.
     bool beginDialog(const char* title, ImGuiWindowFlags flags = ImGuiWindowFlags_AlwaysAutoResize);
+    bool dialogDismissed_ = false;
     void endDialog();
     int dialogButtons(std::initializer_list<const char*> labels);  // the one clicked, or -1
     void applySync();  // the Link settings, to the runtime
@@ -254,6 +324,15 @@ private:
     void drawDeleteDialog();
     void drawErrorDialog();
     void drawOutputDialog();
+    void drawOpenSessionDialog();
+    void drawAboutDialog();
+
+    // Sessions: every channel's loops, the preset and the tonality, in a file.
+    std::vector<std::string> sessionNames() const;
+    fs::path sessionPath(const std::string& name) const { return sessionsDir_ / (name + kSessionExtension); }
+    void openSession(const std::string& name);
+    void saveSession();
+    bool saveSessionAs(const std::string& name);
 
     // Presets.
     void refreshPresetList();
@@ -336,6 +415,18 @@ private:
     bool closeOutputDialog_ = false;  // VirMIDI ports created from it: done
     std::string outputDialogReason_;
 
+    fs::path sessionsDir_;
+    std::optional<std::string> sessionName_;  // the session opened or saved last
+    bool openSessionDialog_ = false;
+    std::vector<std::string> sessionList_;
+    int sessionChoice_ = -1;
+    std::string deleteSessionName_;
+    bool openDeleteSessionDialog_ = false;
+    std::string replaceName_;  // Save session as: the existing session to replace, once asked
+    bool openAboutDialog_ = false;
+    std::future<UpdateCheck> updateJob_;
+    std::optional<UpdateCheck> updateResult_;
+
     std::mutex folderMutex_;
     FolderTarget folderTarget_ = FolderTarget::None;
     std::optional<std::string> chosenFolder_;
@@ -356,6 +447,7 @@ bool GuiApp::init() {
 
     const fs::path pref = prefPath();
     settingsFile_ = pref / "settings.json";
+    sessionsDir_ = pref / "Sessions";
     AppSettings defaults;
     defaults.presetsDir = pref / "presets";
     settings_ = loadSettings(settingsFile_, defaults);
@@ -992,6 +1084,20 @@ void GuiApp::drawPerformance(const LiveState& live) {
     if (menuOpen) {
         ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(px(12), px(14)));
         ImGui::PushFont(medium, 15.0f);
+        if (ImGui::MenuItem("Open…")) {
+            sessionList_ = sessionNames();
+            sessionChoice_ = -1;
+            openSessionDialog_ = true;
+        }
+        if (ImGui::MenuItem("Save"))
+            saveSession();
+        if (ImGui::MenuItem("Save as…")) {
+            nameDialog_ = NameDialog::SessionSaveAs;
+            nameInput_ = sessionName_.value_or("Session");
+            nameError_.clear();
+            openNameDialog_ = true;
+        }
+        ImGui::Separator();
         if (ImGui::MenuItem("Options…", nullptr, false)) {
             refreshPorts();
             virmidiStatus_ = virmidi::status();
@@ -1002,8 +1108,11 @@ void GuiApp::drawPerformance(const LiveState& live) {
             optionsAppearing_ = true;
             overlaySpec_.reset();
         }
+        ImGui::Separator();
         if (ImGui::MenuItem("Fullscreen", "F11", (SDL_GetWindowFlags(window_) & SDL_WINDOW_FULLSCREEN) != 0))
             toggleFullscreen();
+        if (ImGui::MenuItem("About…"))
+            openAboutDialog_ = true;
         ImGui::Separator();
         if (ImGui::MenuItem("Quit", "Ctrl+Q"))
             guard([this] { quit_ = true; });
@@ -1240,7 +1349,14 @@ void GuiApp::drawPerformance(const LiveState& live) {
     const float statusH = px(26);
     ImGui::PushStyleColor(ImGuiCol_ChildBg, color(Theme::kBackground));
     ImGui::BeginChild("modules", ImVec2(0, -statusH), ImGuiChildFlags_None, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+    performance_.setQuantize(settings_.quantize);
     const auto clicked = performance_.draw(preset_.forChannel(live.channel), live, settings_.key);
+    if (auto edit = performance_.takeNoteEdit()) {  // Shift + drag, right-click in the note loop's clip
+        if (edit->remove)
+            runtime_->removeLoopNotes(std::move(edit->notes));
+        else
+            runtime_->moveLoopNotes(std::move(edit->notes), edit->samples, edit->semitones);
+    }
     if (const auto stretch = performance_.takeStretchRequest())  // Shift + wheel over a LOOP panel
         for (int source = 0; source < kLoopSourceCount; ++source)
             if (stretch->sources & (1u << source)) {
@@ -1935,18 +2051,23 @@ bool GuiApp::beginDialog(const char* title, ImGuiWindowFlags flags) {
     using Theme = PerformanceView::Theme;
     const float em = ImGui::GetFontSize();
     pushWindowLook();
-    ImGui::PushStyleColor(ImGuiCol_PopupBg, ImGui::ColorConvertU32ToFloat4(Theme::kPanelHeader));
+    // As the Options window: translucent, the view behind it not dimmed.
+    ImGui::PushStyleColor(ImGuiCol_PopupBg,
+                          ImGui::ColorConvertU32ToFloat4((Theme::kPanelHeader & ~IM_COL32_A_MASK) | IM_COL32(0, 0, 0, 230)));
+    ImGui::PushStyleColor(ImGuiCol_ModalWindowDimBg, ImVec4(0, 0, 0, 0));
     ImGui::PushStyleVar(ImGuiStyleVar_PopupRounding, em * 0.5f);
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + viewport->WorkSize.x * 0.5f,
                                    viewport->WorkPos.y + viewport->WorkSize.y * 0.5f),
                             ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
     ImGui::PushFont(uiFonts_.bold ? uiFonts_.bold : ImGui::GetFont(), 16.0f);
-    const bool open = ImGui::BeginPopupModal(title, nullptr, flags | ImGuiWindowFlags_NoSavedSettings);
+    bool keep = true;  // false: its close button was clicked
+    const bool open = ImGui::BeginPopupModal(title, &keep, flags | ImGuiWindowFlags_NoSavedSettings);
     ImGui::PopFont();
+    dialogDismissed_ = !keep;
     if (!open) {
         ImGui::PopStyleVar();
-        ImGui::PopStyleColor();
+        ImGui::PopStyleColor(2);
         popWindowLook();
         return false;
     }
@@ -1958,7 +2079,7 @@ void GuiApp::endDialog() {
     ImGui::PopFont();
     ImGui::EndPopup();
     ImGui::PopStyleVar();
-    ImGui::PopStyleColor();
+    ImGui::PopStyleColor(2);
     popWindowLook();
 }
 
@@ -1985,6 +2106,198 @@ int GuiApp::dialogButtons(std::initializer_list<const char*> labels) {
     return clicked;
 }
 
+// --- Sessions ---------------------------------------------------------------
+
+std::vector<std::string> GuiApp::sessionNames() const {
+    std::vector<std::string> names;
+    std::error_code ec;
+    for (const auto& entry : fs::directory_iterator(sessionsDir_, ec))
+        if (entry.is_regular_file() && entry.path().extension() == kSessionExtension)
+            names.push_back(entry.path().stem().string());
+    std::sort(names.begin(), names.end(), [](const std::string& a, const std::string& b) {
+        return std::lexicographical_compare(a.begin(), a.end(), b.begin(), b.end(),
+                                            [](char x, char y) { return std::tolower(static_cast<unsigned char>(x)) <
+                                                                        std::tolower(static_cast<unsigned char>(y)); });
+    });
+    return names;
+}
+
+void GuiApp::openSession(const std::string& name) {
+    Session session;
+    try {
+        session = loadSession(sessionPath(name));
+    } catch (const std::exception& e) {
+        showError(std::string("Cannot open the session:\n") + e.what());
+        return;
+    }
+    // Its preset, as it was: the one of that name if unchanged, otherwise a
+    // changed copy to save (or not).
+    preset_ = session.preset;
+    hasFile_ = !PresetLibrary::nameError(preset_.name).has_value();
+    dirty_ = true;
+    presetTime_.reset();
+    if (hasFile_ && library_->contains(preset_.name)) {
+        try {
+            dirty_ = presetToJson(library_->load(preset_.name)) != presetToJson(preset_);
+        } catch (const std::exception&) {
+        }
+        presetTime_ = modificationTime(library_->pathFor(preset_.name));
+        settings_.lastPreset = preset_.name;
+    }
+    settings_.key = session.key;
+    persistSettings();
+    pushToEngine();
+    runtime_->setChannel(session.channel);
+    runtime_->loadSessionLoops(std::move(session.loops));
+    sessionName_ = name;
+    log("Session \"" + name + "\" opened.");
+}
+
+void GuiApp::saveSession() {
+    if (!sessionName_) {
+        nameDialog_ = NameDialog::SessionSaveAs;
+        nameInput_ = "Session";
+        nameError_.clear();
+        openNameDialog_ = true;
+        return;
+    }
+    saveSessionAs(*sessionName_);
+}
+
+bool GuiApp::saveSessionAs(const std::string& name) {
+    auto loops = runtime_->sessionLoops();
+    if (!loops) {
+        showError("Cannot save the session:\nthe loops did not answer.");
+        return false;
+    }
+    Session session;
+    session.preset = preset_;
+    session.key = settings_.key;
+    session.channel = runtime_->live().channel;
+    session.loops = std::move(*loops);
+    try {
+        midipad::saveSession(session, sessionPath(name));
+    } catch (const std::exception& e) {
+        showError(std::string("Cannot save the session:\n") + e.what());
+        return false;
+    }
+    sessionName_ = name;
+    log("Session \"" + name + "\" saved (" + std::to_string(session.loops.size()) + " loops).");
+    return true;
+}
+
+void GuiApp::drawOpenSessionDialog() {
+    constexpr const char* kTitle = "Open session";
+    if (openSessionDialog_) {
+        ImGui::OpenPopup(kTitle);
+        openSessionDialog_ = false;
+    }
+    if (!beginDialog(kTitle))
+        return;
+    bool open = false;
+    if (sessionList_.empty()) {
+        ImGui::TextUnformatted("No session saved yet: \u2630 \u203a Save as\u2026 saves the loops playing now.");
+    } else {
+        if (ImGui::BeginChild("##sessions", ImVec2(ImGui::GetFontSize() * 26, 0),
+                              ImGuiChildFlags_AutoResizeY | ImGuiChildFlags_Borders)) {
+            for (int i = 0; i < static_cast<int>(sessionList_.size()); ++i) {
+                const std::string& name = sessionList_[static_cast<std::size_t>(i)];
+                if (ImGui::Selectable(name.c_str(), sessionChoice_ == i, ImGuiSelectableFlags_AllowDoubleClick)) {
+                    sessionChoice_ = i;
+                    open = ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left);
+                }
+                if (ImGui::BeginPopupContextItem()) {  // right-click: Delete
+                    if (ImGui::MenuItem("Delete\u2026")) {
+                        deleteSessionName_ = name;
+                        openDeleteSessionDialog_ = true;
+                    }
+                    ImGui::EndPopup();
+                }
+            }
+        }
+        ImGui::EndChild();
+        ImGui::TextColored(kHintColor, "Opening one replaces every loop, the preset and the tonality.\nRight-click a session to delete it.");
+    }
+    const int button = dialogButtons({"Open", "Cancel"});
+    if ((button == 0 || open) && sessionChoice_ >= 0) {
+        ImGui::CloseCurrentPopup();
+        const std::string name = sessionList_[static_cast<std::size_t>(sessionChoice_)];
+        guard([this, name] { openSession(name); });
+    }
+    // Deleting a session, once confirmed: over this window.
+    constexpr const char* kDeleteTitle = "Delete session";
+    if (button == 1 || (ImGui::IsKeyPressed(ImGuiKey_Escape) && !ImGui::IsPopupOpen(kDeleteTitle)))
+        ImGui::CloseCurrentPopup();
+    if (openDeleteSessionDialog_) {
+        ImGui::OpenPopup(kDeleteTitle);
+        openDeleteSessionDialog_ = false;
+    }
+    if (beginDialog(kDeleteTitle)) {
+        ImGui::Text("Delete the session \"%s\"?", deleteSessionName_.c_str());
+        ImGui::TextColored(kHintColor, "The file is deleted for good.");
+        const int confirm = dialogButtons({"Delete", "Cancel"});
+        if (confirm == 0) {
+            std::error_code ec;
+            if (fs::remove(sessionPath(deleteSessionName_), ec)) {
+                log("Session deleted: " + sessionPath(deleteSessionName_).string());
+                if (sessionName_ == deleteSessionName_)
+                    sessionName_.reset();
+            } else {
+                showError("Cannot delete the session:\n" + (ec ? ec.message() : std::string("file not found")));
+            }
+            sessionList_ = sessionNames();
+            sessionChoice_ = -1;
+            ImGui::CloseCurrentPopup();
+        }
+        if (confirm == 1 || ImGui::IsKeyPressed(ImGuiKey_Escape))
+            ImGui::CloseCurrentPopup();
+        endDialog();
+    }
+    endDialog();
+}
+
+void GuiApp::drawAboutDialog() {
+    constexpr const char* kTitle = "About MidiPad";
+    if (openAboutDialog_) {
+        ImGui::OpenPopup(kTitle);
+        openAboutDialog_ = false;
+        updateResult_.reset();
+    }
+    if (updateJob_.valid() && updateJob_.wait_for(std::chrono::seconds(0)) == std::future_status::ready)
+        updateResult_ = updateJob_.get();
+    if (!beginDialog(kTitle))
+        return;
+    ImGui::PushFont(uiFonts_.bold ? uiFonts_.bold : ImGui::GetFont(), 22.0f);
+    ImGui::TextUnformatted("MidiPad");
+    ImGui::PopFont();
+    ImGui::Text("Version %s", MIDIPAD_VERSION);
+    ImGui::Spacing();
+    ImGui::TextUnformatted("Turns a game controller into a MIDI instrument and a live MIDI looper.");
+    ImGui::TextColored(kHintColor, "Free software under the GNU General Public License 3.0.");
+    ImGui::Spacing();
+    const bool checking = updateJob_.valid();
+    if (checking)
+        ImGui::TextColored(kHintColor, "Checking GitHub for a newer version…");
+    else if (updateResult_)
+        ImGui::TextColored(updateResult_->ok ? (updateResult_->newer ? ImVec4(0.45f, 0.85f, 0.55f, 1.0f) : ImVec4(1, 1, 1, 1)) : kErrorColor,
+                           "%s", updateResult_->message.c_str());
+    const bool offerPage = updateResult_ && (updateResult_->newer || !updateResult_->ok);
+    ImGui::BeginDisabled(checking);
+    const int button = offerPage ? dialogButtons({"Download page", "Check for updates", "Close"})
+                                 : dialogButtons({"Check for updates", "Close"});
+    ImGui::EndDisabled();
+    const int check = offerPage ? 1 : 0, close = offerPage ? 2 : 1;
+    if (offerPage && button == 0)
+        SDL_OpenURL(kReleasesUrl);
+    if (button == check) {
+        updateResult_.reset();
+        updateJob_ = std::async(std::launch::async, checkForUpdates);
+    }
+    if (button == close || ImGui::IsKeyPressed(ImGuiKey_Escape))
+        ImGui::CloseCurrentPopup();
+    endDialog();
+}
+
 void GuiApp::applySync() {
     runtime_->setLinkStartStopSync(settings_.startStopSync);
     runtime_->setSync(settings_.snapBeats(), settings_.beatsPerBar, settings_.quantize);
@@ -1997,28 +2310,44 @@ void GuiApp::drawDialogs() {
     drawDeleteDialog();
     drawErrorDialog();
     drawOutputDialog();
+    drawOpenSessionDialog();
+    drawAboutDialog();
 }
 
 void GuiApp::drawNameDialog() {
-    const char* title = nameDialog_ == NameDialog::New ? "New preset" : "Save as";
+    const bool session = nameDialog_ == NameDialog::SessionSaveAs;
+    const char* title = nameDialog_ == NameDialog::New ? "New preset" : session ? "Save session as" : "Save as";
     if (openNameDialog_) {
         ImGui::OpenPopup(title);
         openNameDialog_ = false;
+        replaceName_.clear();
     }
-    if (!beginDialog(title))
+    if (!beginDialog(title)) {
+        if (dialogDismissed_)
+            afterSave_ = nullptr;
         return;
-    ImGui::TextUnformatted("Preset name");
+    }
+    ImGui::TextUnformatted(session ? "Session name" : "Preset name");
     if (ImGui::IsWindowAppearing())
         ImGui::SetKeyboardFocusHere();
     ImGui::SetNextItemWidth(ImGui::GetFontSize() * 20);
     const bool enter = ImGui::InputText("##name", &nameInput_, ImGuiInputTextFlags_EnterReturnsTrue);
-    if (!nameError_.empty())
+    const bool replacing = session && !replaceName_.empty() && replaceName_ == nameInput_;
+    if (replacing)
+        ImGui::TextColored(kWarningColor, "A session named \"%s\" already exists.\nReplace it?", nameInput_.c_str());
+    else if (!nameError_.empty())
         ImGui::TextColored(kErrorColor, "%s", nameError_.c_str());
 
-    const int button = dialogButtons({"OK", "Cancel"});
+    const int button = dialogButtons({replacing ? "Replace" : "OK", "Cancel"});
     if (button == 0 || enter) {
         if (auto error = PresetLibrary::nameError(nameInput_)) {
             nameError_ = *error;
+        } else if (session) {
+            std::error_code ec;
+            if (fs::exists(sessionPath(nameInput_), ec) && !replacing)
+                replaceName_ = nameInput_;  // asks first
+            else if (saveSessionAs(nameInput_))
+                ImGui::CloseCurrentPopup();
         } else if (library_->contains(nameInput_)) {
             nameError_ = "A preset already has this name.";
         } else if (nameDialog_ == NameDialog::New) {
@@ -2052,8 +2381,11 @@ void GuiApp::drawUnsavedDialog() {
         ImGui::OpenPopup(kTitle);
         openUnsavedDialog_ = false;
     }
-    if (!beginDialog(kTitle))
+    if (!beginDialog(kTitle)) {
+        if (dialogDismissed_)
+            pendingAction_ = nullptr;
         return;
+    }
     ImGui::Text("The preset \"%s\" was changed.", hasFile_ ? preset_.name.c_str() : "Untitled");
     const int button = dialogButtons({"Save", "Don't save", "Cancel"});
     if (button == 0) {
