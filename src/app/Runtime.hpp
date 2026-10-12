@@ -17,6 +17,9 @@
 #include <thread>
 #include <vector>
 
+// Where the beat comes from: none (free), MidiPad's own clock, or Ableton Link.
+enum class ClockMode : std::uint8_t { Free, Internal, Link };
+
 // Something the input thread reports to the main thread.
 struct Report {
     enum class Kind : std::uint8_t { Midi, Channel, Button, Freeze } kind = Kind::Midi;
@@ -71,9 +74,9 @@ struct LiveState {
     // The Velocity and Transpose axes on the active channel (Engine::shaping).
     float velocityShaping = 0;
     int transposeNotes = 0, transposeLoop = 0;
-    // Ableton Link: whether it is on, the session's tempo, the beat now, how
-    // many other apps take part; the beats of a bar MidiPad counts.
-    bool linkEnabled = false;
+    // The beat clock: which one, its tempo, the beat now, how many other apps
+    // take part (Ableton Link); the beats of a bar MidiPad counts.
+    ClockMode clock = ClockMode::Free;
     double tempo = 120, beat = 0;
     int linkPeers = 0, beatsPerBar = 4;
 
@@ -144,12 +147,17 @@ public:
         key_.store(key ? key->root * 256 + static_cast<int>(key->scale) : -1, std::memory_order_relaxed);
     }
 
-    // Ableton Link. Off, MidiPad runs free. On, it joins the session on the
-    // local network: loops recorded then snap to `snapBeats` (0: free) and
-    // play from its beat, their notes on a grid of `quantize` steps a beat
-    // (0: off); with start / stop sync, Play and Stop follow the session and
-    // lead it.
-    void setLinkEnabled(bool on);
+    // The beat clock. Free, MidiPad keeps no beat. Internal, its own clock
+    // runs at the internal tempo. Link, it joins the Ableton Link session on
+    // the local network. With a clock, loops recorded snap to `snapBeats` (0:
+    // free) and play from its beat, their notes on a grid of `quantize` steps
+    // a beat (0: off); with Link and start / stop sync, Play and Stop follow
+    // the session and lead it.
+    void setClock(ClockMode mode);
+    // The tempo of the clock running: the internal one's, or the Link
+    // session's (every app in it follows). A TapTempo binding sets it too.
+    void setTempo(double bpm);
+    void setInternalTempo(double bpm) { internalTempo_.store(bpm, std::memory_order_relaxed); }
     void setLinkStartStopSync(bool on);
     void setSync(int snapBeats, int beatsPerBar, int quantize) {
         snapBeats_.store(snapBeats, std::memory_order_relaxed);
@@ -220,7 +228,9 @@ private:
     std::atomic<int> key_{-1};  // root * 256 + scale, -1: none
     struct LinkSession;  // ableton::Link, kept out of this header
     std::unique_ptr<LinkSession> link_;
-    std::atomic<bool> linkEnabled_{false}, startStopSync_{true};
+    std::atomic<ClockMode> clock_{ClockMode::Free};
+    std::atomic<bool> startStopSync_{true};
+    std::atomic<double> internalTempo_{120}, requestedTempo_{0};  // 0: no tempo asked for
     std::atomic<int> snapBeats_{1}, beatsPerBar_{4}, quantize_{0};
     std::atomic<double> tempo_{120}, beat_{0};
     std::atomic<float> velocityShaping_{0};

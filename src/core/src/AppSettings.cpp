@@ -84,7 +84,23 @@ AppSettings loadSettings(const std::filesystem::path& file, AppSettings s) {
     h.velocityMaxPercent = std::clamp(h.velocityMaxPercent, h.velocityMinPercent, 100);
     h.delayMinMs = std::clamp(h.delayMinMs, 0, Humanize::kMaxDelayMs);
     h.delayMaxMs = std::clamp(h.delayMaxMs, h.delayMinMs, Humanize::kMaxDelayMs);
-    read(j, "link_enabled", s.linkEnabled);
+    static constexpr std::pair<const char*, AppSettings::Clock> kClocks[] = {
+        {"free", AppSettings::Clock::Free}, {"internal", AppSettings::Clock::Internal}, {"link", AppSettings::Clock::Link}};
+    bool linkEnabled = false;  // before the internal clock
+    read(j, "link_enabled", linkEnabled);
+    if (linkEnabled)
+        s.clock = AppSettings::Clock::Link;
+    std::string clock, lastClock;
+    read(j, "clock", clock);
+    read(j, "clock_last", lastClock);
+    for (const auto& [name, value] : kClocks) {
+        if (clock == name)
+            s.clock = value;
+        if (lastClock == name && value != AppSettings::Clock::Free)
+            s.lastClock = value;
+    }
+    read(j, "tempo", s.tempo);
+    s.tempo = std::clamp(s.tempo, 20.0, 999.0);
     std::string snap;
     read(j, "loop_snap", snap);
     static constexpr std::pair<const char*, AppSettings::LoopSnap> kSnaps[] = {
@@ -129,7 +145,10 @@ void saveSettings(const AppSettings& s, const std::filesystem::path& file) {
     j["humanize_velocity_max"] = s.humanize.velocityMaxPercent;
     j["humanize_delay_min_ms"] = s.humanize.delayMinMs;
     j["humanize_delay_max_ms"] = s.humanize.delayMaxMs;
-    j["link_enabled"] = s.linkEnabled;
+    static constexpr const char* kClockNames[] = {"free", "internal", "link"};
+    j["clock"] = kClockNames[static_cast<int>(s.clock)];
+    j["clock_last"] = kClockNames[static_cast<int>(s.lastClock)];
+    j["tempo"] = s.tempo;
     static constexpr const char* kSnapNames[] = {"free", "beat", "bar", "2bars", "4bars"};
     j["loop_snap"] = kSnapNames[static_cast<int>(s.loopSnap)];
     j["beats_per_bar"] = s.beatsPerBar;

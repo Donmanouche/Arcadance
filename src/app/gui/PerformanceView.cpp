@@ -117,6 +117,7 @@ std::string compact(const TriggerBinding& b, bool flats) {
     case ActionType::Freeze: return "Freeze";
     case ActionType::LoopRecord: return "Rec";
     case ActionType::LoopStretch: return "Stretch";
+    case ActionType::TapTempo: return "Tap";
     case ActionType::ProgramChange:
         return b.programStep != 0 ? std::string("PC ") + (b.programStep > 0 ? "+1" : "-1") : "PC " + std::to_string(b.number + 1);
     }

@@ -8,6 +8,7 @@
 #include <SDL3/SDL.h>
 #include <ableton/Link.hpp>
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -138,9 +139,16 @@ void Runtime::setOutput(std::shared_ptr<MidiOutput> output) {
 
 void Runtime::setChannel(int channel) { commands_.push({Command::Kind::SetChannel, channel}); }
 
-void Runtime::setLinkEnabled(bool on) {
-    link_->link.enable(on);
-    linkEnabled_.store(on, std::memory_order_relaxed);
+void Runtime::setClock(ClockMode mode) {
+    link_->link.enable(mode == ClockMode::Link);
+    clock_.store(mode, std::memory_order_relaxed);
+}
+
+void Runtime::setTempo(double bpm) {
+    bpm = std::clamp(bpm, midipad::TapTempo::kMinTempo, midipad::TapTempo::kMaxTempo);
+    if (clock_.load(std::memory_order_relaxed) == ClockMode::Internal)
+        internalTempo_.store(bpm, std::memory_order_relaxed);
+    requestedTempo_.store(bpm, std::memory_order_relaxed);
 }
 
 void Runtime::setLinkStartStopSync(bool on) {
@@ -219,10 +227,10 @@ LiveState Runtime::live() const {
     s.velocityShaping = velocityShaping_.load(std::memory_order_relaxed);
     s.transposeNotes = transposeNotes_.load(std::memory_order_relaxed);
     s.transposeLoop = transposeLoop_.load(std::memory_order_relaxed);
-    s.linkEnabled = linkEnabled_.load(std::memory_order_relaxed);
+    s.clock = clock_.load(std::memory_order_relaxed);
     s.tempo = tempo_.load(std::memory_order_relaxed);
     s.beat = beat_.load(std::memory_order_relaxed);
-    s.linkPeers = s.linkEnabled ? static_cast<int>(link_->link.numPeers()) : 0;
+    s.linkPeers = s.clock == ClockMode::Link ? static_cast<int>(link_->link.numPeers()) : 0;
     s.beatsPerBar = beatsPerBar_.load(std::memory_order_relaxed);
     {
         std::lock_guard lock(loopsMutex_);
@@ -351,6 +359,8 @@ void Runtime::run(std::stop_token stop, Options options, std::shared_ptr<const P
     });
 
     bool linkPlaying = false, linkPlayingKnown = false;  // the Link session's transport, as last seen
+    double internalBeat = 0;                           // the internal clock's beat, at internalAt
+    std::uint64_t internalAt = 0;
     const std::uint64_t period = 1'000'000'000ull / static_cast<std::uint64_t>(std::max(options.pollHz, 1));
     std::uint64_t next = SDL_GetTicksNS();
     while (!stop.stop_requested()) {
@@ -403,7 +413,7 @@ void Runtime::run(std::stop_token stop, Options options, std::shared_ptr<const P
                 loopsToLoad_.clear();
             } else if (command->kind == Command::Kind::PauseLoops || command->kind == Command::Kind::PlayLoops) {
                 const bool play = command->kind == Command::Kind::PlayLoops;
-                if (linkEnabled_.load(std::memory_order_relaxed) && startStopSync_.load(std::memory_order_relaxed)) {
+                if (clock_.load(std::memory_order_relaxed) == ClockMode::Link && startStopSync_.load(std::memory_order_relaxed)) {
                     // Through the session: the engine follows it below, with the other apps.
                     auto state = link_->link.captureAudioSessionState();
                     state.setIsPlaying(play, link_->link.clock().micros());
@@ -422,9 +432,18 @@ void Runtime::run(std::stop_token stop, Options options, std::shared_ptr<const P
         // The beat clock, from the Link session (its calls here are real-time safe).
         const int beatsPerBar = beatsPerBar_.load(std::memory_order_relaxed);
         engine.setSync(snapBeats_.load(std::memory_order_relaxed), beatsPerBar, quantize_.load(std::memory_order_relaxed));
-        if (linkEnabled_.load(std::memory_order_relaxed)) {
-            const auto state = link_->link.captureAudioSessionState();
+        // A tempo asked for: from the window, or tapped on the controller.
+        double tempoWanted = requestedTempo_.exchange(0, std::memory_order_relaxed);
+        if (const auto tapped = engine.takeTappedTempo())
+            tempoWanted = *tapped;
+        const ClockMode mode = clock_.load(std::memory_order_relaxed);
+        if (mode == ClockMode::Link) {
+            auto state = link_->link.captureAudioSessionState();
             const auto time = link_->link.clock().micros();
+            if (tempoWanted > 0) {
+                state.setTempo(tempoWanted, time);
+                link_->link.commitAudioSessionState(state);
+            }
             const double tempo = state.tempo();
             const double beat = state.beatAtTime(time, beatsPerBar);
             engine.setBeatClock({true, tempo, beat});
@@ -440,10 +459,22 @@ void Runtime::run(std::stop_token stop, Options options, std::shared_ptr<const P
             }
             linkPlaying = playing;
             linkPlayingKnown = true;
+        } else if (mode == ClockMode::Internal) {
+            // MidiPad's own clock: its beat runs on at the internal tempo.
+            if (tempoWanted > 0)
+                internalTempo_.store(tempoWanted, std::memory_order_relaxed);
+            const double tempo = internalTempo_.load(std::memory_order_relaxed);
+            if (internalAt != 0 && start > internalAt)
+                internalBeat += static_cast<double>(start - internalAt) * tempo / 60e9;
+            engine.setBeatClock({true, tempo, internalBeat});
+            tempo_.store(tempo, std::memory_order_relaxed);
+            beat_.store(internalBeat, std::memory_order_relaxed);
+            linkPlayingKnown = false;
         } else {
             engine.setBeatClock({});
             linkPlayingKnown = false;
         }
+        internalAt = start;
         engine.setDpadSettle(dpadSettlePress_.load(std::memory_order_relaxed),
                              dpadSettleRelease_.load(std::memory_order_relaxed));
         engine.setHumanize(unpack(humanize_.load(std::memory_order_relaxed)));

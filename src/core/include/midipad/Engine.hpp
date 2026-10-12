@@ -4,12 +4,14 @@
 #include "midipad/MidiMessage.hpp"
 #include "midipad/Preset.hpp"
 #include "midipad/Session.hpp"
+#include "midipad/TapTempo.hpp"
 #include "midipad/Scales.hpp"
 
 #include <array>
 #include <bitset>
 #include <memory>
 #include <optional>
+#include <utility>
 #include <vector>
 
 namespace midipad {
@@ -104,6 +106,8 @@ public:
         double beat = 0;
     };
     void setBeatClock(const BeatClock& clock) { clock_ = clock; }
+    // A TapTempo binding tapped in time: the tempo it asks for, once.
+    std::optional<double> takeTappedTempo() { return std::exchange(tappedTempo_, std::nullopt); }
     // Loops recorded while the clock runs snap to `snapBeats` (0: they stay
     // free): their length is rounded to whole snaps (at least one), their start
     // to the nearest snap; they then play from the clock, so they follow its
@@ -292,6 +296,8 @@ private:
     double beatAt(std::uint64_t t) const { return clock_.beat + (static_cast<double>(t) - static_cast<double>(clockAt_)) * clock_.tempo / 60e9; }
     BeatClock clock_;
     std::uint64_t clockAt_ = 0;
+    TapTempo tapTempo_;
+    std::optional<double> tappedTempo_;
     int snapBeats_ = 1, beatsPerBar_ = 4, quantize_ = 0;
     void sendLoopValue(std::size_t loop, float x, float y);
     void playLoopNotes(std::size_t loop);

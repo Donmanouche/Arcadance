@@ -29,10 +29,13 @@ struct AppSettings {
 
     Humanize humanize;  // off on every channel by default
 
-    // Sync: Ableton Link shares tempo and beat with the DAW. With it, loops
-    // snap to `loopSnap` (their length rounded to it, their start on it); without
-    // it, MidiPad runs free.
-    bool linkEnabled = false;
+    // Sync: a beat clock, MidiPad's own (at `tempo`) or Ableton Link's, which
+    // shares tempo and beat with the DAW. With one, loops snap to `loopSnap`
+    // (their length rounded to it, their start on it); without, MidiPad runs free.
+    enum class Clock { Free, Internal, Link };
+    Clock clock = Clock::Free;
+    Clock lastClock = Clock::Link;  // the one the top bar's button turns on
+    double tempo = 120;             // the internal clock's, in beats a minute
     enum class LoopSnap { Free, Beat, Bar, TwoBars, FourBars };
     LoopSnap loopSnap = LoopSnap::Beat;
     int beatsPerBar = 4;

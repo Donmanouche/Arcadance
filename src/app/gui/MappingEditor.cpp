@@ -443,7 +443,7 @@ bool MappingEditor::drawLoopForm(int source, Mapping& m) {
 bool MappingEditor::drawTriggerEditor(TriggerBinding& b) {
     bool changed = false;
     static const char* kTypes[] = {"No action", "Note", "CC", "Chord", "Transport", "Channel change", "Axis freeze",
-                                   "Loop record", "Program change", "Loop stretch"};
+                                   "Loop record", "Program change", "Loop stretch", "Tap tempo"};
     int type = static_cast<int>(b.type);
     ImGui::SetNextItemWidth(ImGui::GetFontSize() * 14);
     if (ImGui::Combo("Action", &type, kTypes, IM_ARRAYSIZE(kTypes)) && type != static_cast<int>(b.type)) {
@@ -560,6 +560,13 @@ bool MappingEditor::drawTriggerEditor(TriggerBinding& b) {
                            "narrows its amplitude, as Ctrl + mouse wheel does. Only the way it mostly moves counts. A "
                            "stick pushed further turns faster; on the touchpad, each slide of the finger counts. "
                            "Meanwhile they send no CC. What you set stays when you release.");
+        ImGui::PopStyleColor();
+        break;
+    case ActionType::TapTempo:
+        ImGui::PushStyleColor(ImGuiCol_Text, kHintColor);
+        ImGui::TextWrapped("Tap in time: from the second tap, the tempo of the clock (internal or Ableton Link) "
+                           "follows your taps, and every app in the Link session with it. A tap clearly off is "
+                           "ignored; a pause of more than two seconds starts over.");
         ImGui::PopStyleColor();
         break;
     case ActionType::LoopRecord:

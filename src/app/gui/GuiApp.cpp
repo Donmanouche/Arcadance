@@ -18,6 +18,7 @@
 #include "midipad/PresetLibrary.hpp"
 #include "midipad/Scales.hpp"
 #include "midipad/Session.hpp"
+#include "midipad/TapTempo.hpp"
 #include "midipad/Notes.hpp"
 
 #include <SDL3/SDL.h>
@@ -414,6 +415,16 @@ private:
     bool outputDialogOpen_ = false;
     bool closeOutputDialog_ = false;  // VirMIDI ports created from it: done
     std::string outputDialogReason_;
+
+    // The clock's tempo in the top bar: tapped, typed, turned with the wheel.
+    TapTempo tap_;
+    bool editingTempo_ = false, tempoEditAppearing_ = false;
+    std::string tempoText_;
+    float tempoWheelRest_ = 0;
+    double lastTempoWheel_ = -1e9;
+    int tempoWheelStreak_ = 0;
+    double tempoSaveAt_ = 0;  // when to save the internal tempo changed (0: nothing to save)
+    void applyTempo(double bpm);
 
     fs::path sessionsDir_;
     std::optional<std::string> sessionName_;  // the session opened or saved last
@@ -965,6 +976,15 @@ void SDLCALL GuiApp::onFolderChosen(void* self, const char* const* files, int) {
 
 void GuiApp::draw() {
     const LiveState live = options_.demo ? demoLive(ImGui::GetTime() + 2.0) : runtime_->live();
+    if (!options_.demo && live.clock == ClockMode::Internal && settings_.clock == AppSettings::Clock::Internal &&
+        std::abs(live.tempo - settings_.tempo) > 1e-6) {  // tapped on the controller
+        settings_.tempo = live.tempo;
+        tempoSaveAt_ = ImGui::GetTime() + 1.0;
+    }
+    if (tempoSaveAt_ > 0 && ImGui::GetTime() >= tempoSaveAt_) {
+        tempoSaveAt_ = 0;
+        persistSettings();
+    }
 
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(viewport->WorkPos);
@@ -1145,7 +1165,7 @@ void GuiApp::drawPerformance(const LiveState& live) {
     ImGui::SameLine(0, px(14));
     {
         const float groupW = px(150) + px(16) + medium->CalcTextSizeA(px(12), FLT_MAX, 0, "PRESET").x + px(8) + px(26) * 2 + px(180) +
-                             px(14) + px(70) + px(10) + px(200);  // then Play and Stop, then LINK
+                             px(14) + px(70) + px(10) + px(200) + px(6) + px(44);  // then Play and Stop, the clock, TAP
         const float centered = winPos.x + (winW - groupW) * 0.5f;
         ImGui::SetCursorScreenPos(ImVec2(std::max(ImGui::GetCursorScreenPos().x, centered), ImGui::GetCursorScreenPos().y));
     }
@@ -1279,28 +1299,40 @@ void GuiApp::drawPerformance(const LiveState& live) {
             runtime_->pauseLoops();
         ImGui::SetItemTooltip("Stops every channel's loops, keeping them");
 
-        // LINK: free, or the Link session's tempo, peers and beat; a click switches.
+        // The clock: FREE, or its tempo (the wheel turns it, a double-click
+        // types it, TAP taps it) and the beats of the bar; a click elsewhere
+        // on it turns it off or on again.
         {
             ImGui::SameLine(0, px(10));
+            const ImGuiIO& io = ImGui::GetIO();
             const ImVec2 q = ImGui::GetCursorScreenPos();
             const float lw = px(200), lh = px(32);
-            const bool clicked = ImGui::InvisibleButton("##link", ImVec2(lw, lh));
+            const bool clicked = ImGui::InvisibleButton("##clock", ImVec2(lw, lh));
             const bool hovered = ImGui::IsItemHovered();
-            const bool on = live.linkEnabled;
+            const bool on = live.clock != ClockMode::Free;
+            const bool link = on ? live.clock == ClockMode::Link : settings_.lastClock == AppSettings::Clock::Link;
+            const char* label = link ? "LINK" : "CLOCK";
             dl->AddRectFilled(q, ImVec2(q.x + lw, q.y + lh),
                               on ? (Theme::kGreen & ~IM_COL32_A_MASK) | IM_COL32(0, 0, 0, 40) : hovered ? Theme::kControlBorder : Theme::kControl,
                               px(5));
             dl->AddRect(q, ImVec2(q.x + lw, q.y + lh), on ? Theme::kGreen : Theme::kControlBorder, px(5), px(on ? 1.3f : 1.0f));
             const float cy = q.y + lh * 0.5f;
-            const ImVec2 lsz = bold->CalcTextSizeA(px(13), FLT_MAX, 0, "LINK");
-            dl->AddText(bold, px(13), ImVec2(q.x + px(10), cy - lsz.y * 0.5f), on ? Theme::kGreen : Theme::kLabel, "LINK");
-            char info[48];
-            if (on)
-                std::snprintf(info, sizeof info, "%.1f BPM \xC2\xB7 %d", live.tempo, live.linkPeers);
+            const ImVec2 lsz = bold->CalcTextSizeA(px(13), FLT_MAX, 0, label);
+            dl->AddText(bold, px(13), ImVec2(q.x + px(10), cy - lsz.y * 0.5f), on ? Theme::kGreen : Theme::kLabel, label);
+            char tempo[24], info[48];
+            std::snprintf(tempo, sizeof tempo, "%.1f BPM", live.tempo);
+            if (on && link)
+                std::snprintf(info, sizeof info, "%s \xC2\xB7 %d", tempo, live.linkPeers);
             else
-                std::snprintf(info, sizeof info, "FREE");
+                std::snprintf(info, sizeof info, "%s", on ? tempo : "FREE");
+            const float tx = q.x + px(18) + lsz.x;
             const ImVec2 isz = medium->CalcTextSizeA(px(13), FLT_MAX, 0, info);
-            dl->AddText(medium, px(13), ImVec2(q.x + px(18) + lsz.x, cy - isz.y * 0.5f), on ? Theme::kText : Theme::kDim, info);
+            const float tw = medium->CalcTextSizeA(px(13), FLT_MAX, 0, tempo).x;
+            const bool overTempo = on && hovered && io.MousePos.x >= tx - px(4) && io.MousePos.x <= tx + tw + px(4);
+            if (overTempo)
+                dl->AddRectFilled(ImVec2(tx - px(4), q.y + px(5)), ImVec2(tx + tw + px(4), q.y + lh - px(5)), IM_COL32(255, 255, 255, 22), px(3));
+            if (!editingTempo_)
+                dl->AddText(medium, px(13), ImVec2(tx, cy - isz.y * 0.5f), on ? Theme::kText : Theme::kDim, info);
             if (on) {  // the beats of the bar: the one playing lit, the first white
                 const int beats = std::clamp(live.beatsPerBar, 1, 8);
                 const int now = static_cast<int>(std::floor(live.beat)) % std::max(live.beatsPerBar, 1);
@@ -1311,13 +1343,75 @@ void GuiApp::drawPerformance(const LiveState& live) {
                     dl->AddRectFilled(ImVec2(x, cy - sq * 0.5f), ImVec2(x + sq, cy + sq * 0.5f), c, px(1.5f));
                 }
             }
-            if (clicked) {
-                settings_.linkEnabled = !settings_.linkEnabled;
+            if (overTempo && io.MouseWheel != 0.0f) {  // the wheel: 1 BPM a notch, 0.1 with Shift; faster turned quickly
+                tempoWheelRest_ += io.MouseWheel;
+                const int notches = static_cast<int>(tempoWheelRest_);
+                if (notches != 0) {
+                    tempoWheelRest_ -= static_cast<float>(notches);
+                    const double nowT = ImGui::GetTime();
+                    tempoWheelStreak_ = nowT - lastTempoWheel_ < 0.08 ? tempoWheelStreak_ + 1 : 0;
+                    lastTempoWheel_ = nowT;
+                    const double step = io.KeyShift ? 0.1 : std::min(1.0 + tempoWheelStreak_ / 3, 5.0);
+                    applyTempo(live.tempo + notches * step);
+                }
+            }
+            if (overTempo && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+                editingTempo_ = true;
+                tempoEditAppearing_ = true;
+                char text[16];
+                std::snprintf(text, sizeof text, "%.1f", live.tempo);
+                tempoText_ = text;
+            } else if (clicked && !overTempo) {
+                if (settings_.clock != AppSettings::Clock::Free) {
+                    settings_.lastClock = settings_.clock;
+                    settings_.clock = AppSettings::Clock::Free;
+                } else {
+                    settings_.clock = settings_.lastClock;
+                }
                 applySync();
                 persistSettings();
             }
-            ImGui::SetItemTooltip(on ? "Ableton Link: tempo and beat shared with the session. Click to run free."
-                                     : "Free: MidiPad keeps its own time. Click to join the Ableton Link session.");
+            if (!editingTempo_)
+                ImGui::SetItemTooltip(overTempo ? "Turn the wheel to change the tempo (Shift: by 0.1), double-click to type it."
+                                      : on      ? (link ? "Ableton Link: tempo and beat shared with the session. Click to run free."
+                                                        : "Internal clock: MidiPad's own tempo and beat. Click to run free.")
+                                                : (link ? "Free: MidiPad keeps no beat. Click to join the Ableton Link session."
+                                                        : "Free: MidiPad keeps no beat. Click to start the internal clock."));
+            if (editingTempo_) {  // typing the tempo, over it
+                ImGui::SetCursorScreenPos(ImVec2(tx - px(1), q.y + px(4)));
+                ImGui::SetNextItemWidth(px(78));
+                if (tempoEditAppearing_)
+                    ImGui::SetKeyboardFocusHere();
+                const bool enter = ImGui::InputText("##tempoedit", &tempoText_,
+                                                    ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll |
+                                                        ImGuiInputTextFlags_CharsDecimal);
+                if (enter) {
+                    char* end = nullptr;
+                    const double bpm = std::strtod(tempoText_.c_str(), &end);
+                    if (end != tempoText_.c_str())
+                        applyTempo(bpm);
+                    editingTempo_ = false;
+                } else if (!tempoEditAppearing_ && !ImGui::IsItemActive()) {
+                    editingTempo_ = false;  // Escape, or a click elsewhere
+                }
+                tempoEditAppearing_ = false;
+            }
+            // TAP: the tempo of the last taps, from the second.
+            ImGui::SetCursorScreenPos(ImVec2(q.x + lw + px(6), q.y));
+            const float tapW = px(44);
+            const bool tapped = ImGui::InvisibleButton("##tap", ImVec2(tapW, lh));
+            const bool tapHovered = ImGui::IsItemHovered();
+            const bool tapDown = ImGui::IsItemActive();
+            dl->AddRectFilled(ImVec2(q.x + lw + px(6), q.y), ImVec2(q.x + lw + px(6) + tapW, q.y + lh),
+                              on && tapDown ? (Theme::kGreen & ~IM_COL32_A_MASK) | IM_COL32(0, 0, 0, 90)
+                              : on && tapHovered ? Theme::kControlBorder : Theme::kControl, px(5));
+            dl->AddRect(ImVec2(q.x + lw + px(6), q.y), ImVec2(q.x + lw + px(6) + tapW, q.y + lh), Theme::kControlBorder, px(5), px(1));
+            const ImVec2 tsz = bold->CalcTextSizeA(px(12), FLT_MAX, 0, "TAP");
+            dl->AddText(bold, px(12), ImVec2(q.x + lw + px(6) + (tapW - tsz.x) * 0.5f, cy - tsz.y * 0.5f), on ? Theme::kText : Theme::kDim, "TAP");
+            if (tapped && on)
+                if (const auto bpm = tap_.tap(SDL_GetTicksNS()))
+                    applyTempo(*bpm);
+            ImGui::SetItemTooltip(on ? "Tap in time: the tempo follows from the second tap" : "Tap tempo, with a clock running");
         }
 
         if (dirty_) {
@@ -1625,9 +1719,12 @@ void GuiApp::drawOptionsOverlay() {
         {
             const LiveState live = runtime_->live();
             ImGui::PushFont(medium, 12.0f);
-            ImGui::TextColored(color(Theme::kLabel), live.linkEnabled
+            ImGui::TextColored(color(Theme::kLabel),
+                               settings_.clock == AppSettings::Clock::Link
                                    ? "Ableton Link shares tempo and beat with your DAW and other apps on this network."
-                                   : "Free: MidiPad keeps its own time. Turn Link on to follow your DAW's tempo and beat.");
+                               : settings_.clock == AppSettings::Clock::Internal
+                                   ? "Internal clock: MidiPad's own tempo and beat, no network needed."
+                                   : "Free: MidiPad keeps no beat. Choose a clock to play loops in time.");
             ImGui::PopFont();
             ImGui::Spacing();
             ImGui::PushFont(medium, 13.0f);
@@ -1659,20 +1756,25 @@ void GuiApp::drawOptionsOverlay() {
                 ImGui::SameLine(px(150));
             };
             bool changed = false;
-            const float linkRowY = ImGui::GetCursorPosY();
-            rowLabel("Ableton Link");
-            const int link = choice("link", {"Off", "On"}, settings_.linkEnabled ? 1 : 0);
-            if (link >= 0 && (link == 1) != settings_.linkEnabled) {
-                settings_.linkEnabled = link == 1;
+            const float clockRowY = ImGui::GetCursorPosY();
+            rowLabel("Clock");
+            const int clock = choice("clock", {"Free", "Internal", "Ableton Link"}, static_cast<int>(settings_.clock));
+            if (clock >= 0 && clock != static_cast<int>(settings_.clock)) {
+                settings_.clock = static_cast<AppSettings::Clock>(clock);
+                if (settings_.clock != AppSettings::Clock::Free)
+                    settings_.lastClock = settings_.clock;
                 changed = true;
             }
-            if (live.linkEnabled) {
-                // On the Link row, after its buttons.
+            if (live.clock != ClockMode::Free) {
+                // On the clock's row, after its buttons.
                 const float nextRowY = ImGui::GetCursorPosY();
-                ImGui::SetCursorPos(ImVec2(px(150) + px(120), linkRowY));
+                ImGui::SetCursorPos(ImVec2(px(150) + px(232), clockRowY));
                 ImGui::AlignTextToFramePadding();
-                ImGui::TextColored(color(Theme::kGreen), "%d %s \xC2\xB7 %.1f BPM", live.linkPeers,
-                                   live.linkPeers == 1 ? "peer" : "peers", live.tempo);
+                if (live.clock == ClockMode::Link)
+                    ImGui::TextColored(color(Theme::kGreen), "%d %s \xC2\xB7 %.1f BPM", live.linkPeers,
+                                       live.linkPeers == 1 ? "peer" : "peers", live.tempo);
+                else
+                    ImGui::TextColored(color(Theme::kGreen), "%.1f BPM", live.tempo);
                 ImGui::SetCursorPosY(nextRowY);
             }
             rowLabel("Loops snap to");
@@ -1704,10 +1806,10 @@ void GuiApp::drawOptionsOverlay() {
             }
             ImGui::PopFont();
             ImGui::PushFont(medium, 12.0f);
-            ImGui::TextColored(color(Theme::kLabel), "With Link on, a loop takes a whole number of these, starts on the\n"
+            ImGui::TextColored(color(Theme::kLabel), "With a clock, a loop takes a whole number of these, starts on the\n"
                                                      "beat and follows the tempo; its notes go on the quantize grid as\n"
-                                                     "they are recorded (what you hear live is never delayed). Play and\n"
-                                                     "Stop follow the session.");
+                                                     "they are recorded (what you hear live is never delayed). With Link,\n"
+                                                     "Play and Stop follow the session.");
             ImGui::PopFont();
             if (changed) {
                 applySync();
@@ -2145,6 +2247,17 @@ void GuiApp::openSession(const std::string& name) {
         settings_.lastPreset = preset_.name;
     }
     settings_.key = session.key;
+    // Its tempo: for the internal clock, or for a Link session MidiPad is
+    // alone in (another app's tempo is never changed by opening a session).
+    if (session.tempo > 0) {
+        const LiveState now = runtime_->live();
+        if (settings_.clock != AppSettings::Clock::Link) {
+            settings_.tempo = session.tempo;
+            runtime_->setInternalTempo(session.tempo);
+        } else if (now.linkPeers == 0) {
+            runtime_->setTempo(session.tempo);
+        }
+    }
     persistSettings();
     pushToEngine();
     runtime_->setChannel(session.channel);
@@ -2173,7 +2286,9 @@ bool GuiApp::saveSessionAs(const std::string& name) {
     Session session;
     session.preset = preset_;
     session.key = settings_.key;
-    session.channel = runtime_->live().channel;
+    const LiveState now = runtime_->live();
+    session.channel = now.channel;
+    session.tempo = now.clock != ClockMode::Free ? now.tempo : settings_.tempo;
     session.loops = std::move(*loops);
     try {
         midipad::saveSession(session, sessionPath(name));
@@ -2301,7 +2416,19 @@ void GuiApp::drawAboutDialog() {
 void GuiApp::applySync() {
     runtime_->setLinkStartStopSync(settings_.startStopSync);
     runtime_->setSync(settings_.snapBeats(), settings_.beatsPerBar, settings_.quantize);
-    runtime_->setLinkEnabled(settings_.linkEnabled);
+    runtime_->setInternalTempo(settings_.tempo);
+    runtime_->setClock(static_cast<ClockMode>(settings_.clock));  // the same order: Free, Internal, Link
+}
+
+// A tempo for the clock running, to a tenth; the internal one is saved a
+// moment later.
+void GuiApp::applyTempo(double bpm) {
+    bpm = std::clamp(std::round(bpm * 10.0) / 10.0, TapTempo::kMinTempo, TapTempo::kMaxTempo);
+    runtime_->setTempo(bpm);
+    if (settings_.clock == AppSettings::Clock::Internal) {
+        settings_.tempo = bpm;
+        tempoSaveAt_ = ImGui::GetTime() + 1.0;
+    }
 }
 
 void GuiApp::drawDialogs() {

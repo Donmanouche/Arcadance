@@ -61,6 +61,8 @@ Json sessionToJson(const Session& session) {
     j["format"] = kFormatName;
     j["version"] = kFormatVersion;
     j["channel"] = session.channel + 1;
+    if (session.tempo > 0)
+        j["tempo"] = session.tempo;
     if (session.key)
         j["key"] = Json{{"root", session.key->root}, {"scale", std::string(session.key->type().id)}};
     else
@@ -100,6 +102,9 @@ Session sessionFromJson(const Json& j) {
         fail("session", "made by a newer MidiPad");
     Session s;
     s.channel = readInt(j, "channel", 1, 16, 1, "session") - 1;
+    s.tempo = readNumber(j, "tempo", "session");
+    if (s.tempo != 0 && (s.tempo < 20 || s.tempo > 999))
+        fail("session.tempo", "expected 20 to 999 beats a minute");
     if (j.contains("key") && j["key"].is_object()) {
         const Json& k = j["key"];
         const int root = readInt(k, "root", 0, 11, 0, "session.key");

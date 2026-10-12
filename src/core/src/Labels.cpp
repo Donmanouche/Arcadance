@@ -114,6 +114,8 @@ std::string describe(const TriggerBinding& b, bool flats) {
         return "Loop record";
     case ActionType::LoopStretch:
         return "Loop stretch";
+    case ActionType::TapTempo:
+        return "Tap tempo";
     case ActionType::ProgramChange:
         if (b.programStep != 0)
             return std::string("Program ") + (b.programStep > 0 ? "+1" : "-1");

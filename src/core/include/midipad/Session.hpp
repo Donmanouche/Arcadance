@@ -36,11 +36,14 @@ struct SessionLoop {
 
 // What a session file keeps: the loops of every channel, the preset they play
 // with (a copy, so the session opens as it was even if the preset changed
-// since), the tonality and the active channel.
+// since), the tonality, the active channel and the tempo. Synced loops keep
+// their beats, not the clock they came from: a session saved with the
+// internal clock opens with Ableton Link, and the other way round.
 struct Session {
     Preset preset;
     std::optional<Key> key;
     int channel = 0;
+    double tempo = 0;  // of the clock when saved, in beats a minute; 0: none
     std::vector<SessionLoop> loops;
 };
 

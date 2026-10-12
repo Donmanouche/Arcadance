@@ -170,6 +170,8 @@ TriggerBinding triggerFromJson(const Json& j, const std::string& where) {
         b.type = ActionType::LoopRecord;
     } else if (type == "loop_stretch") {
         b.type = ActionType::LoopStretch;
+    } else if (type == "tap_tempo") {
+        b.type = ActionType::TapTempo;
     } else if (type == "freeze") {
         b.type = ActionType::Freeze;
         if (!j.contains("axes"))
@@ -236,6 +238,9 @@ Json triggerToJson(const TriggerBinding& b) {
         return j;
     case ActionType::LoopStretch:
         j["type"] = "loop_stretch";
+        return j;
+    case ActionType::TapTempo:
+        j["type"] = "tap_tempo";
         return j;
     case ActionType::ProgramChange:
         j["type"] = "program";

@@ -382,6 +382,10 @@ void Engine::press(int slot) {
             beginRecordHold();
         recordHolders_.set(static_cast<std::size_t>(slot));
         return;
+    case ActionType::TapTempo:
+        if (const auto tempo = tapTempo_.tap(now_))
+            tappedTempo_ = tempo;
+        return;
     case ActionType::LoopStretch:
         if (stretchHolders_.none()) {
             stickStretchRest_ = {};
