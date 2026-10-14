@@ -2080,12 +2080,41 @@ void GuiApp::drawMappingOverlay(const LiveState& live) {
                                           ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoScrollbar);
     ImGui::PopFont();
     if (visible) {
-        // Edit what plays now: the active channel's own mapping, or the base.
+        // Channel 1 edits the base mapping, which every channel plays until it
+        // is changed on its own; another channel's first change gives it its own
+        // mapping, a copy of channel 1's.
         auto& own = preset_.channels[static_cast<std::size_t>(live.channel)];
-        Mapping& target = own ? *own : preset_.base;
+        const bool first = live.channel == 0;
+        Mapping copy;
+        if (!own && !first)
+            copy = preset_.base;
+        Mapping& target = own ? *own : first ? preset_.base : copy;
+        const std::string channelName = "channel " + std::to_string(live.channel + 1);
+        bool backToBase = false;  // done once the window no longer uses `own`
         ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(Theme::kDim), "%s",
-                           own ? ("Editing the mapping of channel " + std::to_string(live.channel + 1)).c_str()
-                               : "Editing the base mapping (all channels)");
+                           own     ? ("Editing the mapping of " + channelName + " (its own)").c_str()
+                           : first ? "Editing channel 1: every channel not changed on its own plays this mapping"
+                                   : ("Editing " + channelName + ": it plays channel 1's mapping until you change it").c_str());
+        if (own) {
+            ImGui::SameLine();
+            ImGui::PushFont(uiFonts_.medium ? uiFonts_.medium : ImGui::GetFont(), 12.0f);
+            if (ImGui::SmallButton("Use channel 1's mapping again"))
+                ImGui::OpenPopup("Use the base mapping");
+            ImGui::SetItemTooltip("Removes this channel's own mapping: it then plays channel 1's, as the other channels do");
+            ImGui::PopFont();
+            if (beginDialog("Use the base mapping")) {
+                ImGui::Text("Channel %d's own mapping is removed; it then plays channel 1's.", live.channel + 1);
+                ImGui::TextColored(kHintColor, "Revert brings it back until you save the preset.");
+                const int button = dialogButtons({"Remove", "Cancel"});
+                if (button == 0) {
+                    backToBase = true;
+                    ImGui::CloseCurrentPopup();
+                }
+                if (button == 1 || ImGui::IsKeyPressed(ImGuiKey_Escape))
+                    ImGui::CloseCurrentPopup();
+                endDialog();
+            }
+        }
         ImGui::Spacing();
         // The forms scroll when the window is too short; the buttons stay in view.
         ImGui::SetNextWindowSizeConstraints(ImVec2(0, 0),
@@ -2095,8 +2124,15 @@ void GuiApp::drawMappingOverlay(const LiveState& live) {
         ImGui::BeginChild("mappingbody", ImVec2(0, 0), ImGuiChildFlags_AutoResizeX | ImGuiChildFlags_AutoResizeY);
         ImGui::PopStyleColor();
         editor_.setHumanizeChannels(settings_.humanize.channels);
-        if (editor_.drawControl(spec, target, live, settings_.key))
+        if (editor_.drawControl(spec, target, live, settings_.key)) {
+            if (!own && !first)
+                own = std::move(copy);  // its first change: the channel gets its own mapping
             edited();
+        }
+        if (backToBase) {
+            own.reset();
+            edited();
+        }
         ImGui::EndChild();
 
         ImGui::Spacing();

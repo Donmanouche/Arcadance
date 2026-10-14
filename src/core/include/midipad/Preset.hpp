@@ -124,8 +124,9 @@ struct Mapping {
 
 struct Preset {
     std::string name;
-    Mapping base;
-    // Replaces `base` entirely while that output channel is active (index 0 = MIDI channel 1).
+    Mapping base;  // channel 1's mapping, which every channel without its own plays
+    // Replaces `base` entirely while that output channel is active (index 0 =
+    // MIDI channel 1, which presets load into `base`).
     std::array<std::optional<Mapping>, kChannelCount> channels;
 
     const Mapping& forChannel(int channel) const {

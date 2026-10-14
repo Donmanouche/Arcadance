@@ -549,6 +549,12 @@ Preset presetFromJson(const Json& j) {
             p.channels[static_cast<std::size_t>(channel - 1)] = mappingFromJson(value, "channels." + key);
         }
     }
+    // Channel 1's mapping is the base one, which every channel without its own
+    // plays: a mapping saved for channel 1 takes its place.
+    if (p.channels[0]) {
+        p.base = std::move(*p.channels[0]);
+        p.channels[0].reset();
+    }
     return p;
 }
 

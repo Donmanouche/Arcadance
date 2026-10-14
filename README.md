@@ -111,8 +111,10 @@ The window is an animated view built for the stage, which plays while it edits.
 - At the bottom: the MIDI output on the left, the controller on the right.
 
 Click a control (a pad, a D-pad direction, a touchpad zone, an axis pill, a
-screen, a LOOP panel) to edit it in a window over the view. It edits the mapping
-of the active channel if it has one, otherwise the base mapping.
+screen, a LOOP panel) to edit it in a window over the view. Channel 1's mapping
+is played by every channel without its own: on channel 1 the window edits it, and
+on another channel your first change gives that channel its own mapping (a copy
+of channel 1's), which a button turns back into channel 1's.
 
 ![A mapping window: a chord on the Cross button](docs/media/mapping.png)
 
