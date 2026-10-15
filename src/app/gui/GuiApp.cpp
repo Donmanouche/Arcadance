@@ -55,6 +55,8 @@ using namespace midipad;
 namespace {
 
 constexpr float kFontSize = 16.0f;
+// The view is laid out on a page of this size, scaled as one to fit the window.
+constexpr float kPageW = 1080.0f, kPageH = 846.0f;
 constexpr ImVec4 kHintColor{0.65f, 0.65f, 0.7f, 1.0f};
 constexpr ImVec4 kErrorColor{1.0f, 0.45f, 0.4f, 1.0f};
 constexpr ImVec4 kWarningColor{1.0f, 0.78f, 0.35f, 1.0f};
@@ -297,6 +299,7 @@ private:
 
     bool init();
     void shutdown();
+    void fitPage();
     void frame();
     void update();
     void handleEvent(const SDL_Event& e);
@@ -363,6 +366,8 @@ private:
     static void SDLCALL onFolderChosen(void* self, const char* const* files, int filter);
 
     GuiOptions options_;
+    ImGuiStyle baseStyle_;   // the style at the page's own size
+    float pageScale_ = 0;    // how much the page is scaled to fit the window
     SDL_Window* window_ = nullptr;
     SDL_Renderer* renderer_ = nullptr;
     bool quit_ = false;
@@ -514,7 +519,21 @@ bool GuiApp::init() {
         return false;
     }
     SDL_SetRenderVSync(renderer_, 1);
-    SDL_SetWindowMinimumSize(window_, 900, 560);
+    // Where the window's coordinates are pixels while the screen is scaled
+    // (X11 at 200 %, say), open it at the page's size in those pixels. Where
+    // they already are scaled points (Wayland), the page fits as it is.
+    const float pixelsPerPoint = std::max(SDL_GetWindowPixelDensity(window_), 1.0f);
+    const float unscaled = std::max(SDL_GetWindowDisplayScale(window_), 1.0f) / pixelsPerPoint;
+    float minScale = 1.0f;
+    if (unscaled > 1.05f) {
+        SDL_Rect usable{};
+        float fit = unscaled;
+        if (SDL_GetDisplayUsableBounds(SDL_GetDisplayForWindow(window_), &usable) && usable.w > 0 && usable.h > 0)
+            fit = std::min({unscaled, static_cast<float>(usable.w) / kPageW, static_cast<float>(usable.h) / kPageH});
+        SDL_SetWindowSize(window_, static_cast<int>(kPageW * fit), static_cast<int>(kPageH * fit));
+        minScale = unscaled;
+    }
+    SDL_SetWindowMinimumSize(window_, static_cast<int>(640 * minScale), static_cast<int>(500 * minScale));
 
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
@@ -530,9 +549,7 @@ bool GuiApp::init() {
     style.FrameRounding = 4;
     style.GrabRounding = 4;
     style.TabRounding = 4;
-    const float scale = std::max(SDL_GetWindowDisplayScale(window_), 1.0f);
-    style.ScaleAllSizes(scale);
-    style.FontScaleDpi = scale;
+    baseStyle_ = style;  // scaled with the page, frame by frame (see fitPage)
 
     ImFontConfig font;
     font.FontDataOwnedByAtlas = false;
@@ -619,6 +636,22 @@ int GuiApp::run() {
     return ok ? 0 : 1;
 }
 
+// The page scaled as one to the window: the same proportions in any window,
+// on any screen scale, and in full screen.
+void GuiApp::fitPage() {
+    const ImVec2 size = ImGui::GetIO().DisplaySize;
+    if (size.x <= 0 || size.y <= 0)
+        return;
+    const float scale = std::clamp(std::min(size.x / kPageW, size.y / kPageH), 0.4f, 6.0f);
+    if (std::abs(scale - pageScale_) < 0.002f)
+        return;
+    pageScale_ = scale;
+    ImGuiStyle& style = ImGui::GetStyle();
+    style = baseStyle_;
+    style.ScaleAllSizes(scale);
+    style.FontScaleDpi = scale;  // every size of the view follows the font's
+}
+
 void GuiApp::frame() {
     SDL_Event e;
     while (SDL_PollEvent(&e))
@@ -632,6 +665,7 @@ void GuiApp::frame() {
 
     ImGui_ImplSDLRenderer3_NewFrame();
     ImGui_ImplSDL3_NewFrame();
+    fitPage();
     if (options_.record)  // the same time step whatever the rendering speed
         ImGui::GetIO().DeltaTime = 1.0f / static_cast<float>(options_.fps);
     ImGui::NewFrame();
@@ -640,7 +674,7 @@ void GuiApp::frame() {
 
     const ImGuiIO& io = ImGui::GetIO();
     SDL_SetRenderScale(renderer_, io.DisplayFramebufferScale.x, io.DisplayFramebufferScale.y);
-    SDL_SetRenderDrawColor(renderer_, 20, 22, 28, 255);
+    SDL_SetRenderDrawColor(renderer_, 0x1C, 0x1E, 0x21, 255);  // Theme::kBackground, beside the page
     SDL_RenderClear(renderer_);
     ImGui_ImplSDLRenderer3_RenderDrawData(ImGui::GetDrawData(), renderer_);
     SDL_RenderPresent(renderer_);
@@ -986,9 +1020,16 @@ void GuiApp::draw() {
         persistSettings();
     }
 
+    // The page, centered; the top bar's band runs across the whole window.
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
-    ImGui::SetNextWindowPos(viewport->WorkPos);
-    ImGui::SetNextWindowSize(viewport->WorkSize);
+    const ImVec2 page(kPageW * pageScale_, kPageH * pageScale_);
+    const ImVec2 pagePos(viewport->WorkPos.x + std::max(0.0f, (viewport->WorkSize.x - page.x) * 0.5f),
+                         viewport->WorkPos.y + std::max(0.0f, (viewport->WorkSize.y - page.y) * 0.5f));
+    ImGui::GetBackgroundDrawList()->AddRectFilled(ImVec2(viewport->WorkPos.x, pagePos.y),
+                                                  ImVec2(viewport->WorkPos.x + viewport->WorkSize.x, pagePos.y + 50.0f * pageScale_),
+                                                  PerformanceView::Theme::kTopBar);
+    ImGui::SetNextWindowPos(pagePos);
+    ImGui::SetNextWindowSize(page);
     ImGui::PushStyleColor(ImGuiCol_WindowBg, ImGui::ColorConvertU32ToFloat4(PerformanceView::Theme::kBackground));
     ImGui::Begin("MidiPad", nullptr,
                  ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
