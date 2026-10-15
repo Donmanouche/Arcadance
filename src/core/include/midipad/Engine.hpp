@@ -137,7 +137,8 @@ public:
     Shaping shaping(int channel) const;
     // `note` moved by `steps`: degrees of the key (a note outside it first goes
     // to the nearest one of the key), semitones without a key; kept in range.
-    int transposed(int note, int steps) const;
+    int transposed(int note, int steps) const { return transposedIn(key_, note, steps); }
+    static int transposedIn(const std::optional<Key>& key, int note, int steps);
     // How many steps a Transpose axis may go for `semitones`.
     int transposeSteps(int semitones) const;
 
@@ -204,9 +205,15 @@ public:
     // Editing a note loop: notes moved together by `samples` and `semitones`
     // (their lengths and the gaps between them kept, the group inside the loop
     // and the MIDI range, as a block), or removed. Notes they then cut short
-    // or sounding now stop. False when none of them is there.
-    bool moveLoopNotes(int channel, const std::vector<LoopNoteRef>& notes, int samples, int semitones);
+    // or sounding now stop. False when none of them is there. `byDegrees`:
+    // `semitones` counts degrees of the tonality instead (see transposed), so
+    // the notes stay on the scale.
+    bool moveLoopNotes(int channel, const std::vector<LoopNoteRef>& notes, int samples, int semitones, bool byDegrees = false);
     bool removeLoopNotes(int channel, const std::vector<LoopNoteRef>& notes);
+    // Notes lengthened (or shortened) together by `samples`: each keeps one
+    // sample at least, ends inside the loop, and stops where the next note of
+    // its pitch starts. Their start and pitch stay. False when none is there.
+    bool resizeLoopNotes(int channel, const std::vector<LoopNoteRef>& notes, int samples);
     // One note: moved to `newStart` and `newNote`, or removed.
     bool moveLoopNote(int channel, int start, int note, int newStart, int newNote) {
         return moveLoopNotes(channel, {{start, static_cast<std::uint8_t>(note)}}, newStart - start, newNote - note);

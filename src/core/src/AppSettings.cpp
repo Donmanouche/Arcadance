@@ -113,6 +113,7 @@ AppSettings loadSettings(const std::filesystem::path& file, AppSettings s) {
     read(j, "beats_per_bar", s.beatsPerBar);
     s.beatsPerBar = std::clamp(s.beatsPerBar, 1, 16);
     read(j, "start_stop_sync", s.startStopSync);
+    read(j, "notes_in_scale", s.notesInScale);
     std::string quantize;
     read(j, "quantize_notes", quantize);
     static constexpr std::pair<const char*, int> kGrids[] = {{"off", 0}, {"1/8", 2}, {"1/16", 4}, {"1/32", 8}};
@@ -153,6 +154,7 @@ void saveSettings(const AppSettings& s, const std::filesystem::path& file) {
     j["loop_snap"] = kSnapNames[static_cast<int>(s.loopSnap)];
     j["beats_per_bar"] = s.beatsPerBar;
     j["start_stop_sync"] = s.startStopSync;
+    j["notes_in_scale"] = s.notesInScale;
     j["quantize_notes"] = s.quantize == 2 ? "1/8" : s.quantize == 4 ? "1/16" : s.quantize == 8 ? "1/32" : "off";
 
     std::filesystem::create_directories(file.parent_path());

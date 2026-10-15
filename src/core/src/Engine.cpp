@@ -874,12 +874,12 @@ int Engine::transposeSteps(int semitones) const {
     return semitones * degrees / 12;  // 12 semitones: an octave of degrees
 }
 
-int Engine::transposed(int note, int steps) const {
+int Engine::transposedIn(const std::optional<Key>& key, int note, int steps) {
     int out = note + steps;
-    if (key_ && steps != 0) {
-        const auto& iv = key_->type().intervals;
+    if (key && steps != 0) {
+        const auto& iv = key->type().intervals;
         const auto n = static_cast<int>(iv.size());
-        const int rel = note - key_->root;
+        const int rel = note - key->root;
         const int octave = rel >= 0 ? rel / 12 : -((-rel + 11) / 12);
         const int pc = rel - octave * 12;
         // The nearest degree (the octave above counts as degree n).
@@ -891,7 +891,7 @@ int Engine::transposed(int note, int steps) const {
         }
         const int target = octave * n + degree + steps;
         const int targetOctave = target >= 0 ? target / n : -((-target + n - 1) / n);
-        out = key_->root + targetOctave * 12 + iv[static_cast<std::size_t>(target - targetOctave * n)];
+        out = key->root + targetOctave * 12 + iv[static_cast<std::size_t>(target - targetOctave * n)];
     }
     while (out > 127)
         out -= 12;
@@ -1477,7 +1477,7 @@ void Engine::silenceLoopNote(int channel, int note) {
     on.reset(static_cast<std::size_t>(note));
 }
 
-bool Engine::moveLoopNotes(int channel, const std::vector<LoopNoteRef>& notes, int samples, int semitones) {
+bool Engine::moveLoopNotes(int channel, const std::vector<LoopNoteRef>& notes, int samples, int semitones, bool byDegrees) {
     channel = std::clamp(channel, 0, kChannelCount - 1);
     const Loop& loop = loops_[loopIndex(channel, static_cast<int>(LoopSource::Notes))];
     if (loop.state != LoopStatus::State::Playing || loop.length < 2)
@@ -1504,21 +1504,46 @@ bool Engine::moveLoopNotes(int channel, const std::vector<LoopNoteRef>& notes, i
     if (found.empty())
         return false;
     samples = std::clamp(samples, -first, std::max(loop.length - 1 - last, -first));
-    semitones = std::clamp(semitones, -low, 127 - high);
+    if (!byDegrees)
+        semitones = std::clamp(semitones, -low, 127 - high);
+    auto moved = [&](int note) { return byDegrees ? transposed(note, semitones) : std::clamp(note + semitones, 0, 127); };
     for (const Found& f : found) {
         silenceLoopNote(channel, events[static_cast<std::size_t>(f.on)].note);
-        silenceLoopNote(channel, std::clamp(events[static_cast<std::size_t>(f.on)].note + semitones, 0, 127));
+        silenceLoopNote(channel, moved(events[static_cast<std::size_t>(f.on)].note));
     }
-    for (const Found& f : found)
+    for (const Found& f : found) {
+        const int note = moved(events[static_cast<std::size_t>(f.on)].note);  // its release goes with it
         for (const int i : {f.on, f.off}) {
             if (i < 0)
                 continue;
             auto& e = events[static_cast<std::size_t>(i)];
             e.at = std::clamp(e.at + samples, 0, loop.length - 1);
-            e.note = static_cast<std::uint8_t>(std::clamp(e.note + semitones, 0, 127));
+            e.note = static_cast<std::uint8_t>(note);
         }
+    }
     tidyNoteLoop(channel);  // in order again; notes they land on are cut short
     return true;
+}
+
+bool Engine::resizeLoopNotes(int channel, const std::vector<LoopNoteRef>& notes, int samples) {
+    channel = std::clamp(channel, 0, kChannelCount - 1);
+    const Loop& loop = loops_[loopIndex(channel, static_cast<int>(LoopSource::Notes))];
+    if (loop.state != LoopStatus::State::Playing || loop.length < 2)
+        return false;
+    auto& events = noteEvents_[static_cast<std::size_t>(channel)];
+    bool any = false;
+    for (const LoopNoteRef& ref : notes) {
+        int on = -1, off = -1;
+        if (!findLoopNote(channel, ref.start, ref.note, on, off) || off < 0)
+            continue;
+        silenceLoopNote(channel, ref.note);  // it sounds again from its next start
+        auto& end = events[static_cast<std::size_t>(off)];
+        end.at = std::clamp(end.at + samples, std::min(ref.start + 1, loop.length - 1), loop.length - 1);
+        any = true;
+    }
+    if (any)
+        tidyNoteLoop(channel);  // in order again; a note now reaching the next of its pitch stops there
+    return any;
 }
 
 bool Engine::removeLoopNotes(int channel, const std::vector<LoopNoteRef>& notes) {

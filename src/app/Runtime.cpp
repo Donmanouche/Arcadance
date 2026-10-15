@@ -188,10 +188,10 @@ void Runtime::loadSessionLoops(std::vector<midipad::SessionLoop> loops) {
     commands_.push({Command::Kind::LoadLoops});
 }
 
-void Runtime::moveLoopNotes(std::vector<midipad::LoopNoteRef> notes, int samples, int semitones) {
+void Runtime::moveLoopNotes(std::vector<midipad::LoopNoteRef> notes, int samples, int semitones, bool byDegrees) {
     {
         std::lock_guard lock(sessionMutex_);
-        noteEdits_.push_back({std::move(notes), false, samples, semitones});
+        noteEdits_.push_back({std::move(notes), false, samples, semitones, byDegrees, false});
     }
     commands_.push({Command::Kind::EditNotes});
 }
@@ -199,7 +199,15 @@ void Runtime::moveLoopNotes(std::vector<midipad::LoopNoteRef> notes, int samples
 void Runtime::removeLoopNotes(std::vector<midipad::LoopNoteRef> notes) {
     {
         std::lock_guard lock(sessionMutex_);
-        noteEdits_.push_back({std::move(notes), true, 0, 0});
+        noteEdits_.push_back({std::move(notes), true, 0, 0, false, false});
+    }
+    commands_.push({Command::Kind::EditNotes});
+}
+
+void Runtime::resizeLoopNotes(std::vector<midipad::LoopNoteRef> notes, int samples) {
+    {
+        std::lock_guard lock(sessionMutex_);
+        noteEdits_.push_back({std::move(notes), false, samples, 0, false, true});
     }
     commands_.push({Command::Kind::EditNotes});
 }
@@ -397,8 +405,10 @@ void Runtime::run(std::stop_token stop, Options options, std::shared_ptr<const P
                     const NoteEdit& edit = noteEdits_.front();
                     if (edit.remove)
                         engine.removeLoopNotes(engine.channel(), edit.notes);
+                    else if (edit.resize)
+                        engine.resizeLoopNotes(engine.channel(), edit.notes, edit.samples);
                     else
-                        engine.moveLoopNotes(engine.channel(), edit.notes, edit.samples, edit.semitones);
+                        engine.moveLoopNotes(engine.channel(), edit.notes, edit.samples, edit.semitones, edit.byDegrees);
                     noteEdits_.erase(noteEdits_.begin());
                 }
             } else if (command->kind == Command::Kind::SaveLoops) {

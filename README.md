@@ -24,8 +24,10 @@ Written in C++20, Linux first; Windows and macOS packages are planned.
   layer chords on channel 1, a bass line on channel 2, a filter sweep on top.
   Overdub, forward / reverse / back-and-forth playback, Play and Stop for every
   loop at once.
-- **Edit loops in the piano roll.** Move a note, a chord or a selection in time
-  and pitch, or delete it, while the loop plays, without recording again.
+- **Edit loops in a large piano roll.** Move a note, a chord or a selection in
+  time and pitch (onto the scale if you like), change their length, or delete
+  them, while the loop plays, without recording again. Notes show their
+  velocity.
 - **Sessions.** Save every channel's loops, the preset, the tonality and the
   tempo in one file, and open them again later.
 - **Chords made easy.** Named chords (`Fm9`, `Dbmaj7#11`, `Eb9sus4`…) with octave

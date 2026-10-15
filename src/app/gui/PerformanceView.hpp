@@ -71,17 +71,27 @@ public:
         bool amplitude = false;
     };
     std::optional<StretchRequest> takeStretchRequest() { return std::exchange(stretch_, std::nullopt); }
-    // Editing the note loop in its clip, during the last draw(). With Shift:
-    // dragging a note moves it, or the selection it belongs to, as a block
-    // (its first note onto the quantize grid when there is one); dragging over
-    // empty space selects the notes in a rectangle; Ctrl + click adds or takes
-    // out a note; a double-click selects the chord it belongs to. A
-    // right-click removes a note, or the selection it belongs to. A click
-    // elsewhere or Escape clears the selection.
+    // The note loop's editor: a large piano roll, `w` by `h`, at the cursor of
+    // the current window (the main view's piano roll only shows the loop; a
+    // click on it opens this editor). Dragging a note moves it, or the
+    // selection it belongs to, as a block (its first note onto the quantize
+    // grid when there is one; up and down by degrees of the tonality when
+    // moves stay on the scale); dragging over empty space selects the notes in
+    // a rectangle; Ctrl + click adds or takes out a note; a double-click
+    // selects the chord it belongs to. Dragging the end of a selected note
+    // lengthens or shortens every selected note alike (its end onto the
+    // quantize grid when there is one). A right-click, or Delete, removes a
+    // note or the selection it belongs to. A click elsewhere or Escape clears
+    // the selection. The edits come out of takeNoteEdit().
+    void drawNoteEditor(const midipad::Mapping& mapping, const LiveState& live, float w, float h);
+    // Moves up and down go by degrees of the tonality (when there is one).
+    void setScaleMoves(bool on) { scaleMoves_ = on; }
     struct NoteEdit {
         std::vector<midipad::LoopNoteRef> notes;
         bool remove = false;
-        int samples = 0, semitones = 0;  // moved by
+        int samples = 0, semitones = 0;  // moved by; semitones are degrees when byDegrees
+        bool byDegrees = false;
+        bool resize = false;  // lengthened by `samples` instead
     };
     std::optional<NoteEdit> takeNoteEdit() { return std::exchange(noteEdit_, std::nullopt); }
     void setQuantize(int stepsPerBeat) { quantize_ = stepsPerBeat; }  // AppSettings::quantize
@@ -133,11 +143,16 @@ private:
     std::optional<StretchRequest> stretch_;
     std::optional<NoteEdit> noteEdit_;
     int quantize_ = 0;
+    bool editing_ = false;     // drawing the note loop editor, not the view's piano roll
+    bool scaleMoves_ = true;
+    std::optional<midipad::Key> key_;
     struct NoteDrag {
         std::vector<midipad::NoteInterval> notes;  // the notes moving together
         float grabSample = 0;  // where the mouse took them, in loop samples
         float grabY = 0;
         int samples = 0, semitones = 0;  // where they go, so far
+        bool resize = false;  // their ends, not the notes: `samples` lengthens them
+        int grabEnd = 0;      // resizing: the end grabbed, in loop samples
     };
     std::optional<NoteDrag> drag_;
     std::vector<midipad::LoopNoteRef> selection_;  // in the active channel's note loop

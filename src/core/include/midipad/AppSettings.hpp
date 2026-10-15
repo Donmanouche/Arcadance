@@ -44,6 +44,8 @@ struct AppSettings {
     // a grid of this many steps a beat: 0 off, 2 eighth notes, 4 sixteenths,
     // 8 thirty-seconds (Engine::setSync).
     int quantize = 0;
+    // Moving notes in the note loop editor: onto the tonality's notes, by degrees.
+    bool notesInScale = true;
     // The snap in beats: 0 for Free.
     int snapBeats() const {
         switch (loopSnap) {

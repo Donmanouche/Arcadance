@@ -124,8 +124,9 @@ public:
     void clearLoop(int source);  // a LoopSource, on the active channel
     // Editing the active channel's note loop (Engine::moveLoopNotes,
     // removeLoopNotes), in the order asked.
-    void moveLoopNotes(std::vector<midipad::LoopNoteRef> notes, int samples, int semitones);
+    void moveLoopNotes(std::vector<midipad::LoopNoteRef> notes, int samples, int semitones, bool byDegrees = false);
     void removeLoopNotes(std::vector<midipad::LoopNoteRef> notes);
+    void resizeLoopNotes(std::vector<midipad::LoopNoteRef> notes, int samples);
     // Session files: the loops of every channel as the input thread has them
     // (nothing if it does not answer within a second), and loops to play
     // instead of all of them, after any preset given before.
@@ -210,6 +211,8 @@ private:
         std::vector<midipad::LoopNoteRef> notes;
         bool remove = false;
         int samples = 0, semitones = 0;
+        bool byDegrees = false;
+        bool resize = false;  // `samples` lengthens them
     };
     std::vector<NoteEdit> noteEdits_;  // under sessionMutex_, oldest first
 

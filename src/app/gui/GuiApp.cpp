@@ -1486,11 +1486,13 @@ void GuiApp::drawPerformance(const LiveState& live) {
     ImGui::BeginChild("modules", ImVec2(0, -statusH), ImGuiChildFlags_None, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
     performance_.setQuantize(settings_.quantize);
     const auto clicked = performance_.draw(preset_.forChannel(live.channel), live, settings_.key);
-    if (auto edit = performance_.takeNoteEdit()) {  // Shift + drag, right-click in the note loop's clip
+    if (auto edit = performance_.takeNoteEdit()) {  // from the note loop's editor (the last frame's)
         if (edit->remove)
             runtime_->removeLoopNotes(std::move(edit->notes));
+        else if (edit->resize)
+            runtime_->resizeLoopNotes(std::move(edit->notes), edit->samples);
         else
-            runtime_->moveLoopNotes(std::move(edit->notes), edit->samples, edit->semitones);
+            runtime_->moveLoopNotes(std::move(edit->notes), edit->samples, edit->semitones, edit->byDegrees);
     }
     if (const auto stretch = performance_.takeStretchRequest())  // Shift + wheel over a LOOP panel
         for (int source = 0; source < kLoopSourceCount; ++source)
@@ -2107,7 +2109,8 @@ void GuiApp::drawMappingOverlay(const LiveState& live) {
                                        viewport->WorkPos.y + viewport->WorkSize.y * 0.5f),
                                 ImGuiCond_Always, ImVec2(0.5f, 0.5f));
     }
-    ImGui::SetNextWindowSizeConstraints(ImVec2(ImGui::GetFontSize() * 26, 0), ImVec2(ImGui::GetFontSize() * 40, FLT_MAX));
+    // The note loop's editor is wide, for its large piano roll.
+    ImGui::SetNextWindowSizeConstraints(ImVec2(ImGui::GetFontSize() * 26, 0), ImVec2(ImGui::GetFontSize() * (spec == "notes" ? 62 : 40), FLT_MAX));
     pushWindowLook();
     ImGui::PushStyleColor(ImGuiCol_FrameBg, ImGui::ColorConvertU32ToFloat4(0xFF4A4642));
     ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, ImGui::ColorConvertU32ToFloat4(0xFF57524D));
@@ -2165,6 +2168,31 @@ void GuiApp::drawMappingOverlay(const LiveState& live) {
         ImGui::BeginChild("mappingbody", ImVec2(0, 0), ImGuiChildFlags_AutoResizeX | ImGuiChildFlags_AutoResizeY);
         ImGui::PopStyleColor();
         editor_.setHumanizeChannels(settings_.humanize.channels);
+        if (spec == "notes") {  // the note loop's editor: a large piano roll, above its settings
+            const float em = ImGui::GetFontSize();
+            ImGui::BeginDisabled(!settings_.key);
+            bool inScale = settings_.notesInScale;
+            if (ImGui::Checkbox("Move notes only onto the scale", &inScale)) {
+                settings_.notesInScale = inScale;
+                persistSettings();
+            }
+            ImGui::EndDisabled();
+            ImGui::SameLine();
+            if (settings_.key)
+                ImGui::TextColored(ImVec4(0.55f, 0.75f, 1.0f, 1.0f), "%s %s", pitchName(settings_.key->root).c_str(),
+                                   std::string(settings_.key->type().label).c_str());
+            else
+                ImGui::TextColored(kHintColor, "(no tonality: choose one on the SCALE screen)");
+            ImGui::SameLine();
+            ImGui::TextColored(kHintColor, settings_.notesInScale && settings_.key ? "  up and down go by degrees of the scale"
+                                                                                   : "  up and down go by semitones");
+            performance_.setScaleMoves(settings_.notesInScale);
+            performance_.drawNoteEditor(target, live, em * 56, em * 24);
+            ImGui::TextColored(kHintColor, "Drag: move a note or the selection  \xC2\xB7  Drag on empty space: select  \xC2\xB7  "
+                                           "Ctrl + click: add  \xC2\xB7  Double-click: a chord");
+            ImGui::TextColored(kHintColor, "Drag the end of a selected note: its length  \xC2\xB7  Right-click or Delete: delete");
+            ImGui::Spacing();
+        }
         if (editor_.drawControl(spec, target, live, settings_.key)) {
             if (!own && !first)
                 own = std::move(copy);  // its first change: the channel gets its own mapping
