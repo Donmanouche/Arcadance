@@ -1659,6 +1659,50 @@ bool Engine::resizeLoopNotes(int channel, const std::vector<LoopNoteRef>& notes,
     return any;
 }
 
+bool Engine::setNoteLoopLength(int channel, int length) {
+    channel = std::clamp(channel, 0, kChannelCount - 1);
+    const std::size_t index = loopIndex(channel, static_cast<int>(LoopSource::Notes));
+    Loop& loop = loops_[index];
+    if (loop.state != LoopStatus::State::Playing || loop.length < 2)
+        return false;
+    if (loop.syncBeats > 0) {  // whole beats, at the beat's length as recorded
+        const double perBeat = static_cast<double>(loop.length) / loop.syncBeats;
+        const double most = std::max(1.0, std::floor(kMaxLoopSamples / perBeat));
+        const double beats = std::clamp(std::round(length / perBeat), 1.0, most);
+        length = static_cast<int>(std::lround(beats * perBeat));
+        loop.syncBeats = beats;
+    }
+    length = std::clamp(length, 2, kMaxLoopSamples);
+    if (length == loop.length)
+        return true;
+    fromLoop_ = true;
+    silenceLoop(index);
+    fromLoop_ = false;
+    // Notes starting at or past the end go, with their releases; those still on there end with it.
+    auto& events = noteEvents_[static_cast<std::size_t>(channel)];
+    std::bitset<128> dropped;
+    for (NoteEvent& e : events) {
+        if (e.on) {
+            dropped.set(e.note, e.at >= length);
+            if (e.at >= length)
+                e.at = -1;
+        } else if (dropped.test(e.note)) {
+            dropped.reset(e.note);
+            e.at = -1;
+        } else if (e.at >= length) {
+            e.at = length - 1;
+        }
+    }
+    events.erase(std::remove_if(events.begin(), events.end(), [](const NoteEvent& e) { return e.at < 0; }), events.end());
+    loop.length = length;
+    if (loop.position >= length) {
+        loop.position = loop.direction < 0 ? length - 1 : 0;
+        loop.phase = loop.position;
+    }
+    tidyNoteLoop(channel);
+    return true;
+}
+
 bool Engine::removeLoopNotes(int channel, const std::vector<LoopNoteRef>& notes) {
     channel = std::clamp(channel, 0, kChannelCount - 1);
     auto& events = noteEvents_[static_cast<std::size_t>(channel)];

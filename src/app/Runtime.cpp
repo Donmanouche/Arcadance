@@ -218,6 +218,16 @@ void Runtime::resizeLoopNotes(std::vector<midipad::LoopNoteRef> notes, int sampl
     commands_.push({Command::Kind::EditNotes});
 }
 
+void Runtime::setNoteLoopLength(int samples) {
+    {
+        std::lock_guard lock(sessionMutex_);
+        NoteEdit edit;
+        edit.loopLength = samples;
+        noteEdits_.push_back(std::move(edit));
+    }
+    commands_.push({Command::Kind::EditNotes});
+}
+
 void Runtime::pauseLoops() { commands_.push({Command::Kind::PauseLoops}); }
 
 void Runtime::playLoops() { commands_.push({Command::Kind::PlayLoops}); }
@@ -413,7 +423,9 @@ void Runtime::run(std::stop_token stop, Options options, std::shared_ptr<const P
                 std::lock_guard lock(sessionMutex_);
                 if (!noteEdits_.empty()) {
                     const NoteEdit& edit = noteEdits_.front();
-                    if (edit.remove)
+                    if (edit.loopLength > 0)
+                        engine.setNoteLoopLength(engine.channel(), edit.loopLength);
+                    else if (edit.remove)
                         engine.removeLoopNotes(engine.channel(), edit.notes);
                     else if (edit.resize)
                         engine.resizeLoopNotes(engine.channel(), edit.notes, edit.samples);

@@ -411,6 +411,7 @@ private:
     SDL_Renderer* renderer_ = nullptr;
     bool quit_ = false;
     int frameCount_ = 0;
+    std::uint64_t nextFrameAt_ = 0;  // with a frame rate set in Options: when the next frame may start
 
     fs::path settingsFile_;
     AppSettings settings_;
@@ -693,6 +694,21 @@ void GuiApp::fitPage() {
 }
 
 void GuiApp::frame() {
+    // The frame rate set in Options (vsync still paces the screen's own).
+    int fps = settings_.frameRate;
+    if (settings_.slowInBackground && !(SDL_GetWindowFlags(window_) & SDL_WINDOW_INPUT_FOCUS))
+        fps = fps > 0 ? std::min(fps, 30) : 30;
+    if (fps > 0 && !options_.screenshot && !options_.record) {
+        const std::uint64_t period = 1'000'000'000ull / static_cast<std::uint64_t>(fps);
+        std::uint64_t now = SDL_GetTicksNS();
+        if (nextFrameAt_ > now && nextFrameAt_ - now <= period) {
+            SDL_DelayNS(nextFrameAt_ - now);
+            now = nextFrameAt_;
+        }
+        nextFrameAt_ = now > nextFrameAt_ + period ? now + period : nextFrameAt_ + period;
+    } else {
+        nextFrameAt_ = 0;
+    }
     SDL_Event e;
     while (SDL_PollEvent(&e))
         handleEvent(e);
@@ -1527,7 +1543,9 @@ void GuiApp::drawPerformance(const LiveState& live) {
     performance_.setQuantize(settings_.quantize);
     const auto clicked = performance_.draw(withChannelOneControls(preset_.forChannel(live.channel), preset_.base), live, settings_.key);
     if (auto edit = performance_.takeNoteEdit()) {  // from the note loop's editor (the last frame's)
-        if (edit->remove)
+        if (edit->loopLength > 0)
+            runtime_->setNoteLoopLength(edit->loopLength);
+        else if (edit->remove)
             runtime_->removeLoopNotes(std::move(edit->notes));
         else if (edit->resize)
             runtime_->resizeLoopNotes(std::move(edit->notes), edit->samples);
@@ -1804,6 +1822,33 @@ void GuiApp::drawOptionsOverlay() {
             drawVirMidiSection(false);
         endCard();
 
+        // A row of buttons, one lit: returns the one clicked, or -1.
+        auto choice = [&](const char* id, std::initializer_list<const char*> labels, int current) {
+            int clicked = -1, i = 0;
+            ImGui::PushID(id);
+            ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(px(4), px(4)));
+            for (const char* label : labels) {
+                const bool selected = i == current;
+                ImGui::PushStyleColor(ImGuiCol_Button, color(selected ? (Theme::kGreen & ~IM_COL32_A_MASK) | IM_COL32(0, 0, 0, 110)
+                                                                      : Theme::kControl));
+                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, color(selected ? Theme::kGreen : Theme::kControlBorder));
+                ImGui::PushStyleColor(ImGuiCol_Border, color(selected ? Theme::kGreen : Theme::kControlBorder));
+                if (ImGui::Button(label))
+                    clicked = i;
+                ImGui::PopStyleColor(3);
+                ImGui::SameLine();
+                ++i;
+            }
+            ImGui::PopStyleVar();
+            ImGui::NewLine();
+            ImGui::PopID();
+            return clicked;
+        };
+        auto rowLabel = [&](const char* text) {
+            ImGui::AlignTextToFramePadding();
+            ImGui::TextColored(color(Theme::kLabel), "%s", text);
+            ImGui::SameLine(px(150));
+        };
         // Sync: Ableton Link, and how loops snap to its beat.
         beginCard("##cardsync", "SYNC", Theme::kGreen);
         {
@@ -1818,33 +1863,6 @@ void GuiApp::drawOptionsOverlay() {
             ImGui::PopFont();
             ImGui::Spacing();
             ImGui::PushFont(medium, 13.0f);
-            // A row of buttons, one lit: returns the one clicked, or -1.
-            auto choice = [&](const char* id, std::initializer_list<const char*> labels, int current) {
-                int clicked = -1, i = 0;
-                ImGui::PushID(id);
-                ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(px(4), px(4)));
-                for (const char* label : labels) {
-                    const bool selected = i == current;
-                    ImGui::PushStyleColor(ImGuiCol_Button, color(selected ? (Theme::kGreen & ~IM_COL32_A_MASK) | IM_COL32(0, 0, 0, 110)
-                                                                          : Theme::kControl));
-                    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, color(selected ? Theme::kGreen : Theme::kControlBorder));
-                    ImGui::PushStyleColor(ImGuiCol_Border, color(selected ? Theme::kGreen : Theme::kControlBorder));
-                    if (ImGui::Button(label))
-                        clicked = i;
-                    ImGui::PopStyleColor(3);
-                    ImGui::SameLine();
-                    ++i;
-                }
-                ImGui::PopStyleVar();
-                ImGui::NewLine();
-                ImGui::PopID();
-                return clicked;
-            };
-            auto rowLabel = [&](const char* text) {
-                ImGui::AlignTextToFramePadding();
-                ImGui::TextColored(color(Theme::kLabel), "%s", text);
-                ImGui::SameLine(px(150));
-            };
             bool changed = false;
             const float clockRowY = ImGui::GetCursorPosY();
             rowLabel("Clock");
@@ -2053,6 +2071,28 @@ void GuiApp::drawOptionsOverlay() {
             browseFolder(FolderTarget::Presets, settings_.presetsDir);
         ImGui::PopFont();
         endCard();
+
+        // Display: how many frames a second the window draws.
+        beginCard("##carddisplay", "DISPLAY", Theme::kCyan);
+        ImGui::PushFont(medium, 12.0f);
+        ImGui::TextColored(color(Theme::kLabel), "Lower rates use less GPU; MIDI and the controller are not affected.");
+        ImGui::PopFont();
+        ImGui::Spacing();
+        ImGui::PushFont(medium, 13.0f);
+        {
+            rowLabel("Frame rate");
+            const int current = settings_.frameRate == 60 ? 1 : settings_.frameRate == 30 ? 2 : 0;
+            const int rate = choice("framerate", {"Screen", "60", "30"}, current);
+            if (rate >= 0 && rate != current) {
+                settings_.frameRate = rate == 1 ? 60 : rate == 2 ? 30 : 0;
+                persistSettings();
+            }
+            ImGui::SetCursorPosX(px(150));  // under the buttons
+            if (ImGui::Checkbox("30 fps when in the background", &settings_.slowInBackground))
+                persistSettings();
+        }
+        ImGui::PopFont();
+        endCard();
         ImGui::EndChild();
         ImGui::Spacing();
         ImGui::PushFont(bold, 13.0f);
@@ -2259,7 +2299,8 @@ void GuiApp::drawMappingOverlay(const LiveState& live) {
             performance_.drawNoteEditor(target, live, em * 56, em * 24);
             ImGui::TextColored(kHintColor, "Drag: move a note or the selection  \xC2\xB7  Drag on empty space: select  \xC2\xB7  "
                                            "Ctrl + click: add  \xC2\xB7  Double-click: a chord");
-            ImGui::TextColored(kHintColor, "Drag the end of a selected note: its length  \xC2\xB7  Right-click or Delete: delete");
+            ImGui::TextColored(kHintColor, "Drag the end of a selected note: its length  \xC2\xB7  Drag the right edge: the loop's length  \xC2\xB7  "
+                                           "Right-click or Delete: delete");
             ImGui::Spacing();
         }
         if (editor_.drawControl(spec, target, live, settings_.key)) {
@@ -2295,8 +2336,8 @@ void GuiApp::drawMappingOverlay(const LiveState& live) {
             openPreset(preset_.name);
         ImGui::EndDisabled();
         ImGui::SameLine();
-        if (ImGui::Button("Close") ||
-            (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) && ImGui::IsKeyPressed(ImGuiKey_Escape)))
+        if (ImGui::Button("Close") || (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) &&
+                                       ImGui::IsKeyPressed(ImGuiKey_Escape) && !(spec == "notes" && performance_.tookEscape())))
             open = false;
         ImGui::PopFont();
     }

@@ -95,8 +95,12 @@ public:
         int samples = 0, semitones = 0;  // moved by; semitones are degrees when byDegrees
         bool byDegrees = false;
         bool resize = false;  // lengthened by `samples` instead
+        int loopLength = 0;   // > 0: the loop's new length, in samples, instead
     };
     std::optional<NoteEdit> takeNoteEdit() { return std::exchange(noteEdit_, std::nullopt); }
+    // Escape, during the last drawNoteEditor(), cancelled a drag or cleared the
+    // selection: the window should stay open.
+    bool tookEscape() const { return escapeTaken_; }
     void setQuantize(int stepsPerBeat) { quantize_ = stepsPerBeat; }  // AppSettings::quantize
 
 private:
@@ -162,6 +166,17 @@ private:
         int grabEnd = 0;      // resizing: the end grabbed, in loop samples
     };
     std::optional<NoteDrag> drag_;
+    // The loop's end being dragged in the editor: where the mouse took it, the
+    // loop's length and beats then (0: free), and the new length so far.
+    struct LengthDrag {
+        float grabX = 0;
+        int length = 0;
+        double beats = 0;
+        int newLength = 0;
+    };
+    std::optional<LengthDrag> lengthDrag_;
+    bool lengthHovered_ = false;  // the mouse over the loop's end handle
+    bool escapeTaken_ = false;
     std::vector<midipad::LoopNoteRef> selection_;  // in the active channel's note loop
     int selectionChannel_ = -1;
     double lastNoteEdit_ = -1e9;

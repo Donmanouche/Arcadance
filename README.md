@@ -27,7 +27,8 @@ Written in C++20, Linux first; Windows and macOS packages are planned.
   controller) and Record keeps it.
 - **Edit loops in a large piano roll.** Move a note, a chord or a selection in
   time and pitch (onto the scale if you like), change their length, or delete
-  them, while the loop plays, without recording again. Notes show their
+  them, and shorten or lengthen the loop, while it plays, without recording
+  again. Notes show their
   velocity.
 - **Sessions.** Save every channel's loops, the preset, the tonality and the
   tempo in one file, and open them again later.
@@ -145,7 +146,8 @@ available; a note or chord outside the scale is flagged.
 which each port is seen; a saved port that is missing shows in red), the
 VirMIDI ports, SYNC (the clock: free, internal or Ableton Link; the loops'
 snap; beats per bar; the note quantizer; MIDI clock out; start / stop sync), the D-pad delay,
-humanization and the presets folder.
+humanization, the presets folder and DISPLAY (the frame rate: the screen's, 60
+or 30, and 30 while another window has the focus).
 
 ![The Options window](docs/media/options.png)
 

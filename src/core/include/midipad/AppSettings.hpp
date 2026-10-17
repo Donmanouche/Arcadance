@@ -47,6 +47,10 @@ struct AppSettings {
     int quantize = 0;
     // Moving notes in the note loop editor: onto the tonality's notes, by degrees.
     bool notesInScale = true;
+    // The window's frames a second: 0 as fast as the screen refreshes, or at
+    // most 60 or 30; and at most 30 while another window has the focus.
+    int frameRate = 0;
+    bool slowInBackground = false;
     // The snap in beats: 0 for Free.
     int snapBeats() const {
         switch (loopSnap) {

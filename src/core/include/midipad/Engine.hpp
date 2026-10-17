@@ -229,6 +229,12 @@ public:
     // sample at least, ends inside the loop, and stops where the next note of
     // its pitch starts. Their start and pitch stay. False when none is there.
     bool resizeLoopNotes(int channel, const std::vector<LoopNoteRef>& notes, int samples);
+    // The note loop shortened or lengthened to `length` samples (2 up to
+    // kMaxLoopSamples): the notes starting at or past its new end go, those
+    // still on there end with it, what sounds stops. A synced loop keeps whole
+    // beats: `length` is rounded to them (one at least) and its beats follow.
+    // False without a note loop playing.
+    bool setNoteLoopLength(int channel, int length);
     // One note: moved to `newStart` and `newNote`, or removed.
     bool moveLoopNote(int channel, int start, int note, int newStart, int newNote) {
         return moveLoopNotes(channel, {{start, static_cast<std::uint8_t>(note)}}, newStart - start, newNote - note);

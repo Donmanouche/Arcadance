@@ -128,6 +128,7 @@ public:
     void moveLoopNotes(std::vector<midipad::LoopNoteRef> notes, int samples, int semitones, bool byDegrees = false);
     void removeLoopNotes(std::vector<midipad::LoopNoteRef> notes);
     void resizeLoopNotes(std::vector<midipad::LoopNoteRef> notes, int samples);
+    void setNoteLoopLength(int samples);  // Engine::setNoteLoopLength, in the same order
     // Session files: the loops of every channel as the input thread has them
     // (nothing if it does not answer within a second), and loops to play
     // instead of all of them, after any preset given before.
@@ -217,6 +218,7 @@ private:
         int samples = 0, semitones = 0;
         bool byDegrees = false;
         bool resize = false;  // `samples` lengthens them
+        int loopLength = 0;   // > 0: the loop's new length instead
     };
     std::vector<NoteEdit> noteEdits_;  // under sessionMutex_, oldest first
 
