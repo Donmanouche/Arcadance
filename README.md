@@ -147,7 +147,8 @@ which each port is seen; a saved port that is missing shows in red), the
 VirMIDI ports, SYNC (the clock: free, internal or Ableton Link; the loops'
 snap; beats per bar; the note quantizer; MIDI clock out; start / stop sync), the D-pad delay,
 humanization, the presets folder and DISPLAY (the frame rate: the screen's, 60
-or 30, and 30 while another window has the focus).
+or 30, 30 while another window has the focus, and standard resolution on a
+scaled screen).
 
 ![The Options window](docs/media/options.png)
 

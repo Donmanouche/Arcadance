@@ -172,8 +172,8 @@ void screen(ImDrawList* dl, ImVec2 a, ImVec2 b, ImU32 tint, Content&& content) {
     dl->AddRectFilledMultiColor(a, b, shade(tint, 0.10f), shade(tint, 0.10f), shade(tint, 0.24f), shade(tint, 0.24f));
     dl->PushClipRect(a, b, true);
     content();
-    for (float y = a.y; y < b.y; y += 3.0f)
-        dl->AddLine(ImVec2(a.x, y), ImVec2(b.x, y), IM_COL32(0, 0, 0, 55), 1.0f);
+    for (float y = a.y; y < b.y; y += 3.0f)  // one pixel each: a line would spread over three
+        dl->AddRectFilled(ImVec2(a.x, y), ImVec2(b.x, y + 1.0f), IM_COL32(0, 0, 0, 55));
     const float v = std::min(b.x - a.x, b.y - a.y) * 0.18f;
     dl->AddRectFilledMultiColor(a, ImVec2(b.x, a.y + v), IM_COL32(0, 0, 0, 110), IM_COL32(0, 0, 0, 110), 0, 0);
     dl->AddRectFilledMultiColor(ImVec2(a.x, b.y - v), b, 0, 0, IM_COL32(0, 0, 0, 110), IM_COL32(0, 0, 0, 110));

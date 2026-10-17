@@ -32,6 +32,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <functional>
 #include <future>
@@ -412,6 +413,7 @@ private:
     bool quit_ = false;
     int frameCount_ = 0;
     std::uint64_t nextFrameAt_ = 0;  // with a frame rate set in Options: when the next frame may start
+    bool standardResolution_ = false;  // the window opened without high pixel density (AppSettings)
 
     fs::path settingsFile_;
     AppSettings settings_;
@@ -554,7 +556,11 @@ bool GuiApp::init() {
                                          });
     applySync();
 
-    if (!SDL_CreateWindowAndRenderer("MidiPad", 1080, 846, SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY,
+    // At standard resolution, a scaled screen's compositor stretches the
+    // window, drawn at its size in points: fewer pixels for MidiPad to draw.
+    standardResolution_ = settings_.standardResolution;
+    if (!SDL_CreateWindowAndRenderer("MidiPad", 1080, 846,
+                                     SDL_WINDOW_RESIZABLE | (standardResolution_ ? 0 : SDL_WINDOW_HIGH_PIXEL_DENSITY),
                                      &window_, &renderer_)) {
         std::cerr << "midipad: cannot open the window: " << SDL_GetError() << '\n';
         return false;
@@ -566,7 +572,8 @@ bool GuiApp::init() {
     const float pixelsPerPoint = std::max(SDL_GetWindowPixelDensity(window_), 1.0f);
     const float unscaled = std::max(SDL_GetWindowDisplayScale(window_), 1.0f) / pixelsPerPoint;
     float minScale = 1.0f;
-    if (unscaled > 1.05f) {
+    const bool wayland = std::strcmp(SDL_GetCurrentVideoDriver() ? SDL_GetCurrentVideoDriver() : "", "wayland") == 0;
+    if (unscaled > 1.05f && !(standardResolution_ && wayland)) {  // (Wayland stretches the standard window itself)
         SDL_Rect usable{};
         float fit = unscaled;
         if (SDL_GetDisplayUsableBounds(SDL_GetDisplayForWindow(window_), &usable) && usable.w > 0 && usable.h > 0)
@@ -1086,11 +1093,11 @@ void GuiApp::draw() {
                                                   PerformanceView::Theme::kTopBar);
     ImGui::SetNextWindowPos(pagePos);
     ImGui::SetNextWindowSize(page);
-    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImGui::ColorConvertU32ToFloat4(PerformanceView::Theme::kBackground));
+    // No background of its own: the clear colour of each frame is the page's
+    // (Theme::kBackground), so its pixels are not drawn twice.
     ImGui::Begin("MidiPad", nullptr,
                  ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
-                     ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoScrollbar);
-    ImGui::PopStyleColor();
+                     ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoBackground);
 
     if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_S, ImGuiInputFlags_RouteGlobal))
         saveCurrent();
@@ -1538,7 +1545,7 @@ void GuiApp::drawPerformance(const LiveState& live) {
 
     // Right: the animated modules.
     const float statusH = px(26);
-    ImGui::PushStyleColor(ImGuiCol_ChildBg, color(Theme::kBackground));
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0, 0, 0, 0));  // the page's background shows through
     ImGui::BeginChild("modules", ImVec2(0, -statusH), ImGuiChildFlags_None, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
     performance_.setQuantize(settings_.quantize);
     const auto clicked = performance_.draw(withChannelOneControls(preset_.forChannel(live.channel), preset_.base), live, settings_.key);
@@ -2090,6 +2097,18 @@ void GuiApp::drawOptionsOverlay() {
             ImGui::SetCursorPosX(px(150));  // under the buttons
             if (ImGui::Checkbox("30 fps when in the background", &settings_.slowInBackground))
                 persistSettings();
+            ImGui::SetCursorPosX(px(150));
+            if (ImGui::Checkbox("Render at standard resolution", &settings_.standardResolution))
+                persistSettings();
+            ImGui::SetItemTooltip("On a scaled screen (125 %%, 200 %%...): fewer pixels to draw, a little less sharp");
+            const char* driver = SDL_GetCurrentVideoDriver();
+            if (settings_.standardResolution != standardResolution_) {
+                ImGui::SameLine();
+                ImGui::TextColored(color(Theme::kLabel), "(at the next start)");
+            } else if (!driver || std::strcmp(driver, "wayland") != 0 || SDL_GetWindowDisplayScale(window_) <= 1.01f) {
+                ImGui::SameLine();
+                ImGui::TextColored(color(Theme::kLabel), "(no effect on this screen)");
+            }
         }
         ImGui::PopFont();
         endCard();

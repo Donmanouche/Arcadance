@@ -120,6 +120,7 @@ AppSettings loadSettings(const std::filesystem::path& file, AppSettings s) {
     if (frameRate == "screen" || frameRate == "60" || frameRate == "30")
         s.frameRate = frameRate == "screen" ? 0 : std::stoi(frameRate);
     read(j, "background_30fps", s.slowInBackground);
+    read(j, "standard_resolution", s.standardResolution);
     std::string quantize;
     read(j, "quantize_notes", quantize);
     static constexpr std::pair<const char*, int> kGrids[] = {{"off", 0}, {"1/8", 2}, {"1/16", 4}, {"1/32", 8}};
@@ -164,6 +165,7 @@ void saveSettings(const AppSettings& s, const std::filesystem::path& file) {
     j["notes_in_scale"] = s.notesInScale;
     j["frame_rate"] = s.frameRate == 60 ? "60" : s.frameRate == 30 ? "30" : "screen";
     j["background_30fps"] = s.slowInBackground;
+    j["standard_resolution"] = s.standardResolution;
     j["quantize_notes"] = s.quantize == 2 ? "1/8" : s.quantize == 4 ? "1/16" : s.quantize == 8 ? "1/32" : "off";
 
     std::filesystem::create_directories(file.parent_path());

@@ -51,6 +51,9 @@ struct AppSettings {
     // most 60 or 30; and at most 30 while another window has the focus.
     int frameRate = 0;
     bool slowInBackground = false;
+    // On a scaled screen (Wayland), open the window without high pixel
+    // density: the compositor stretches it; fewer pixels, a little less sharp.
+    bool standardResolution = false;
     // The snap in beats: 0 for Free.
     int snapBeats() const {
         switch (loopSnap) {
