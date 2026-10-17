@@ -21,6 +21,7 @@ struct SessionLoop {
     int length = 0;  // samples, at Engine::kLoopRateHz
     int stretch = 0, amplitude = 100;  // movement loops
     double syncBeats = 0, anchorBeat = 0;  // synced to the beat clock: its beats and where it starts; 0: free
+    bool locked = false;  // Record keeps it (Engine::toggleLoopLock)
     // Movement loops: X and Y per sample, [0, 1] as 0-65534, 0xFFFF where the
     // finger was lifted.
     std::vector<std::uint16_t> x, y;

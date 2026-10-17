@@ -109,6 +109,10 @@ void Engine::tick(std::uint64_t nowNs) {
         pendingHatDir_.reset();
         setHatDir(dir);
     }
+    // Shift + a tap on Record: its stop, once no second tap came.
+    if (pendingStopChannel_ >= 0 && now_ >= pendingStopAt_ &&
+        (recordHolders_.none() || now_ - holdStartedAt_ >= static_cast<std::uint64_t>(kLoopTapMs) * 1'000'000u))
+        flushPendingStop();
     runLoops();
     stretchFromControls();
     // Programs chosen by axes, once settled.
@@ -225,6 +229,8 @@ void Engine::touchMoved(int finger, float x, float y) {
     fingerDown_[static_cast<std::size_t>(finger)] = true;
     const FingerBinding& binding = mapping_->fingers[static_cast<std::size_t>(finger)];
 
+    if (stretchHeld() && binding.mode == TouchMode::Axis && recordHolders_.any())
+        return;  // Shift + Record: the finger locks its loops (runLoops)
     if (stretchHeld() && binding.mode == TouchMode::Axis) {
         // The finger stretches the finger loops: a step per kStretchTouchStep of
         // its slide, right stretches. One finger at a time, from where it lands.
@@ -330,6 +336,8 @@ void Engine::reset() {
     pressed_.reset();
     stretchHolders_.reset();
     shiftLatched_ = false;
+    shiftTapAt_ = 0;
+    pendingStopChannel_ = -1;
     dpadBits_ = 0;
     hatDir_.reset();
     pendingHatDir_.reset();
@@ -618,6 +626,8 @@ bool Engine::sourcePosition(int source, float& x, float& y) const {
 
 void Engine::beginRecordHold() {
     recordedThisHold_ = false;
+    lockedThisHold_ = false;
+    lockToggled_.fill(false);
     holdChannel_ = channel_;
     holdStartedAt_ = now_;
     for (int s = 0; s < kLoopSourceCount; ++s) {
@@ -627,7 +637,8 @@ void Engine::beginRecordHold() {
         // notes, which the note loop records.
         const bool finger = s == 2 || s == 3;
         waiting_[static_cast<std::size_t>(s)] =
-            !finger || preset_->forChannel(holdChannel_).fingers[static_cast<std::size_t>(s - 2)].mode == TouchMode::Axis;
+            (!finger || preset_->forChannel(holdChannel_).fingers[static_cast<std::size_t>(s - 2)].mode == TouchMode::Axis) &&
+            !loops_[loopIndex(holdChannel_, s)].locked;
     }
 }
 
@@ -684,28 +695,96 @@ void Engine::endRecordHold() {
             loop.sentX = loop.sentY = -1;
         }
     }
-    if (recordedThisHold_)
+    if (recordedThisHold_ || lockedThisHold_)
         return;
     // Record pressed without moving anything: a tap over a playing note loop
-    // turns its overdub on or off, anything else stops the loops.
+    // turns its overdub on or off (not a locked one's), anything else stops
+    // the loops (not the locked ones).
     const bool tap = now_ - holdStartedAt_ < static_cast<std::uint64_t>(kLoopTapMs) * 1'000'000u;
-    const Loop& notes = loops_[loopIndex(holdChannel_, static_cast<int>(LoopSource::Notes))];
-    if (tap && notes.state == LoopStatus::State::Playing)
-        overdubChannel_ = overdubChannel_ == holdChannel_ ? -1 : holdChannel_;
-    else
+    constexpr int kNotes = static_cast<int>(LoopSource::Notes);
+    const Loop& notes = loops_[loopIndex(holdChannel_, kNotes)];
+    const bool notesPlaying = notes.state == LoopStatus::State::Playing;
+    if (tap && stretchHeld()) {
+        // Shift + two taps: the note loop locks or unlocks, the first tap taken back.
+        const std::uint64_t window = static_cast<std::uint64_t>(kDoubleTapMs) * 1'000'000u;
+        if (shiftTapAt_ != 0 && shiftTapChannel_ == holdChannel_ && holdStartedAt_ - shiftTapAt_ <= window) {
+            shiftTapAt_ = 0;
+            overdubChannel_ = overdubBeforeTap_;
+            pendingStopChannel_ = -1;
+            toggleLoopLock(holdChannel_, kNotes);
+            return;
+        }
+        flushPendingStop();
+        shiftTapAt_ = now_;
+        shiftTapChannel_ = holdChannel_;
+        overdubBeforeTap_ = overdubChannel_;
+        if (notesPlaying) {
+            if (!notes.locked)
+                overdubChannel_ = overdubChannel_ == holdChannel_ ? -1 : holdChannel_;
+        } else {  // a stop cannot be taken back: it waits for a second tap
+            pendingStopChannel_ = holdChannel_;
+            pendingStopAt_ = now_ + window;
+        }
+        return;
+    }
+    shiftTapAt_ = 0;
+    flushPendingStop();
+    if (tap && notesPlaying) {
+        if (!notes.locked)
+            overdubChannel_ = overdubChannel_ == holdChannel_ ? -1 : holdChannel_;
+    } else {
         stopLoops(holdChannel_);
+    }
+}
+
+void Engine::flushPendingStop() {
+    if (pendingStopChannel_ < 0)
+        return;
+    const int channel = std::exchange(pendingStopChannel_, -1);
+    stopLoops(channel);
+}
+
+// Shift + Record: each stick, the triggers or a finger in axis mode moving
+// (as it would start a recording) locks or unlocks its loops, once a hold.
+void Engine::lockFromControls() {
+    for (int source = 0; source < kLoopSourceCount; ++source) {
+        if (source == static_cast<int>(LoopSource::Notes))
+            continue;
+        const auto i = static_cast<std::size_t>(source);
+        const bool finger = source == 2 || source == 3;
+        const auto group = static_cast<std::size_t>(finger ? 2 : source);  // the fingers lock together
+        if (lockToggled_[group])
+            continue;
+        if (finger && preset_->forChannel(holdChannel_).fingers[i - 2].mode != TouchMode::Axis)
+            continue;
+        float x = 0, y = 0;
+        const bool on = sourcePosition(source, x, y);
+        const bool moved = on && ((finger && !holdStartOn_[i]) || std::abs(x - holdStart_[i][0]) > kLoopMoveThreshold ||
+                                  std::abs(y - holdStart_[i][1]) > kLoopMoveThreshold);
+        if (!moved)
+            continue;
+        lockToggled_[group] = true;
+        if (toggleLoopLock(holdChannel_, source))
+            lockedThisHold_ = true;
+    }
 }
 
 void Engine::runLoops() {
     constexpr std::uint64_t kStep = 1'000'000'000ull / kLoopRateHz;
+    if (stretchHeld() && recordHolders_.any())
+        lockFromControls();
     // A source that moves during the hold starts recording into its loop: a
     // stick leaving its spot, a finger landing or sliding.
     for (int source = 0; source < kLoopSourceCount; ++source) {
         const auto i = static_cast<std::size_t>(source);
         if (!waiting_[i] || source == static_cast<int>(LoopSource::Notes))  // notes start when one plays
             continue;
-        if (stretchHeld() && source != static_cast<int>(LoopSource::Triggers))
-            continue;  // a stick or finger stretching is not a movement to record
+        if (stretchHeld())
+            continue;  // under Shift, moving stretches a loop or (with Record) locks it
+        if (loops_[loopIndex(holdChannel_, source)].locked) {  // locked during the hold
+            waiting_[i] = false;
+            continue;
+        }
         const bool finger = source == 2 || source == 3;
         float x = 0, y = 0;
         const bool on = sourcePosition(source, x, y);
@@ -714,6 +793,7 @@ void Engine::runLoops() {
         if (!moved)
             continue;
         waiting_[i] = false;
+        flushPendingStop();
         if (loopsPaused_)
             playLoops();
         const std::size_t index = loopIndex(holdChannel_, source);
@@ -1055,7 +1135,7 @@ void Engine::stretchPausing(int source, int steps) {
 void Engine::stretchFromControls() {
     const double dt = std::min(static_cast<double>(now_ - lastStretchTick_) * 1e-9, 0.05);
     lastStretchTick_ = now_;
-    if (!stretchHeld())
+    if (!stretchHeld() || recordHolders_.any())  // Shift + Record: the sticks lock their loops
         return;
     for (int source = 0; source < 2; ++source) {
         const auto i = static_cast<std::size_t>(source);
@@ -1263,8 +1343,11 @@ void Engine::recordNote(int channel, int note, int velocity, std::uint64_t at, s
     constexpr auto kNotes = static_cast<std::size_t>(LoopSource::Notes);
     const std::size_t index = loopIndex(channel, static_cast<int>(kNotes));
     Loop& loop = loops_[index];
+    if (velocity > 0 && waiting_[kNotes] && channel == holdChannel_ && loop.locked)
+        waiting_[kNotes] = false;  // locked during the hold
     if (velocity > 0 && waiting_[kNotes] && channel == holdChannel_) {
         waiting_[kNotes] = false;
+        flushPendingStop();
         if (loopsPaused_)
             playLoops();
         silenceLoop(index);
@@ -1279,7 +1362,7 @@ void Engine::recordNote(int channel, int note, int velocity, std::uint64_t at, s
         if (overdubChannel_ == channel)
             overdubChannel_ = -1;
     }
-    if (loop.state == LoopStatus::State::Playing && channel == overdubChannel_) {
+    if (loop.state == LoopStatus::State::Playing && channel == overdubChannel_ && !loop.locked) {
         overdubNote(channel, note, velocity, at, press, leadAt);
         return;
     }
@@ -1628,7 +1711,35 @@ LoopStatus Engine::loopStatus(int channel, int source) const {
     const bool waiting = waiting_[static_cast<std::size_t>(source)] && holdChannel_ == channel;
     const bool overdub = source == static_cast<int>(LoopSource::Notes) && overdubChannel_ == channel;
     return {loop.state, waiting, overdub, loop.length, loop.position, loop.direction, channel, loop.stretch, loop.amplitude,
-            loop.syncBeats > 0 ? loop.syncBeats * stretchFactor(loop.stretch) : 0.0};
+            loop.syncBeats > 0 ? loop.syncBeats * stretchFactor(loop.stretch) : 0.0, loop.locked};
+}
+
+bool Engine::loopLocked(int channel, int source) const {
+    channel = std::clamp(channel, 0, kChannelCount - 1);
+    source = std::clamp(source, 0, kLoopSourceCount - 1);
+    return loops_[loopIndex(channel, source)].locked;
+}
+
+bool Engine::toggleLoopLock(int channel, int source) {
+    channel = std::clamp(channel, 0, kChannelCount - 1);
+    source = std::clamp(source, 0, kLoopSourceCount - 1);
+    const bool finger = source == 2 || source == 3;
+    Loop& loop = loops_[loopIndex(channel, source)];
+    Loop* partner = finger ? &loops_[loopIndex(channel, 5 - source)] : nullptr;  // the other finger
+    if (loop.locked || (partner && partner->locked)) {
+        loop.locked = false;
+        if (partner)
+            partner->locked = false;
+        return true;
+    }
+    if (loop.state != LoopStatus::State::Playing && (!partner || partner->state != LoopStatus::State::Playing))
+        return false;
+    loop.locked = true;
+    if (partner)
+        partner->locked = true;
+    if (source == static_cast<int>(LoopSource::Notes) && overdubChannel_ == channel)
+        overdubChannel_ = -1;
+    return true;
 }
 
 float Engine::loopSample(int channel, int source, int axis, int index) const {
@@ -1648,15 +1759,24 @@ void Engine::clearLoop(int channel, int source) {
     loop.amplitude = 100;
     loop.amplitudeNow = 1;
     loopShaping_[index] = {-1.0f, -1.0f};
+    loop.locked = false;
+    const std::size_t which = index % kLoopSourceCount;
+    if (which == 2 || which == 3) {  // the other finger's lock goes with it when it has no loop
+        Loop& partner = loops_[index - which + (5 - which)];
+        if (partner.state == LoopStatus::State::Empty)
+            partner.locked = false;
+    }
     if (index % kLoopSourceCount == static_cast<std::size_t>(LoopSource::Notes) &&
         overdubChannel_ == static_cast<int>(index / kLoopSourceCount))
         overdubChannel_ = -1;
 }
 
 void Engine::stopLoops(int channel) {
-    for (int source = 0; source < kLoopSourceCount; ++source)
-        if (loops_[loopIndex(channel, source)].state == LoopStatus::State::Playing)
+    for (int source = 0; source < kLoopSourceCount; ++source) {
+        const Loop& loop = loops_[loopIndex(channel, source)];
+        if (loop.state == LoopStatus::State::Playing && !loop.locked)
             clearLoop(channel, source);
+    }
 }
 
 void Engine::pauseLoops() {
@@ -1721,6 +1841,7 @@ std::vector<SessionLoop> Engine::sessionLoops() const {
             l.length = loop.length;
             l.syncBeats = loop.syncBeats;
             l.anchorBeat = loop.anchorBeat;
+            l.locked = loop.locked;
             if (l.source == LoopSource::Notes) {
                 for (const NoteEvent& e : noteEvents_[static_cast<std::size_t>(channel)])
                     l.notes.push_back({e.at, e.note, e.velocity, e.on, e.press});
@@ -1738,6 +1859,8 @@ std::vector<SessionLoop> Engine::sessionLoops() const {
 
 void Engine::loadSessionLoops(const std::vector<SessionLoop>& loops) {
     waiting_.fill(false);
+    pendingStopChannel_ = -1;
+    shiftTapAt_ = 0;
     recordHolders_.reset();
     overdubChannel_ = -1;
     fromLoop_ = true;
@@ -1769,6 +1892,7 @@ void Engine::loadSessionLoops(const std::vector<SessionLoop>& loops) {
         loop.length = l.length;
         loop.syncBeats = l.syncBeats;
         loop.anchorBeat = l.anchorBeat;
+        loop.locked = l.locked;
         loop.state = LoopStatus::State::Playing;
         if (l.source != LoopSource::Notes)
             findMiddle(loop);
@@ -1785,8 +1909,11 @@ std::uint16_t Engine::channelsWithLoops() const {
 }
 
 void Engine::stopLoops() {
+    pendingStopChannel_ = -1;
     for (int channel = 0; channel < kChannelCount; ++channel)
-        stopLoops(channel);
+        for (int source = 0; source < kLoopSourceCount; ++source)
+            if (loops_[loopIndex(channel, source)].state == LoopStatus::State::Playing)
+                clearLoop(channel, source);
 }
 
 void Engine::toggleFreeze(std::uint8_t axes) {

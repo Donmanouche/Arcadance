@@ -289,6 +289,26 @@ bool hoverButton(const char* id, ImVec2 a, ImVec2 b) {
     return ImGui::IsItemClicked();
 }
 
+// A padlock `h` high, its left edge at `x`, centred on `y`: the sign of a locked loop.
+void drawLock(ImDrawList* dl, float x, float y, float h, ImU32 col) {
+    const float w = h * 0.82f, top = y - h * 0.5f, bodyTop = top + h * 0.48f;
+    const float stroke = std::max(h * 0.15f, 1.2f), r = w * 0.5f - stroke * 1.1f, cx = x + w * 0.5f;
+    const float arcY = top + stroke * 0.5f + r;
+    dl->PathLineTo(ImVec2(cx - r, bodyTop + stroke));  // the shackle: up, over, down
+    dl->PathArcTo(ImVec2(cx, arcY), r, 3.14159265f, 6.2831853f, 12);
+    dl->PathLineTo(ImVec2(cx + r, bodyTop + stroke));
+    dl->PathStroke(col, stroke);
+    dl->AddRectFilled(ImVec2(x, bodyTop), ImVec2(x + w, top + h), col, h * 0.15f);
+    dl->AddCircleFilled(ImVec2(cx, bodyTop + (top + h - bodyTop) * 0.45f), h * 0.1f, IM_COL32(0x20, 0x22, 0x26, 255));
+}
+
+// The border of a locked loop's box: solid, in its colour, with a soft halo.
+void drawLockedBorder(ImDrawList* dl, ImVec2 a, ImVec2 b, ImU32 col, float rounding) {
+    const float halo = px(2);
+    dl->AddRect(ImVec2(a.x - halo, a.y - halo), ImVec2(b.x + halo, b.y + halo), (col & 0x00FFFFFFu) | (60u << 24), rounding + halo, px(3));
+    dl->AddRect(a, b, col, rounding, px(2));
+}
+
 // --- Idle animations ------------------------------------------------------
 // When a LOOP box has nothing to show, a small 80s-90s style animation in
 // grey pixels, at half opacity: curves imitating the controls, arcade sprites,
@@ -598,6 +618,18 @@ float PerformanceView::smooth(int id, float target, float speed) {
 }
 
 void PerformanceView::click(const std::string& spec) { clicked_ = spec; }
+
+void PerformanceView::lockOnRightClick(int source, bool recorded, bool locked) {
+    if (!ImGui::IsItemHovered() || (!recorded && !locked))
+        return;
+    if (ImGui::IsMouseClicked(ImGuiMouseButton_Right))
+        lockRequest_ = source;
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal) && ImGui::BeginTooltip()) {
+        ImGui::TextUnformatted(locked ? "Locked: Record keeps it" : "Right-click: lock this loop");
+        ImGui::TextDisabled(locked ? "Right-click: unlock" : "Record will not erase it");
+        ImGui::EndTooltip();
+    }
+}
 
 void PerformanceView::stretchWheel(std::uint8_t sources, ImVec2 a, ImVec2 b) {
     const ImGuiIO& io = ImGui::GetIO();
@@ -1107,11 +1139,18 @@ void PerformanceView::drawPianoRoll(const Mapping& m, const LiveState& live, flo
     }
     if (!status.empty()) {
         const float tw = textWidth(gBold, px(10), status);
-        dl->AddRectFilled(ImVec2(ax1 - tw - px(12), ay0 + px(3)), ImVec2(ax1 - px(3), ay0 + px(17)), IM_COL32(0x20, 0x22, 0x26, 230), px(4));
+        const float chipX = ax1 - tw - px(12) - (st.locked && clip ? px(16) : 0.0f);
+        dl->AddRectFilled(ImVec2(chipX, ay0 + px(3)), ImVec2(ax1 - px(3), ay0 + px(17)), IM_COL32(0x20, 0x22, 0x26, 230), px(4));
         text(dl, gBold, px(10), ax1 - px(7), ay0 + px(10), statusColor, status, H::Right, V::Middle);
+        if (st.locked && clip)
+            drawLock(dl, chipX + px(5), ay0 + px(10), px(10), kViolet);
     }
+    if (st.locked && clip)
+        drawLockedBorder(dl, ImVec2(ax0, ay0), ImVec2(ax1, ay1), kViolet, px(3));
     const bool pressed = hoverButton("##pianoroll", ImVec2(ax0, ay0), ImVec2(ax1, ay1));
     const bool hovering = ImGui::IsItemHovered();
+    if (!editing_)  // in the editor, a right-click deletes notes
+        lockOnRightClick(static_cast<int>(kNotes), clip, st.locked);
     if (!clip || live.channel != selectionChannel_) {
         drag_.reset();
         bandFrom_.reset();
@@ -1444,14 +1483,16 @@ void PerformanceView::drawStick(int index, const Mapping& m, const LiveState& li
     drawLoopPanel(dl, x, w, loopY, y + h - px(10), live.loops[static_cast<std::size_t>(index)],
                   m.loops[static_cast<std::size_t>(index)], accent, mix(accent, T::kText, 0.5f), artFor(live.channel, index),
                   "REC  \xC2\xB7  move a stick", index == 0 ? "##loopL" : "##loopR",
-                  index == 0 ? "axes:left_x,left_y" : "axes:right_x,right_y", false, index);
+                  index == 0 ? "axes:left_x,left_y" : "axes:right_x,right_y",
+                  m.axes[static_cast<std::size_t>(index == 0 ? Axis::LeftX : Axis::RightX)].invert,
+                  m.axes[static_cast<std::size_t>(index == 0 ? Axis::LeftY : Axis::RightY)].invert, index);
 }
 
 // A LOOP panel: its header (state, playback, length), and the loop's two
 // curves over time with a playhead and the CCs it sends.
 void PerformanceView::drawLoopPanel(ImDrawList* dl, float x, float w, float loopY, float bottom, const LiveState::Loop& loop,
                                     const LoopBinding& lb, ImU32 colorX, ImU32 colorY, int art,
-                                    const char* waitStatus, const char* id, const std::string& spec, bool upward,
+                                    const char* waitStatus, const char* id, const std::string& spec, bool invertX, bool invertY,
                                     int source, const char* legendX, const char* legendY) {
     const float gTop = loopY + px(10), gBottom = bottom;
     const LoopStatus& st = loop.status;
@@ -1512,7 +1553,11 @@ void PerformanceView::drawLoopPanel(ImDrawList* dl, float x, float w, float loop
         right = drawStretchChip(dl, right, loopY, st.stretch, colorX) - (st.stretch != 0 ? px(4) : 0.0f);
         ruleEnd = drawAmplitudeChip(dl, right, loopY, st.amplitude, colorX) - px(6);
     }
-    const float ruleStart = x + px(16) + textWidth(gBold, size, "LOOP");
+    float ruleStart = x + px(16) + textWidth(gBold, size, "LOOP");
+    if (st.locked) {
+        drawLock(dl, ruleStart - px(1), loopY - px(0.5f), px(11), colorX);
+        ruleStart += px(14);
+    }
     if (ruleEnd > ruleStart)
         dl->AddLine(ImVec2(ruleStart, loopY), ImVec2(ruleEnd, loopY), IM_COL32(0x40, 0x44, 0x4B, 255), px(1));
 
@@ -1520,7 +1565,10 @@ void PerformanceView::drawLoopPanel(ImDrawList* dl, float x, float w, float loop
     const ImVec2 ga(x + px(12), gTop), gb(x + w - px(12), gBottom);
     dl->AddRectFilled(ga, gb, kGraph, px(4));
     const ImU32 border = recording ? T::kRed : st.waiting ? alpha(T::kRed, 0.5f) : playing ? alpha(colorX, 0.45f) : kGraph;
-    dl->AddRect(ga, gb, border, px(4), px(1.3f));
+    if (st.locked && playing)
+        drawLockedBorder(dl, ga, gb, colorX, px(4));
+    else
+        dl->AddRect(ga, gb, border, px(4), px(1.3f));
     const ImVec2 mid((ga.x + gb.x) * 0.5f, (ga.y + gb.y) * 0.5f);
     if (!recording && !playing) {
         idleArt(dl, art, ga, gb, time_);
@@ -1542,7 +1590,9 @@ void PerformanceView::drawLoopPanel(ImDrawList* dl, float x, float w, float loop
             const float t = static_cast<float>(i) / static_cast<float>(loop.points - 1);
             const float centre = middle[static_cast<std::size_t>(axis)];
             const float v = Engine::shapeAmplitude(static_cast<float>((axis == 0 ? loop.x : loop.y)[static_cast<std::size_t>(i)]) / 255.0f, centre, scale);
-            return ImVec2(lx0 + t * (lx1 - lx0), upward ? ly1 - v * (ly1 - ly0) : ly0 + v * (ly1 - ly0));
+            // What the loop sends: an inverted axis upside down, the highest value at the top.
+            const float sent = (axis == 0 ? invertX : invertY) ? 1.0f - v : v;
+            return ImVec2(lx0 + t * (lx1 - lx0), ly1 - sent * (ly1 - ly0));
         };
         auto at = [&](int i, int axis) { return curveAt(i, axis, amp); };
         for (int axis = 0; axis < 2; ++axis) {
@@ -1589,6 +1639,7 @@ void PerformanceView::drawLoopPanel(ImDrawList* dl, float x, float w, float loop
     stretchWheel(sourceBit, ImVec2(ga.x, loopY - px(6)), gb);
     if (hoverButton(id, ImVec2(ga.x, loopY - px(6)), gb))
         click(spec);
+    lockOnRightClick(source, playing, st.locked);
 }
 
 void PerformanceView::drawTriggers(const Mapping& m, const LiveState& live, float x, float y, float w, float h) {
@@ -1656,7 +1707,8 @@ void PerformanceView::drawTriggers(const Mapping& m, const LiveState& live, floa
     drawLoopPanel(dl, x, w, loopY, y + h - px(10), live.loops[static_cast<std::size_t>(LoopSource::Triggers)],
                   m.loops[static_cast<std::size_t>(LoopSource::Triggers)], T::kPink, pinkLight,
                   artFor(live.channel, 2), "REC  \xC2\xB7  press a trigger", "##looptriggers",
-                  "axes:left_trigger,right_trigger", true, static_cast<int>(LoopSource::Triggers), "L2", "R2");
+                  "axes:left_trigger,right_trigger", m.axes[static_cast<std::size_t>(Axis::LeftTrigger)].invert,
+                  m.axes[static_cast<std::size_t>(Axis::RightTrigger)].invert, static_cast<int>(LoopSource::Triggers), "L2", "R2");
 }
 
 void PerformanceView::drawDpad(const Mapping& m, const LiveState& live, float x, float y, float w, float h) {
@@ -1903,14 +1955,23 @@ void PerformanceView::drawTouchpad(const Mapping& m, const LiveState& live, floa
         float right = drawStretchChip(dl, statusX - px(6), loopY, ls.stretch, fingerColors[shown]) - (ls.stretch != 0 ? px(4) : 0.0f);
         ruleEnd = drawAmplitudeChip(dl, right, loopY, ls.amplitude, fingerColors[shown]) - px(6);
     }
-    const float ruleStart = x + px(16) + textWidth(gBold, px(11), "LOOP");
+    const bool locked = loops[0]->status.locked || loops[1]->status.locked;
+    const ImU32 lockColor = fingerColors[std::max(shown, 0)];
+    float ruleStart = x + px(16) + textWidth(gBold, px(11), "LOOP");
+    if (locked) {
+        drawLock(dl, ruleStart - px(1), loopY - px(0.5f), px(11), lockColor);
+        ruleStart += px(14);
+    }
     if (ruleEnd > ruleStart)
         dl->AddLine(ImVec2(ruleStart, loopY), ImVec2(ruleEnd, loopY), IM_COL32(0x40, 0x44, 0x4B, 255), px(1));
 
     const ImVec2 ga(x + px(12), boxTop), gb(x + w - px(12), boxBottom);
     dl->AddRectFilled(ga, gb, kGraph, px(4));
     const ImU32 border = recording ? T::kRed : waiting ? alpha(T::kRed, 0.5f) : shown >= 0 ? alpha(fingerColors[shown], 0.45f) : kGraph;
-    dl->AddRect(ga, gb, border, px(4), px(1.3f));
+    if (locked && shown >= 0 && !recording)
+        drawLockedBorder(dl, ga, gb, lockColor, px(4));
+    else
+        dl->AddRect(ga, gb, border, px(4), px(1.3f));
     const ImVec2 pa(ga.x + px(6), ga.y + px(6)), pb(gb.x - px(6), gb.y - px(6) - timelineH);
     // The paths, over a small touchpad.
     for (float gx = pa.x + px(6); gx < pb.x; gx += px(12))
@@ -2005,6 +2066,7 @@ void PerformanceView::drawTouchpad(const Mapping& m, const LiveState& live, floa
     stretchWheel(kFingerLoops, ImVec2(ga.x, loopY - px(6)), gb);
     if (hoverButton("##touchloop", ImVec2(ga.x, loopY - px(6)), gb))
         click("fingers");
+    lockOnRightClick(static_cast<int>(LoopSource::Finger1), shown >= 0, locked);
 }
 
 // The touchpad's LOOP panel in 4-pad mode: the pads' notes in the note loop,
@@ -2062,14 +2124,21 @@ void PerformanceView::drawPadLanes(ImDrawList* dl, const Mapping& m, const LiveS
     if (!status.empty())
         text(dl, gBold, px(10), statusX, loopY, statusColor, status, H::Left, V::Middle);
     const float ruleEnd = status.empty() ? x + w - px(12) : statusX - px(8);
-    const float ruleStart = x + px(16) + textWidth(gBold, px(11), "LOOP");
+    float ruleStart = x + px(16) + textWidth(gBold, px(11), "LOOP");
+    if (st.locked) {
+        drawLock(dl, ruleStart - px(1), loopY - px(0.5f), px(11), kViolet);
+        ruleStart += px(14);
+    }
     if (ruleEnd > ruleStart)
         dl->AddLine(ImVec2(ruleStart, loopY), ImVec2(ruleEnd, loopY), IM_COL32(0x40, 0x44, 0x4B, 255), px(1));
 
     const ImVec2 ga(x + px(12), boxTop), gb(x + w - px(12), boxBottom);
     dl->AddRectFilled(ga, gb, kGraph, px(4));
-    dl->AddRect(ga, gb, recording ? T::kRed : st.waiting ? alpha(T::kRed, 0.5f) : playing ? alpha(kViolet, 0.45f) : kGraph, px(4),
-                px(1.3f));
+    if (st.locked && playing)
+        drawLockedBorder(dl, ga, gb, kViolet, px(4));
+    else
+        dl->AddRect(ga, gb, recording ? T::kRed : st.waiting ? alpha(T::kRed, 0.5f) : playing ? alpha(kViolet, 0.45f) : kGraph, px(4),
+                    px(1.3f));
     const ImVec2 pa(ga.x + px(6), ga.y + px(6)), pb(gb.x - px(6), gb.y - px(6) - timelineH);
     static constexpr const char* kPadNames[] = {"TL", "TR", "BL", "BR"};
     const float laneH = (pb.y - pa.y) / kZoneCount;
@@ -2113,6 +2182,7 @@ void PerformanceView::drawPadLanes(ImDrawList* dl, const Mapping& m, const LiveS
         idleArt(dl, artFor(live.channel, 3), ga, gb, time_);
     if (hoverButton("##touchloop", ImVec2(ga.x, loopY - px(6)), gb))
         click("notes");
+    lockOnRightClick(static_cast<int>(LoopSource::Notes), playing, st.locked);
 }
 
 void PerformanceView::drawButtons(const Mapping& m, const LiveState& live, float x, float y, float w, float h) {

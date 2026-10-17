@@ -1534,6 +1534,8 @@ void GuiApp::drawPerformance(const LiveState& live) {
         else
             runtime_->moveLoopNotes(std::move(edit->notes), edit->samples, edit->semitones, edit->byDegrees);
     }
+    if (const auto source = performance_.takeLockRequest())  // a right-click on a LOOP panel or the piano roll
+        runtime_->toggleLoopLock(*source);
     if (const auto stretch = performance_.takeStretchRequest())  // Shift + wheel over a LOOP panel
         for (int source = 0; source < kLoopSourceCount; ++source)
             if (stretch->sources & (1u << source)) {

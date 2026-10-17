@@ -78,6 +78,8 @@ Json sessionToJson(const Session& session) {
             o["sync_beats"] = l.syncBeats;
             o["anchor_beat"] = l.anchorBeat;
         }
+        if (l.locked)
+            o["locked"] = true;
         if (l.source == LoopSource::Notes) {
             Json notes = Json::array();
             for (const SessionLoop::Note& n : l.notes)
@@ -136,6 +138,11 @@ Session sessionFromJson(const Json& j) {
                 fail(where, "missing \"length\"");
             l.syncBeats = std::max(0.0, readNumber(o, "sync_beats", where));
             l.anchorBeat = readNumber(o, "anchor_beat", where);
+            if (o.contains("locked")) {
+                if (!o["locked"].is_boolean())
+                    fail(where + ".locked", "expected true or false");
+                l.locked = o["locked"].get<bool>();
+            }
             if (l.source == LoopSource::Notes) {
                 if (!o.contains("notes") || !o["notes"].is_array() || o["notes"].size() > static_cast<std::size_t>(kMaxNotes))
                     fail(where + ".notes", "expected at most " + std::to_string(kMaxNotes) + " notes");

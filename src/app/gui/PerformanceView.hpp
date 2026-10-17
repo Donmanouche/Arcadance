@@ -71,6 +71,9 @@ public:
         bool amplitude = false;
     };
     std::optional<StretchRequest> takeStretchRequest() { return std::exchange(stretch_, std::nullopt); }
+    // A right-click on a LOOP panel or the piano roll, during the last draw():
+    // the LoopSource to lock or unlock (Engine::toggleLoopLock).
+    std::optional<int> takeLockRequest() { return std::exchange(lockRequest_, std::nullopt); }
     // The note loop's editor: a large piano roll, `w` by `h`, at the cursor of
     // the current window (the main view's piano roll only shows the loop; a
     // click on it opens this editor). Dragging a note moves it, or the
@@ -117,7 +120,7 @@ private:
     void drawPianoRoll(const midipad::Mapping& m, const LiveState& live, float x, float y, float w, float h);
     void drawLoopPanel(ImDrawList* dl, float x, float w, float loopY, float bottom, const LiveState::Loop& loop,
                        const midipad::LoopBinding& binding, ImU32 colorX, ImU32 colorY, int idleArt,
-                       const char* waitStatus, const char* id, const std::string& spec, bool upward, int source,
+                       const char* waitStatus, const char* id, const std::string& spec, bool invertX, bool invertY, int source,
                        const char* legendX = nullptr, const char* legendY = nullptr);
     // Stretching loops: reads Shift + wheel over a LOOP panel (a, b), for the
     // loops in `sources`; draws the gauge of `stretch` at the bottom of the box
@@ -141,6 +144,10 @@ private:
     std::optional<std::string> clicked_;
     int beatsPerBar_ = 4;  // of the sync, for the loops' beat grids
     std::optional<StretchRequest> stretch_;
+    std::optional<int> lockRequest_;
+    // Over the item just drawn (a LOOP panel, the piano roll): a right-click
+    // locks or unlocks `source`'s loop, which a tooltip says once there is one.
+    void lockOnRightClick(int source, bool recorded, bool locked);
     std::optional<NoteEdit> noteEdit_;
     int quantize_ = 0;
     bool editing_ = false;     // drawing the note loop editor, not the view's piano roll

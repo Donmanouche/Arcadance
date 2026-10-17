@@ -70,7 +70,7 @@ struct LiveState {
     std::uint64_t sounding = 0;   // Engine::soundingSlots()
     std::uint16_t loopChannels = 0;  // Engine::channelsWithLoops()
     bool loopsPaused = false;
-    bool stretchHeld = false;  // a LoopStretch binding is held
+    bool stretchHeld = false;  // Shift is on (held or latched)
     // The Velocity and Transpose axes on the active channel (Engine::shaping).
     float velocityShaping = 0;
     int transposeNotes = 0, transposeLoop = 0;
@@ -122,6 +122,7 @@ public:
     void setChannel(int channel);
     void panic();  // also stops the loops, on every channel
     void clearLoop(int source);  // a LoopSource, on the active channel
+    void toggleLoopLock(int source);  // see Engine::toggleLoopLock, on the active channel
     // Editing the active channel's note loop (Engine::moveLoopNotes,
     // removeLoopNotes), in the order asked.
     void moveLoopNotes(std::vector<midipad::LoopNoteRef> notes, int samples, int semitones, bool byDegrees = false);
@@ -178,7 +179,7 @@ private:
     class Tap;
     struct Command {
         enum class Kind : std::uint8_t {
-            SetChannel, Panic, ClearLoop, StretchLoop, AmplifyLoop, PauseLoops, PlayLoops, SaveLoops, LoadLoops,
+            SetChannel, Panic, ClearLoop, ToggleLock, StretchLoop, AmplifyLoop, PauseLoops, PlayLoops, SaveLoops, LoadLoops,
             EditNotes
         } kind;
         int channel = 0;

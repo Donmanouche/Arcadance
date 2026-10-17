@@ -58,6 +58,7 @@ struct LoopStatus {
     int stretch = 0;       // movement loops: see Engine::stretchFactor
     int amplitude = 100;   // movement loops: percent of the recorded swing, around its middle
     double beats = 0;      // synced to the beat clock: its length in beats (stretched); 0: free
+    bool locked = false;   // see Engine::toggleLoopLock
 };
 
 // Turns controller events into MIDI according to the active preset.
@@ -154,15 +155,26 @@ public:
     // channel's note loop plays, it turns overdub on or off: the notes then
     // played (buttons, D-pad, triggers, pads) join the loop where it plays;
     // otherwise it stops the active channel's loops.
+    // While Shift is on, Record held and a stick, the triggers or a finger
+    // (axis mode) moving locks or unlocks that loop instead (once a hold),
+    // and two taps within kDoubleTapMs lock or unlock the note loop: the first
+    // tap's overdub is then taken back, and its stop waits that long.
     static constexpr int kLoopRateHz = 200;
     static constexpr int kMaxLoopSamples = 60 * kLoopRateHz;
     static constexpr float kLoopMoveThreshold = 0.06f;  // of the [0, 1] travel
     static constexpr int kLoopTapMs = 500;
+    static constexpr int kDoubleTapMs = 350;
     LoopStatus loopStatus(int channel, int source) const;
     // [0, 1]; axis 0: X, 1: Y (a finger's Y grows downwards). Negative while a
     // finger was lifted.
     float loopSample(int channel, int source, int axis, int index) const;
-    void clearLoop(int channel, int source);
+    void clearLoop(int channel, int source);  // also unlocks it
+    // A locked loop stays: Record neither replaces it nor stops it, nor
+    // overdubs a locked note loop. Clearing it (clearLoop, PANIC) unlocks it.
+    // The touchpad fingers' loops lock together. Only a loop that plays can be
+    // locked; false when there is none.
+    bool loopLocked(int channel, int source) const;
+    bool toggleLoopLock(int channel, int source);
     // A movement loop (not the note loop) played slower or faster, in steps
     // of a half: stretch > 0 lasts 1 + stretch / 2 times as long (up to 100),
     // stretch < 0 1 + |stretch| / 2 times less (down to 20). It plays on from
@@ -225,10 +237,10 @@ public:
         return removeLoopNotes(channel, {{start, static_cast<std::uint8_t>(note)}});
     }
     static constexpr int kMaxNoteEvents = 4096;  // per note loop
-    void stopLoops(int channel);
+    void stopLoops(int channel);  // but the locked ones
     // A bit per channel where a loop plays or records.
     std::uint16_t channelsWithLoops() const;
-    void stopLoops();  // every channel
+    void stopLoops();  // every channel, the locked loops too (PANIC)
     // Pauses every channel's loops, keeping them (what they have on stops), or
     // plays them all again from their start. A loop that starts recording
     // while they are paused plays them all again.
@@ -383,6 +395,7 @@ private:
         float middleX = 0.5f, middleY = 0.5f;  // halfway between the lowest and highest samples
         std::uint64_t nextAt = 0;
         int sentX = -1, sentY = -1;
+        bool locked = false;
     };
     static constexpr std::uint16_t kLifted = 0xFFFF;
     static void findMiddle(Loop& loop);  // a movement loop's middle, from its samples
@@ -466,6 +479,18 @@ private:
     void amplifyPausing(int source, int steps);
     std::array<std::uint64_t, kLoopSourceCount> amplitudePausedUntil_{};
     bool recordedThisHold_ = false;
+    // Shift + Record: which sources toggled their lock this hold (a finger
+    // counts for both), and whether one did.
+    void lockFromControls();
+    std::array<bool, kLoopSourceCount> lockToggled_{};
+    bool lockedThisHold_ = false;
+    // Shift + two taps on Record: when the first tap ended (0: none), on which
+    // channel, the overdub before it, and the stop it asked for, held back.
+    std::uint64_t shiftTapAt_ = 0;
+    int shiftTapChannel_ = 0, overdubBeforeTap_ = -1;
+    int pendingStopChannel_ = -1;
+    std::uint64_t pendingStopAt_ = 0;
+    void flushPendingStop();
     std::array<std::optional<Zone>, kFingerCount> fingerZone_{};
     std::array<bool, 2> triggerDown_{};
 };
