@@ -16,7 +16,8 @@ enum class Mode : std::uint8_t {
 };
 
 enum class ActionType : std::uint8_t {
-    None, Note, ControlChange, Chord, Transport, ChannelStep, Freeze, LoopRecord, ProgramChange, Shift, TapTempo
+    None, Note, ControlChange, Chord, Transport, ChannelStep, Freeze, LoopRecord, ProgramChange, Shift, TapTempo,
+    SessionScreen  // opens and closes the session screen
 };
 
 enum class TransportCommand : std::uint8_t { Start, Stop, Continue };

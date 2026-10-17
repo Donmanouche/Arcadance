@@ -72,6 +72,12 @@ Json sessionToJson(const Session& session) {
     for (const SessionLoop& l : session.loops) {
         Json o;
         o["channel"] = l.channel + 1;
+        if (l.clip != 0)
+            o["clip"] = l.clip + 1;
+        if (!l.current)
+            o["current"] = false;
+        if (!l.playing)
+            o["playing"] = false;
         o["source"] = kSources[static_cast<int>(l.source)];
         o["length"] = l.length;
         if (l.syncBeats > 0) {
@@ -128,6 +134,12 @@ Session sessionFromJson(const Json& j) {
                 fail(where, "expected an object");
             SessionLoop l;
             l.channel = readInt(o, "channel", 1, 16, 1, where) - 1;
+            l.clip = readInt(o, "clip", 1, 8, 1, where) - 1;
+            for (const char* key : {"current", "playing"})
+                if (o.contains(key) && !o[key].is_boolean())
+                    fail(where + "." + key, "expected true or false");
+            l.current = o.value("current", true);
+            l.playing = o.value("playing", true);
             const std::string source = o.contains("source") && o["source"].is_string() ? o["source"].get<std::string>() : "";
             const auto found = std::find(std::begin(kSources), std::end(kSources), source);
             if (found == std::end(kSources))

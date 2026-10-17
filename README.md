@@ -25,10 +25,15 @@ Written in C++20, Linux first; Windows and macOS packages are planned.
   Overdub, forward / reverse / back-and-forth playback, Play and Stop for every
   loop at once. Lock a loop (right-click its panel, or Shift + Record from the
   controller) and Record keeps it.
+- **Clips and a session screen.** Each channel keeps up to eight clips, each a
+  full set of its loops. The session screen shows them all, a column per
+  channel: move with the sticks or the D-pad, press L3 or R3 to launch a clip
+  (it starts at the end of the playing one's turn) or stop it, record a new
+  clip on an empty slot. Every channel plays its own clip.
 - **Edit loops in a large piano roll.** Move a note, a chord or a selection in
   time and pitch (onto the scale if you like), change their length, or delete
   them, and shorten or lengthen the loop, while it plays, without recording
-  again. Notes show their
+  again; the mouse wheel zooms in. Notes show their
   velocity.
 - **Sessions.** Save every channel's loops, the preset, the tonality and the
   tempo in one file, and open them again later.

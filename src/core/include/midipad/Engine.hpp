@@ -165,6 +165,44 @@ public:
     static constexpr int kLoopTapMs = 500;
     static constexpr int kDoubleTapMs = 350;
     LoopStatus loopStatus(int channel, int source) const;
+    // Clips: each channel keeps kClipSlots clips, each a full set of loops
+    // (notes, sticks, triggers, fingers). A channel plays one clip at a time,
+    // independently of the others; the loops above are those of its current
+    // clip, which Record records into. launchClip, while the current clip
+    // plays, waits for the end of its turn (its note loop's, else its longest
+    // movement loop's; on the beat clock, its beats) and then starts the clip
+    // from its start (on the beat); with nothing playing it starts at once.
+    // Launching an empty slot, or stopClip, stops the channel there, its
+    // clips kept. setRecordSlot: the next recording on that channel goes
+    // into this slot, a new clip when it is empty; the current clip stops
+    // when that recording starts.
+    static constexpr int kClipSlots = 8;
+    int currentClip(int channel) const { return currentSlot_[static_cast<std::size_t>(std::clamp(channel, 0, kChannelCount - 1))]; }
+    bool clipPlaying(int channel) const { return clipPlaying_[static_cast<std::size_t>(std::clamp(channel, 0, kChannelCount - 1))]; }
+    int queuedClip(int channel) const { return queued_[static_cast<std::size_t>(std::clamp(channel, 0, kChannelCount - 1))]; }  // -1 none, kClipSlots a stop
+    bool clipHasLoops(int channel, int slot) const;
+    LoopStatus clipLoopStatus(int channel, int slot, int source) const;
+    float clipSample(int channel, int slot, int source, int axis, int index) const;  // as loopSample
+    int clipNoteIntervals(int channel, int slot, NoteInterval* out, int max) const;  // as noteLoopIntervals
+    float clipProgress(int channel) const;  // how far the playing clip is in its turn, 0-1; -1: none plays
+    void launchClip(int channel, int slot);
+    void stopClip(int channel) { launchClip(channel, kClipSlots); }
+    void setRecordSlot(int channel, int slot);
+    int recordSlot(int channel) const { return recordSlot_[static_cast<std::size_t>(std::clamp(channel, 0, kChannelCount - 1))]; }
+    // The session screen, from the controller. A SessionScreen binding (channel
+    // 1's works on every channel; without one in the preset, PS / Guide) asks
+    // to open or close it. While setSessionMode(true), both sticks and the
+    // D-pad move its cursor (a step a push, repeating while held) and L3 or R3
+    // presses the clip under it; meanwhile they send, play and record nothing,
+    // except while Record is held: then they play and record as usual (a stick
+    // moves the cursor again once back at rest). What is asked comes out of
+    // takeSessionEvent(), oldest first.
+    enum class SessionEvent : std::uint8_t { Toggle, Up, Down, Left, Right, Press };
+    void setSessionMode(bool on) { sessionMode_ = on; }
+    bool sessionMode() const { return sessionMode_; }
+    std::optional<SessionEvent> takeSessionEvent();
+    static constexpr float kNavPush = 0.6f, kNavRest = 0.35f;  // of the stick's half travel
+    static constexpr int kNavRepeatDelayMs = 400, kNavRepeatMs = 150;
     // [0, 1]; axis 0: X, 1: Y (a finger's Y grows downwards). Negative while a
     // finger was lifted.
     float loopSample(int channel, int source, int axis, int index) const;
@@ -246,7 +284,7 @@ public:
     void stopLoops(int channel);  // but the locked ones
     // A bit per channel where a loop plays or records.
     std::uint16_t channelsWithLoops() const;
-    void stopLoops();  // every channel, the locked loops too (PANIC)
+    void stopLoops();  // every channel's current clip, the locked loops too (PANIC)
     // Pauses every channel's loops, keeping them (what they have on stops), or
     // plays them all again from their start. A loop that starts recording
     // while they are paused plays them all again.
@@ -356,8 +394,8 @@ private:
     // Where each finger last was, kept once lifted (Velocity / Transpose axes); 0.5: untouched.
     std::array<std::array<float, 2>, kFingerCount> fingerHeld_{{{0.5f, 0.5f}, {0.5f, 0.5f}}};
     // The X, Y a movement loop last played for Velocity / Transpose axes; < 0: none.
-    std::array<std::array<float, 2>, kChannelCount * kLoopSourceCount> loopShaping_ = [] {
-        std::array<std::array<float, 2>, kChannelCount * kLoopSourceCount> none{};
+    std::array<std::array<float, 2>, kChannelCount * kClipSlots * kLoopSourceCount> loopShaping_ = [] {
+        std::array<std::array<float, 2>, kChannelCount * kClipSlots * kLoopSourceCount> none{};
         for (auto& v : none)
             v = {-1.0f, -1.0f};
         return none;
@@ -402,15 +440,34 @@ private:
         std::uint64_t nextAt = 0;
         int sentX = -1, sentY = -1;
         bool locked = false;
+        double turns = 0;  // free: how many times round since it started
     };
     static constexpr std::uint16_t kLifted = 0xFFFF;
     static void findMiddle(Loop& loop);  // a movement loop's middle, from its samples
     // A synced loop's place now, from the beat clock: its phase in samples and the way it goes.
     void syncedPhase(const Loop& loop, LoopPlayback playback, double beat, double& phase, int& direction) const;
-    static constexpr std::size_t loopIndex(int channel, int source) {
-        return static_cast<std::size_t>(channel * kLoopSourceCount + source);
+    // Every clip's loops: slotIndex(channel, slot, source); loopIndex, the current clip's.
+    static constexpr int kChannelLoops = kClipSlots * kLoopSourceCount;
+    static constexpr std::size_t slotIndex(int channel, int slot, int source) {
+        return static_cast<std::size_t>((channel * kClipSlots + slot) * kLoopSourceCount + source);
     }
-    std::array<Loop, kChannelCount * kLoopSourceCount> loops_;  // loopIndex(channel, source)
+    static constexpr int channelOfLoop(std::size_t index) { return static_cast<int>(index / kChannelLoops); }
+    static constexpr int sourceOfLoop(std::size_t index) { return static_cast<int>(index % kLoopSourceCount); }
+    static constexpr int slotOfLoop(std::size_t index) { return static_cast<int>(index / kLoopSourceCount % kClipSlots); }
+    std::size_t loopIndex(int channel, int source) const {
+        return slotIndex(channel, currentSlot_[static_cast<std::size_t>(channel)], source);
+    }
+    std::array<Loop, kChannelCount * kChannelLoops> loops_;
+    std::array<int, kChannelCount> currentSlot_{}, recordSlot_{};
+    std::array<bool, kChannelCount> clipPlaying_{};
+    std::array<int, kChannelCount> queued_ = [] { std::array<int, kChannelCount> a{}; a.fill(-1); return a; }();
+    std::array<long long, kChannelCount> turnMark_{};
+    // The current clip's turns so far, from its leading loop (false: none plays).
+    bool clipTurns(int channel, double& turns) const;
+    void switchClip(int channel, int slot);  // now
+    void enterRecordSlot(int channel);       // a recording starts: into the record slot
+    void startClipLoops(int channel);        // the current clip's loops, from their start
+    bool currentHasLoops(int channel) const { return clipHasLoops(channel, currentSlot_[static_cast<std::size_t>(channel)]); }
     // Where a source is now: X, Y in [0, 1]; false for a lifted finger.
     bool sourcePosition(int source, float& x, float& y) const;
     // The hold of a LoopRecord binding: on which channel, which sources may
@@ -450,7 +507,13 @@ private:
         std::uint32_t press = 0;
     };
     std::vector<NoteSpan> spans_;
-    std::array<std::vector<NoteEvent>, kChannelCount> noteEvents_;
+    std::array<std::vector<NoteEvent>, kChannelCount * kClipSlots> noteEvents_;  // per channel and clip
+    std::vector<NoteEvent>& eventsOf(int channel) {
+        return noteEvents_[static_cast<std::size_t>(channel * kClipSlots + currentSlot_[static_cast<std::size_t>(channel)])];
+    }
+    const std::vector<NoteEvent>& eventsOf(int channel) const {
+        return noteEvents_[static_cast<std::size_t>(channel * kClipSlots + currentSlot_[static_cast<std::size_t>(channel)])];
+    }
     std::array<std::bitset<128>, kChannelCount> noteLoopOn_{};
     std::array<std::uint8_t, 128> noteVelocity_{};  // of the last note-on recorded, for its release
     std::uint64_t noteRecordStart_ = 0;
@@ -485,6 +548,19 @@ private:
     void amplifyPausing(int source, int steps);
     std::array<std::uint64_t, kLoopSourceCount> amplitudePausedUntil_{};
     bool recordedThisHold_ = false;
+    // The session screen: its button, whether it shows, the events asked, and
+    // the stick's and the D-pad's pushes held, with when they repeat.
+    bool sessionMode_ = false, presetHasSession_ = false, wasNavigating_ = false;
+    bool navigating() const { return sessionMode_ && recordHolders_.none(); }
+    std::array<SessionEvent, 16> sessionEvents_{};
+    int sessionEventCount_ = 0;
+    void pushSessionEvent(SessionEvent e);
+    std::array<std::optional<SessionEvent>, 2> stickNav_{};
+    std::optional<SessionEvent> hatNav_;
+    std::array<std::uint64_t, 2> stickNavNext_{};
+    std::uint64_t hatNavNext_ = 0;
+    std::optional<SessionEvent> stickPush(int stick) const;  // where a stick is pushed, past kNavPush (or held)
+    void navigate();
     // Shift + Record: which sources toggled their lock this hold (a finger
     // counts for both), and whether one did.
     void lockFromControls();

@@ -471,7 +471,7 @@ bool MappingEditor::drawLoopForm(int source, Mapping& m) {
 bool MappingEditor::drawTriggerEditor(TriggerBinding& b) {
     bool changed = false;
     static const char* kTypes[] = {"No action", "Note", "CC", "Chord", "Transport", "Channel change", "Axis freeze",
-                                   "Loop record", "Program change", "Shift", "Tap tempo"};
+                                   "Loop record", "Program change", "Shift", "Tap tempo", "Session screen"};
     int type = static_cast<int>(b.type);
     ImGui::SetNextItemWidth(ImGui::GetFontSize() * 14);
     if (ImGui::Combo("Action", &type, kTypes, IM_ARRAYSIZE(kTypes)) && type != static_cast<int>(b.type)) {
@@ -589,6 +589,12 @@ bool MappingEditor::drawTriggerEditor(TriggerBinding& b) {
                            "finger on the touchpad reshapes its loop: left or right stretches or compresses it in "
                            "time, as Shift + mouse wheel over its LOOP panel does; up or down widens or narrows its "
                            "amplitude, as Ctrl + mouse wheel does. Meanwhile they send no CC. What you set stays.");
+        ImGui::PopStyleColor();
+        break;
+    case ActionType::SessionScreen:
+        ImGui::PushStyleColor(ImGuiCol_Text, kHintColor);
+        ImGui::TextWrapped("Opens and closes the session screen: the clips of every channel. Set on channel 1, it works on "
+                           "every channel. Without one in the preset, the PS / Guide button does it.");
         ImGui::PopStyleColor();
         break;
     case ActionType::TapTempo:

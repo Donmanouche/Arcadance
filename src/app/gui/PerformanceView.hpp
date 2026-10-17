@@ -71,6 +71,15 @@ public:
         bool amplitude = false;
     };
     std::optional<StretchRequest> takeStretchRequest() { return std::exchange(stretch_, std::nullopt); }
+    // The session screen, in place of the modules: a column of clips per
+    // channel (eight at a time), the cursor on `cursorSlot` of the active
+    // channel. What a click asks for, if anything: launching a clip (or
+    // choosing an empty slot), stopping a channel, choosing a channel.
+    struct SessionAction {
+        enum class Kind : std::uint8_t { Launch, Stop, Channel } kind = Kind::Launch;
+        int channel = 0, slot = 0;
+    };
+    std::optional<SessionAction> drawSession(const LiveState& live, int cursorSlot);
     // A right-click on a LOOP panel or the piano roll, during the last draw():
     // the LoopSource to lock or unlock (Engine::toggleLoopLock).
     std::optional<int> takeLockRequest() { return std::exchange(lockRequest_, std::nullopt); }
@@ -184,6 +193,8 @@ private:
     bool editorClip_ = false;
     float scrollGrab_ = 0;
     bool escapeTaken_ = false;
+    int sessionFirst_ = 0;  // the first channel the session screen shows (0 or 8)
+    int sessionChannelSeen_ = -1;
     std::vector<midipad::LoopNoteRef> selection_;  // in the active channel's note loop
     int selectionChannel_ = -1;
     double lastNoteEdit_ = -1e9;

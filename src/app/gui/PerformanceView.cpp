@@ -118,6 +118,7 @@ std::string compact(const TriggerBinding& b, bool flats) {
     case ActionType::LoopRecord: return "Rec";
     case ActionType::Shift: return "Shift";
     case ActionType::TapTempo: return "Tap";
+    case ActionType::SessionScreen: return "Session";
     case ActionType::ProgramChange:
         return b.programStep != 0 ? std::string("PC ") + (b.programStep > 0 ? "+1" : "-1") : "PC " + std::to_string(b.number + 1);
     }
@@ -1392,6 +1393,173 @@ void PerformanceView::drawPianoRoll(const Mapping& m, const LiveState& live, flo
         }
         drag_.reset();
     }
+}
+
+// The session screen: a column per channel, a row per clip slot, a stop at
+// the bottom of each column; the clips with what they hold and their state.
+std::optional<PerformanceView::SessionAction> PerformanceView::drawSession(const LiveState& live, int cursorSlot) {
+    gMedium = fonts_.medium ? fonts_.medium : ImGui::GetFont();
+    gBold = fonts_.bold ? fonts_.bold : gMedium;
+    gCondensed = fonts_.condensed ? fonts_.condensed : gBold;
+    time_ = ImGui::GetTime();
+    std::optional<SessionAction> action;
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const ImVec2 origin = ImGui::GetCursorScreenPos();
+    const float width = ImGui::GetContentRegionAvail().x;
+    constexpr int kColumns = 8, kSlots = Engine::kClipSlots;
+    static constexpr ImU32 kChannelColors[] = {T::kBlue, T::kPink, T::kGreen, T::kOrange, IM_COL32(0xB0, 0x8C, 0xFF, 255),
+                                               T::kCyan, IM_COL32(0xFF, 0xD6, 0x40, 255), IM_COL32(0xFF, 0x78, 0x5A, 255)};
+    // The modules' colours, for what a clip holds: notes, left stick, right stick, triggers, touchpad.
+    static constexpr ImU32 kModuleColors[] = {IM_COL32(0xEC, 0xEE, 0xF2, 255), T::kBlue, T::kOrange, T::kPink, T::kCyan};
+    const float gap = px(6), colW = (width - gap * (kColumns - 1)) / kColumns;
+    const float headH = px(34), cellH = px(70), stopH = px(28);
+    const float gridH = headH + cellH * kSlots + stopH + px(10);
+    const bool blink = std::fmod(time_, 0.8) < 0.45;
+    if (live.channel != sessionChannelSeen_) {  // the active channel changed: show its eight
+        sessionFirst_ = live.channel / kColumns * kColumns;
+        sessionChannelSeen_ = live.channel;
+    }
+    for (int col = 0; col < kColumns; ++col) {
+        const int ch = sessionFirst_ + col;
+        const auto c = static_cast<std::size_t>(ch);
+        const ImU32 chColor = kChannelColors[ch % 8];
+        const float x = origin.x + static_cast<float>(col) * (colW + gap);
+        const bool playing = (live.clipsPlaying >> ch) & 1u;
+        dl->AddRectFilled(ImVec2(x, origin.y), ImVec2(x + colW, origin.y + gridH), T::kPanel, px(8));
+        dl->AddRect(ImVec2(x, origin.y), ImVec2(x + colW, origin.y + gridH), T::kBorder, px(8), px(1));
+        // Header: the channel, a dot while it plays; the active one underlined. A click chooses it.
+        const bool active = ch == live.channel;
+        text(dl, gBold, px(11), x + px(12), origin.y + px(17), active ? T::kText : T::kDim, "CHANNEL " + std::to_string(ch + 1), H::Left, V::Middle);
+        dl->AddCircleFilled(ImVec2(x + colW - px(15), origin.y + px(17)), px(5), playing ? T::kGreen : IM_COL32(0x3C, 0x40, 0x46, 255));
+        if (active)
+            dl->AddLine(ImVec2(x + px(12), origin.y + px(28)), ImVec2(x + px(12) + textWidth(gBold, px(11), "CHANNEL 16"), origin.y + px(28)), chColor, px(2));
+        ImGui::PushID(ch);
+        ImGui::SetCursorScreenPos(ImVec2(x, origin.y));
+        if (ImGui::InvisibleButton("##head", ImVec2(colW, headH)))
+            action = SessionAction{SessionAction::Kind::Channel, ch, 0};
+        for (int slot = 0; slot < kSlots; ++slot) {
+            const LiveState::Clip& clip = live.clips[c * kSlots + static_cast<std::size_t>(slot)];
+            const float cy = origin.y + headH + cellH * static_cast<float>(slot);
+            const ImVec2 a(x + px(6), cy + px(4)), b(x + colW - px(6), cy + cellH - px(4));
+            const bool current = live.currentClip[c] == slot;
+            const bool clipPlays = current && playing;
+            const bool queued = live.queuedClip[c] == slot;
+            ImGui::PushID(slot);
+            ImGui::SetCursorScreenPos(a);
+            const bool clicked = ImGui::InvisibleButton("##clip", ImVec2(b.x - a.x, b.y - a.y));
+            const bool hovered = ImGui::IsItemHovered();
+            ImGui::PopID();
+            if (clicked)
+                action = SessionAction{SessionAction::Kind::Launch, ch, slot};
+            if (!clip.sources) {
+                dl->AddRectFilled(a, b, IM_COL32(0x24, 0x26, 0x2A, 255), px(5));
+                dl->AddRect(a, b, hovered ? T::kControlBorder : IM_COL32(0x34, 0x38, 0x3E, 255), px(5), px(1));
+            } else {
+                const ImU32 outline = clip.recording ? T::kRed : clipPlays ? T::kGreen : queued ? alpha(T::kGreen, blink ? 0.9f : 0.3f)
+                                    : hovered      ? T::kControlBorder
+                                                   : IM_COL32(0x46, 0x4B, 0x53, 255);
+                dl->AddRectFilled(a, b, IM_COL32(0x28, 0x2B, 0x30, 255), px(5));
+                dl->AddRect(a, b, outline, px(5), px(clip.recording || clipPlays || queued ? 2.0f : 1.0f));
+                dl->AddRectFilled(ImVec2(a.x + px(2), a.y + px(4)), ImVec2(a.x + px(5), b.y - px(4)), chColor, px(1));
+                const bool hasNotes = clip.sources & (1u << static_cast<int>(LoopSource::Notes));
+                const bool hasCurves = clip.sources & ~(1u << static_cast<int>(LoopSource::Notes));
+                const float px0 = a.x + px(10), px1 = b.x - px(6);
+                const float ny0 = a.y + px(21), ny1 = hasCurves ? a.y + px(38) : b.y - px(8);
+                const float cy0 = hasNotes ? a.y + px(38) : a.y + px(22), cy1 = b.y - px(6);
+                if (hasNotes && clip.noteCount > 0) {
+                    int lo = 127, hi = 0;
+                    for (int i = 0; i < clip.noteCount; ++i) {
+                        lo = std::min<int>(lo, clip.notes[static_cast<std::size_t>(i)][2]);
+                        hi = std::max<int>(hi, clip.notes[static_cast<std::size_t>(i)][2]);
+                    }
+                    for (int i = 0; i < clip.noteCount; ++i) {
+                        const auto& n = clip.notes[static_cast<std::size_t>(i)];
+                        const float nx0 = px0 + (px1 - px0) * static_cast<float>(n[0]) / 255.0f;
+                        const float nx1 = std::max(px0 + (px1 - px0) * static_cast<float>(n[1]) / 255.0f, nx0 + px(2));
+                        const float t = hi > lo ? static_cast<float>(n[2] - lo) / static_cast<float>(hi - lo) : 0.5f;
+                        const float ny = ny1 - px(2) - t * (ny1 - ny0 - px(2));
+                        dl->AddRectFilled(ImVec2(nx0, ny), ImVec2(nx1, ny + px(2)), alpha(kModuleColors[0], 0.85f));
+                    }
+                }
+                static constexpr int kCurveBits[4] = {1 << 0, 1 << 1, 1 << 4, (1 << 2) | (1 << 3)};
+                for (int m = 0; m < 4; ++m) {
+                    if (!(clip.sources & kCurveBits[m]))
+                        continue;
+                    ImVec2 pts[LiveState::Clip::kCurvePoints];
+                    for (int i = 0; i < LiveState::Clip::kCurvePoints; ++i) {
+                        const float t = static_cast<float>(i) / static_cast<float>(LiveState::Clip::kCurvePoints - 1);
+                        const float v = static_cast<float>(clip.curves[static_cast<std::size_t>(m)][static_cast<std::size_t>(i)]) / 255.0f;
+                        pts[i] = ImVec2(px0 + t * (px1 - px0), cy1 - v * (cy1 - cy0));
+                    }
+                    dl->AddPolyline(pts, LiveState::Clip::kCurvePoints, kModuleColors[1 + m], px(1.4f));
+                }
+                // Its name, and what it holds.
+                text(dl, gBold, px(10), a.x + px(10), a.y + px(11), T::kText, "Clip " + std::to_string(slot + 1), H::Left, V::Middle);
+                float bx = a.x + px(50);
+                static constexpr const char* kLetters[] = {"", "L", "R", "T", "P"};
+                for (int m = 0; m < 5; ++m) {
+                    const bool has = m == 0 ? hasNotes : (clip.sources & (m == 4 ? kCurveBits[3] : kCurveBits[m - 1])) != 0;
+                    if (!has || bx > b.x - px(30))
+                        continue;
+                    const ImU32 mc = kModuleColors[m];
+                    const ImVec2 ba(bx, a.y + px(5)), bb(bx + px(11), a.y + px(17));
+                    dl->AddRectFilled(ba, bb, alpha(mc, 0.18f), px(3));
+                    dl->AddRect(ba, bb, alpha(mc, 0.8f), px(3), px(1));
+                    if (m == 0) {  // a note sign
+                        dl->AddCircleFilled(ImVec2(bx + px(4.5f), a.y + px(13.2f)), px(2), mc);
+                        dl->AddLine(ImVec2(bx + px(6.3f), a.y + px(7)), ImVec2(bx + px(6.3f), a.y + px(13.2f)), mc, px(1));
+                        dl->AddLine(ImVec2(bx + px(6.3f), a.y + px(7)), ImVec2(bx + px(8.8f), a.y + px(8.5f)), mc, px(1));
+                    } else {
+                        text(dl, gBold, px(7.5f), bx + px(5.5f), a.y + px(11), mc, kLetters[m], H::Center, V::Middle);
+                    }
+                    bx += px(13);
+                }
+                // Its state: playing (and how far in its turn), next, recording.
+                const ImVec2 tri0(b.x - px(16), a.y + px(6)), tri1(b.x - px(16), a.y + px(16)), tri2(b.x - px(7), a.y + px(11));
+                if (clip.recording) {
+                    dl->AddCircleFilled(ImVec2(b.x - px(11), a.y + px(11)), px(5), T::kRed);
+                } else if (clipPlays) {
+                    dl->AddTriangleFilled(tri0, tri1, tri2, T::kGreen);
+                    const float p = std::clamp(live.clipProgress[c], 0.0f, 1.0f);
+                    dl->AddRectFilled(ImVec2(a.x + px(2), b.y - px(4)), ImVec2(a.x + px(2) + (b.x - a.x - px(4)) * p, b.y - px(2)), T::kGreen);
+                } else if (queued) {
+                    dl->AddTriangle(tri0, tri1, tri2, alpha(T::kGreen, blink ? 1.0f : 0.35f), px(1.2f));
+                }
+            }
+            if (active && slot == cursorSlot) {  // the cursor
+                dl->AddRect(ImVec2(a.x - px(3), a.y - px(3)), ImVec2(b.x + px(3), b.y + px(3)), T::kCyan, px(7), px(2.5f));
+                if (!clip.sources) {
+                    text(dl, gBold, px(16), (a.x + b.x) * 0.5f, (a.y + b.y) * 0.5f - px(7), T::kCyan, "+", H::Center, V::Middle);
+                    text(dl, gMedium, px(9), (a.x + b.x) * 0.5f, (a.y + b.y) * 0.5f + px(12), T::kCyan, "Record: new clip", H::Center, V::Middle);
+                }
+            }
+        }
+        // The stop at the bottom: blinking while waiting for the end of the turn.
+        const float sy = origin.y + headH + cellH * kSlots + px(2);
+        const ImVec2 sa(x + px(6), sy), sb(x + colW - px(6), sy + stopH - px(2));
+        ImGui::SetCursorScreenPos(sa);
+        const bool stopClicked = ImGui::InvisibleButton("##stop", ImVec2(sb.x - sa.x, sb.y - sa.y));
+        const bool stopHovered = ImGui::IsItemHovered();
+        ImGui::SetItemTooltip("Stops this channel at the end of its clip's turn");
+        if (stopClicked)
+            action = SessionAction{SessionAction::Kind::Stop, ch, 0};
+        const bool stopping = live.queuedClip[c] == kSlots;
+        dl->AddRectFilled(sa, sb, IM_COL32(0x28, 0x2A, 0x2E, 255), px(5));
+        dl->AddRect(sa, sb, stopHovered ? T::kControlBorder : IM_COL32(0x3A, 0x3E, 0x45, 255), px(5), px(1));
+        const float mx = (sa.x + sb.x) * 0.5f, my = (sa.y + sb.y) * 0.5f;
+        dl->AddRectFilled(ImVec2(mx - px(5), my - px(5)), ImVec2(mx + px(5), my + px(5)),
+                          stopping ? alpha(T::kRed, blink ? 1.0f : 0.35f) : playing ? T::kLabel : IM_COL32(0x50, 0x55, 0x5C, 255), px(1));
+        ImGui::PopID();
+    }
+    // The other eight channels.
+    const float by = origin.y + gridH + px(8);
+    const char* other = sessionFirst_ == 0 ? "Channels 9\xE2\x80\x93" "16  \xE2\x80\xBA" : "\xE2\x80\xB9  Channels 1\xE2\x80\x93" "8";
+    const float ow = textWidth(gMedium, px(11), other) + px(16);
+    ImGui::SetCursorScreenPos(ImVec2(origin.x + width - ow, by));
+    if (ImGui::InvisibleButton("##otherchannels", ImVec2(ow, px(20))))
+        sessionFirst_ = sessionFirst_ == 0 ? 8 : 0;
+    text(dl, gMedium, px(11), origin.x + width - px(8), by + px(10), ImGui::IsItemHovered() ? T::kText : T::kDim, other, H::Right, V::Middle);
+    return action;
 }
 
 void PerformanceView::drawNoteEditor(const Mapping& mapping, const LiveState& live, float w, float h) {

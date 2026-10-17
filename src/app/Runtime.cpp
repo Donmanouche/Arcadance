@@ -165,6 +165,8 @@ void Runtime::panic() { commands_.push({Command::Kind::Panic}); }
 
 void Runtime::clearLoop(int source) { commands_.push({Command::Kind::ClearLoop, source}); }
 void Runtime::toggleLoopLock(int source) { commands_.push({Command::Kind::ToggleLock, source}); }
+void Runtime::launchClip(int channel, int slot) { commands_.push({Command::Kind::LaunchClip, channel, slot}); }
+void Runtime::setRecordSlot(int channel, int slot) { commands_.push({Command::Kind::RecordSlot, channel, slot}); }
 
 void Runtime::stretchLoop(int source, int steps) { commands_.push({Command::Kind::StretchLoop, source, steps}); }
 
@@ -261,6 +263,12 @@ LiveState Runtime::live() const {
         s.loops = loops_;
         s.noteLoop = noteLoop_;
         s.noteLoopCount = noteLoopCount_;
+        s.clips = clips_;
+        s.currentClip = currentClip_;
+        s.queuedClip = queuedClip_;
+        s.recordSlot = recordSlot_;
+        s.clipsPlaying = clipsPlaying_;
+        s.clipProgress = clipProgress_;
     }
     std::lock_guard lock(nameMutex_);
     s.gamepadName = gamepadName_;
@@ -350,6 +358,71 @@ void Runtime::publish(const GamepadInput& gamepad, const Engine& engine) {
         }
     }
     noteLoopCount_ = engine.noteLoopIntervals(channel, noteLoop_.data(), LiveState::kMaxNoteLoopNotes);
+
+    // The clips: their state every poll, their sketches 20 times a second.
+    clipsPlaying_ = 0;
+    for (int c = 0; c < kChannelCount; ++c) {
+        const auto ci = static_cast<std::size_t>(c);
+        currentClip_[ci] = static_cast<std::int8_t>(engine.currentClip(c));
+        queuedClip_[ci] = static_cast<std::int8_t>(engine.queuedClip(c));
+        recordSlot_[ci] = static_cast<std::int8_t>(engine.recordSlot(c));
+        clipProgress_[ci] = engine.clipProgress(c);
+        if (engine.clipPlaying(c))
+            clipsPlaying_ = static_cast<std::uint16_t>(clipsPlaying_ | (1u << c));
+    }
+    if (--clipSketchCountdown_ > 0)
+        return;
+    clipSketchCountdown_ = 50;
+    for (int c = 0; c < kChannelCount; ++c)
+        for (int k = 0; k < Engine::kClipSlots; ++k) {
+            LiveState::Clip& clip = clips_[static_cast<std::size_t>(c * Engine::kClipSlots + k)];
+            clip = {};
+            for (int src = 0; src < kLoopSourceCount; ++src) {
+                const LoopStatus st = engine.clipLoopStatus(c, k, src);
+                if (st.state == LoopStatus::State::Empty)
+                    continue;
+                clip.sources = static_cast<std::uint8_t>(clip.sources | (1u << src));
+                clip.recording = clip.recording || st.state == LoopStatus::State::Recording;
+            }
+            if (!clip.sources)
+                continue;
+            // A curve per module: the axis of its loop (a finger: finger 1's, else 2's) that moves most.
+            static constexpr int kCurveSource[4][2] = {{0, 0}, {1, 1}, {4, 4}, {2, 3}};
+            for (int m = 0; m < 4; ++m) {
+                int src = -1;
+                for (int option : kCurveSource[m])
+                    if (src < 0 && (clip.sources & (1u << option)) && engine.clipLoopStatus(c, k, option).state == LoopStatus::State::Playing)
+                        src = option;
+                if (src < 0)
+                    continue;
+                const int length = engine.clipLoopStatus(c, k, src).length;
+                std::array<std::array<float, LiveState::Clip::kCurvePoints>, 2> v{};
+                float lo[2] = {1, 1}, hi[2] = {0, 0};
+                for (int i = 0; i < LiveState::Clip::kCurvePoints; ++i) {
+                    const int at = static_cast<int>(static_cast<long long>(i) * (length - 1) / (LiveState::Clip::kCurvePoints - 1));
+                    for (int axis = 0; axis < 2; ++axis) {
+                        const float x = std::max(engine.clipSample(c, k, src, axis, at), 0.0f);
+                        v[static_cast<std::size_t>(axis)][static_cast<std::size_t>(i)] = x;
+                        lo[axis] = std::min(lo[axis], x);
+                        hi[axis] = std::max(hi[axis], x);
+                    }
+                }
+                const int axis = hi[1] - lo[1] > hi[0] - lo[0] ? 1 : 0;
+                for (int i = 0; i < LiveState::Clip::kCurvePoints; ++i)
+                    clip.curves[static_cast<std::size_t>(m)][static_cast<std::size_t>(i)] =
+                        static_cast<std::uint8_t>(std::lround(v[static_cast<std::size_t>(axis)][static_cast<std::size_t>(i)] * 255.0f));
+            }
+            if (clip.sources & (1u << static_cast<int>(LoopSource::Notes))) {
+                std::array<NoteInterval, LiveState::Clip::kNotes> notes{};
+                const int length = std::max(engine.clipLoopStatus(c, k, static_cast<int>(LoopSource::Notes)).length, 1);
+                clip.noteCount = engine.clipNoteIntervals(c, k, notes.data(), LiveState::Clip::kNotes);
+                for (int i = 0; i < clip.noteCount; ++i) {
+                    const NoteInterval& n = notes[static_cast<std::size_t>(i)];
+                    clip.notes[static_cast<std::size_t>(i)] = {static_cast<std::uint8_t>(std::clamp(n.start * 255 / length, 0, 255)),
+                                                              static_cast<std::uint8_t>(std::clamp(n.end * 255 / length, 0, 255)), n.note};
+                }
+            }
+        }
 }
 
 void Runtime::run(std::stop_token stop, Options options, std::shared_ptr<const Preset> preset) {
@@ -415,6 +488,10 @@ void Runtime::run(std::stop_token stop, Options options, std::shared_ptr<const P
                 engine.clearLoop(engine.channel(), command->channel);  // `channel` holds the source
             } else if (command->kind == Command::Kind::ToggleLock) {
                 engine.toggleLoopLock(engine.channel(), command->channel);  // `channel` holds the source
+            } else if (command->kind == Command::Kind::LaunchClip) {
+                engine.launchClip(command->channel, command->value);
+            } else if (command->kind == Command::Kind::RecordSlot) {
+                engine.setRecordSlot(command->channel, command->value);
             } else if (command->kind == Command::Kind::StretchLoop) {
                 engine.stretchLoop(engine.channel(), command->channel, command->value);  // `channel` holds the source
             } else if (command->kind == Command::Kind::AmplifyLoop) {
@@ -547,8 +624,11 @@ void Runtime::run(std::stop_token stop, Options options, std::shared_ptr<const P
             engine.setKey(midipad::Key{key / 256, static_cast<std::size_t>(key % 256)});
         else
             engine.setKey(std::nullopt);
+        engine.setSessionMode(sessionMode_.load(std::memory_order_relaxed));
         engine.tick(start);
         gamepad.poll(start);
+        while (const auto e = engine.takeSessionEvent())
+            sessionEvents_.push(*e);
         publish(gamepad, engine);
 
         const std::uint64_t end = SDL_GetTicksNS();

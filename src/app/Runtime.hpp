@@ -67,6 +67,23 @@ struct LiveState {
     static constexpr int kMaxNoteLoopNotes = 128;
     std::array<midipad::NoteInterval, kMaxNoteLoopNotes> noteLoop{};
     int noteLoopCount = 0;
+    // Every channel's clips, for the session screen: what each holds and a
+    // sketch of it (refreshed a few times a second), the current clip, the
+    // one waiting to start (kClipSlots: a stop), the record slot, which
+    // channels play and how far their clip is in its turn.
+    struct Clip {
+        static constexpr int kCurvePoints = 24, kNotes = 24;
+        std::uint8_t sources = 0;  // a bit per LoopSource holding a loop
+        bool recording = false;
+        // Left stick, right stick, triggers, touchpad: the axis that moves most, 0-255.
+        std::array<std::array<std::uint8_t, kCurvePoints>, 4> curves{};
+        int noteCount = 0;
+        std::array<std::array<std::uint8_t, 3>, kNotes> notes{};  // start, end (0-255 of the loop), pitch
+    };
+    std::array<Clip, midipad::kChannelCount * midipad::Engine::kClipSlots> clips{};
+    std::array<std::int8_t, midipad::kChannelCount> currentClip{}, queuedClip{}, recordSlot{};
+    std::uint16_t clipsPlaying = 0;
+    std::array<float, midipad::kChannelCount> clipProgress{};
     std::uint64_t sounding = 0;   // Engine::soundingSlots()
     std::uint16_t loopChannels = 0;  // Engine::channelsWithLoops()
     bool loopsPaused = false;
@@ -123,6 +140,14 @@ public:
     void panic();  // also stops the loops, on every channel
     void clearLoop(int source);  // a LoopSource, on the active channel
     void toggleLoopLock(int source);  // see Engine::toggleLoopLock, on the active channel
+    // Clips (Engine::launchClip, stopClip, setRecordSlot), on any channel.
+    void launchClip(int channel, int slot);
+    void stopClip(int channel) { launchClip(channel, midipad::Engine::kClipSlots); }
+    void setRecordSlot(int channel, int slot);
+    // The session screen from the controller (Engine::setSessionMode); what
+    // the controller asks of it, oldest first.
+    void setSessionMode(bool on) { sessionMode_.store(on, std::memory_order_relaxed); }
+    std::optional<midipad::Engine::SessionEvent> popSessionEvent() { return sessionEvents_.pop(); }
     // Editing the active channel's note loop (Engine::moveLoopNotes,
     // removeLoopNotes), in the order asked.
     void moveLoopNotes(std::vector<midipad::LoopNoteRef> notes, int samples, int semitones, bool byDegrees = false);
@@ -180,7 +205,7 @@ private:
     class Tap;
     struct Command {
         enum class Kind : std::uint8_t {
-            SetChannel, Panic, ClearLoop, ToggleLock, StretchLoop, AmplifyLoop, PauseLoops, PlayLoops, SaveLoops, LoadLoops,
+            SetChannel, Panic, ClearLoop, ToggleLock, LaunchClip, RecordSlot, StretchLoop, AmplifyLoop, PauseLoops, PlayLoops, SaveLoops, LoadLoops,
             EditNotes
         } kind;
         int channel = 0;
@@ -204,6 +229,8 @@ private:
     midipad::SpscRing<SentNote, 2048> notes_;
     std::atomic<std::uint64_t> droppedReports_{0};
     midipad::SpscRing<Command, 64> commands_;
+    midipad::SpscRing<midipad::Engine::SessionEvent, 64> sessionEvents_;
+    std::atomic<bool> sessionMode_{false};
 
     std::mutex pendingMutex_;
     std::shared_ptr<const midipad::Preset> pendingPreset_;
@@ -249,6 +276,11 @@ private:
     std::array<LiveState::Loop, midipad::kLoopSourceCount> loops_{};
     std::array<midipad::NoteInterval, LiveState::kMaxNoteLoopNotes> noteLoop_{};
     int noteLoopCount_ = 0;
+    std::array<LiveState::Clip, midipad::kChannelCount * midipad::Engine::kClipSlots> clips_{};
+    std::array<std::int8_t, midipad::kChannelCount> currentClip_{}, queuedClip_{}, recordSlot_{};
+    std::uint16_t clipsPlaying_ = 0;
+    std::array<float, midipad::kChannelCount> clipProgress_{};
+    int clipSketchCountdown_ = 0;  // polls until the clips' sketches are drawn again
     mutable std::mutex nameMutex_;
     std::string gamepadName_;
 

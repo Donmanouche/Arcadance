@@ -92,11 +92,11 @@ std::vector<int> versionNumbers(std::string_view text) {
     return out;
 }
 
-// Channel 1's Shift and Loop record controls work on every channel: the
-// mapping `m` shows them in their place.
+// Channel 1's Shift, Loop record and Session screen controls work on every
+// channel: the mapping `m` shows them in their place.
 Mapping withChannelOneControls(Mapping m, const Mapping& first) {
     auto keep = [](TriggerBinding& shown, const TriggerBinding& own) {
-        if (own.type == ActionType::Shift || own.type == ActionType::LoopRecord)
+        if (own.type == ActionType::Shift || own.type == ActionType::LoopRecord || own.type == ActionType::SessionScreen)
             shown = own;
     };
     for (std::size_t i = 0; i < m.buttons.size(); ++i)
@@ -353,6 +353,19 @@ private:
     void drawPerformance(const LiveState& live);
     void drawMappingOverlay(const LiveState& live);
     void toggleFullscreen();
+    // The session screen, in place of the modules: shown or not, and its
+    // cursor's slot (its channel is the active one). Leaving it, every
+    // channel records into its current clip again.
+    void toggleSession(const LiveState& live);
+    bool sessionView_ = false;
+    int sessionSlot_ = 0, sessionChannel_ = 0;
+    int sessionChannelAsked_ = -1;  // a channel asked of the runtime, not shown by it yet
+    void sessionEvent(midipad::Engine::SessionEvent e, const LiveState& live);
+    void moveSessionCursor(int channel, int slot, const LiveState& live);
+    // A clip of the session screen pressed (L3, R3 or a click): the one
+    // playing stops (one waiting to start, or a stop waiting, is called off);
+    // another one is launched; an empty slot is only chosen.
+    void pressClip(int channel, int slot, const LiveState& live);
     // Every window over the view looks like the Options panel.
     void pushWindowLook();
     void popWindowLook();
@@ -1105,6 +1118,8 @@ void GuiApp::draw() {
         guard([this] { quit_ = true; });
     if (ImGui::Shortcut(ImGuiKey_F11, ImGuiInputFlags_RouteGlobal))
         toggleFullscreen();
+    if (!ImGui::GetIO().WantTextInput && !overlaySpec_ && !optionsOpen_ && ImGui::Shortcut(ImGuiKey_Tab, ImGuiInputFlags_RouteGlobal))
+        toggleSession(live);
 
     drawPerformance(live);
     ImGui::End();
@@ -1149,6 +1164,66 @@ bool GuiApp::drawKeyChoices() {
         ImGui::EndTable();
     }
     return changed;
+}
+
+// The cursor of the session screen, there: its channel becomes the active
+// one (the one it left records into its current clip again), and Record
+// records into its slot.
+void GuiApp::moveSessionCursor(int channel, int slot, const LiveState& live) {
+    channel = std::clamp(channel, 0, kChannelCount - 1);
+    slot = std::clamp(slot, 0, Engine::kClipSlots - 1);
+    if (channel != sessionChannel_) {
+        runtime_->setRecordSlot(sessionChannel_, live.currentClip[static_cast<std::size_t>(sessionChannel_)]);
+        runtime_->setChannel(channel);
+        sessionChannel_ = channel;
+        sessionChannelAsked_ = channel;
+    }
+    sessionSlot_ = slot;
+    runtime_->setRecordSlot(channel, slot);
+}
+
+void GuiApp::pressClip(int channel, int slot, const LiveState& live) {
+    const auto c = static_cast<std::size_t>(channel);
+    const int current = live.currentClip[c];
+    const bool playing = (live.clipsPlaying >> channel) & 1u;
+    if (playing && (slot == current || live.queuedClip[c] == slot)) {
+        if (live.queuedClip[c] >= 0)
+            runtime_->launchClip(channel, current);  // calls off what waits
+        else
+            runtime_->stopClip(channel);
+    } else if (live.clips[c * Engine::kClipSlots + static_cast<std::size_t>(slot)].sources) {
+        runtime_->launchClip(channel, slot);
+    }
+}
+
+void GuiApp::sessionEvent(Engine::SessionEvent e, const LiveState& live) {
+    using E = Engine::SessionEvent;
+    if (e == E::Toggle) {
+        toggleSession(live);
+        return;
+    }
+    if (!sessionView_)
+        return;
+    switch (e) {
+    case E::Up: moveSessionCursor(sessionChannel_, sessionSlot_ - 1, live); break;
+    case E::Down: moveSessionCursor(sessionChannel_, sessionSlot_ + 1, live); break;
+    case E::Left: moveSessionCursor(sessionChannel_ - 1, sessionSlot_, live); break;
+    case E::Right: moveSessionCursor(sessionChannel_ + 1, sessionSlot_, live); break;
+    case E::Press: pressClip(sessionChannel_, sessionSlot_, live); break;
+    case E::Toggle: break;
+    }
+}
+
+void GuiApp::toggleSession(const LiveState& live) {
+    sessionView_ = !sessionView_;
+    runtime_->setSessionMode(sessionView_);
+    if (sessionView_) {
+        sessionChannel_ = live.channel;
+        sessionSlot_ = live.currentClip[static_cast<std::size_t>(live.channel)];
+    } else {
+        for (int ch = 0; ch < kChannelCount; ++ch)
+            runtime_->setRecordSlot(ch, live.currentClip[static_cast<std::size_t>(ch)]);
+    }
 }
 
 void GuiApp::toggleFullscreen() {
@@ -1410,7 +1485,7 @@ void GuiApp::drawPerformance(const LiveState& live) {
             ImGui::SameLine(0, px(10));
             const ImGuiIO& io = ImGui::GetIO();
             const ImVec2 q = ImGui::GetCursorScreenPos();
-            const float lw = px(200), lh = px(32);
+            const float lw = px(166), lh = px(32);
             const bool clicked = ImGui::InvisibleButton("##clock", ImVec2(lw, lh));
             const bool hovered = ImGui::IsItemHovered();
             const bool on = live.clock != ClockMode::Free;
@@ -1516,6 +1591,22 @@ void GuiApp::drawPerformance(const LiveState& live) {
                 if (const auto bpm = tap_.tap(SDL_GetTicksNS()))
                     applyTempo(*bpm);
             ImGui::SetItemTooltip(on ? "Tap in time: the tempo follows from the second tap" : "Tap tempo, with a clock running");
+            // The session screen: a grid of four squares, lit while it shows.
+            const ImVec2 sp(q.x + lw + px(6) + tapW + px(8), q.y);
+            ImGui::SetCursorScreenPos(sp);
+            const float sw = px(36);
+            if (ImGui::InvisibleButton("##session", ImVec2(sw, lh)))
+                toggleSession(live);
+            const bool sessionHovered = ImGui::IsItemHovered();
+            dl->AddRectFilled(sp, ImVec2(sp.x + sw, sp.y + lh),
+                              sessionView_ ? (Theme::kGreen & ~IM_COL32_A_MASK) | IM_COL32(0, 0, 0, 60)
+                              : sessionHovered ? Theme::kControlBorder : Theme::kControl, px(5));
+            dl->AddRect(sp, ImVec2(sp.x + sw, sp.y + lh), sessionView_ ? Theme::kGreen : Theme::kControlBorder, px(5), px(1));
+            for (int k = 0; k < 4; ++k) {
+                const float gx = sp.x + sw * 0.5f + (k % 2 ? px(1.5f) : -px(8.5f)), gy = cy + (k / 2 ? px(1.5f) : -px(8.5f));
+                dl->AddRectFilled(ImVec2(gx, gy), ImVec2(gx + px(7), gy + px(7)), sessionView_ ? Theme::kGreen : Theme::kLabel, px(1.5f));
+            }
+            ImGui::SetItemTooltip("Session: the clips of every channel (Tab)");
         }
 
         if (dirty_) {
@@ -1548,7 +1639,34 @@ void GuiApp::drawPerformance(const LiveState& live) {
     ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0, 0, 0, 0));  // the page's background shows through
     ImGui::BeginChild("modules", ImVec2(0, -statusH), ImGuiChildFlags_None, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
     performance_.setQuantize(settings_.quantize);
-    const auto clicked = performance_.draw(withChannelOneControls(preset_.forChannel(live.channel), preset_.base), live, settings_.key);
+    std::optional<std::string> clicked;
+    while (const auto e = runtime_->popSessionEvent())  // from the controller
+        sessionEvent(*e, live);
+    if (sessionChannelAsked_ >= 0) {
+        if (live.channel == sessionChannelAsked_)
+            sessionChannelAsked_ = -1;
+    } else if (sessionView_ && live.channel != sessionChannel_) {  // the channel changed elsewhere: the cursor follows
+        runtime_->setRecordSlot(sessionChannel_, live.currentClip[static_cast<std::size_t>(sessionChannel_)]);
+        sessionChannel_ = live.channel;
+        sessionSlot_ = live.currentClip[static_cast<std::size_t>(live.channel)];
+    }
+    if (sessionView_) {
+        // A clip clicked: the cursor goes there, its channel becomes the active
+        // one, and Record records there; a clip is launched, an empty slot only chosen.
+        if (const auto act = performance_.drawSession(live, sessionSlot_)) {
+            using Kind = PerformanceView::SessionAction::Kind;
+            if (act->kind == Kind::Stop) {
+                runtime_->stopClip(act->channel);
+            } else if (act->kind == Kind::Launch) {
+                moveSessionCursor(act->channel, act->slot, live);
+                pressClip(act->channel, act->slot, live);
+            } else {
+                moveSessionCursor(act->channel, live.currentClip[static_cast<std::size_t>(act->channel)], live);
+            }
+        }
+    } else {
+        clicked = performance_.draw(withChannelOneControls(preset_.forChannel(live.channel), preset_.base), live, settings_.key);
+    }
     if (auto edit = performance_.takeNoteEdit()) {  // from the note loop's editor (the last frame's)
         if (edit->loopLength > 0)
             runtime_->setNoteLoopLength(edit->loopLength);
@@ -2288,10 +2406,13 @@ void GuiApp::drawMappingOverlay(const LiveState& live) {
         // Channel 1's Shift or Loop record control: the same on every channel, set on channel 1.
         const TriggerBinding* firstControl = live.channel != 0 ? specBinding(preset_.base, spec) : nullptr;
         const bool channelOneControl =
-            firstControl && (firstControl->type == ActionType::Shift || firstControl->type == ActionType::LoopRecord);
+            firstControl && (firstControl->type == ActionType::Shift || firstControl->type == ActionType::LoopRecord ||
+                             firstControl->type == ActionType::SessionScreen);
         if (channelOneControl) {
             ImGui::TextColored(kWarningColor, "On every channel, this control is channel 1's %s.",
-                               firstControl->type == ActionType::Shift ? "Shift" : "Loop record");
+                               firstControl->type == ActionType::Shift        ? "Shift"
+                               : firstControl->type == ActionType::LoopRecord ? "Loop record"
+                                                                              : "Session screen");
             ImGui::TextColored(kHintColor, "Change it on channel 1.");
             ImGui::Spacing();
         }

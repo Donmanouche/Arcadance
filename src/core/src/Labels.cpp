@@ -116,6 +116,8 @@ std::string describe(const TriggerBinding& b, bool flats) {
         return b.mode == Mode::Toggle ? "Shift (toggle)" : "Shift";
     case ActionType::TapTempo:
         return "Tap tempo";
+    case ActionType::SessionScreen:
+        return "Session screen";
     case ActionType::ProgramChange:
         if (b.programStep != 0)
             return std::string("Program ") + (b.programStep > 0 ? "+1" : "-1");

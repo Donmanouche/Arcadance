@@ -17,6 +17,8 @@ namespace midipad {
 // One recorded loop of a session, as the engine plays it.
 struct SessionLoop {
     int channel = 0;  // 0-15
+    int clip = 0;     // its clip's slot, 0 to Engine::kClipSlots - 1
+    bool current = true, playing = true;  // its clip is the channel's current one, and plays
     LoopSource source = LoopSource::LeftStick;
     int length = 0;  // samples, at Engine::kLoopRateHz
     int stretch = 0, amplitude = 100;  // movement loops

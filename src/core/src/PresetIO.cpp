@@ -172,6 +172,8 @@ TriggerBinding triggerFromJson(const Json& j, const std::string& where) {
         b.type = ActionType::Shift;
     } else if (type == "tap_tempo") {
         b.type = ActionType::TapTempo;
+    } else if (type == "session") {
+        b.type = ActionType::SessionScreen;
     } else if (type == "freeze") {
         b.type = ActionType::Freeze;
         if (!j.contains("axes"))
@@ -243,6 +245,9 @@ Json triggerToJson(const TriggerBinding& b) {
         return j;
     case ActionType::TapTempo:
         j["type"] = "tap_tempo";
+        return j;
+    case ActionType::SessionScreen:
+        j["type"] = "session";
         return j;
     case ActionType::ProgramChange:
         j["type"] = "program";
