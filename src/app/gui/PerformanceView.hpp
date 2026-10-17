@@ -176,6 +176,13 @@ private:
     };
     std::optional<LengthDrag> lengthDrag_;
     bool lengthHovered_ = false;  // the mouse over the loop's end handle
+    // The editor's view of the loop: zoomed this many times (1: all of it),
+    // from this fraction of it; where its roll was drawn, for the scrollbar
+    // under it, and where the scrollbar's thumb was taken.
+    float viewZoom_ = 1, viewStart_ = 0;
+    float rollGx0_ = 0, rollAx1_ = 0;
+    bool editorClip_ = false;
+    float scrollGrab_ = 0;
     bool escapeTaken_ = false;
     std::vector<midipad::LoopNoteRef> selection_;  // in the active channel's note loop
     int selectionChannel_ = -1;

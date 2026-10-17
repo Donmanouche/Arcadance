@@ -2317,7 +2317,7 @@ void GuiApp::drawMappingOverlay(const LiveState& live) {
             performance_.setScaleMoves(settings_.notesInScale);
             performance_.drawNoteEditor(target, live, em * 56, em * 24);
             ImGui::TextColored(kHintColor, "Drag: move a note or the selection  \xC2\xB7  Drag on empty space: select  \xC2\xB7  "
-                                           "Ctrl + click: add  \xC2\xB7  Double-click: a chord");
+                                           "Ctrl + click: add  \xC2\xB7  Double-click: a chord  \xC2\xB7  Wheel: zoom");
             ImGui::TextColored(kHintColor, "Drag the end of a selected note: its length  \xC2\xB7  Drag the right edge: the loop's length  \xC2\xB7  "
                                            "Right-click or Delete: delete");
             ImGui::Spacing();

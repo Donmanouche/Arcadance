@@ -910,7 +910,7 @@ void PerformanceView::drawPianoRoll(const Mapping& m, const LiveState& live, flo
     double newBeats = st.beats;
     if (lengthDrag_ && editing_) {
         LengthDrag& d = *lengthDrag_;
-        const double perPx = static_cast<double>(d.length) / std::max(ax1 - gx0, 1.0f);
+        const double perPx = static_cast<double>(d.length) / std::max((ax1 - gx0) * viewZoom_, 1.0f);
         double wanted = d.length + (ImGui::GetIO().MousePos.x - d.grabX) * perPx;
         if (d.beats > 0) {
             const double perBeat = d.length / d.beats;
@@ -923,7 +923,21 @@ void PerformanceView::drawPianoRoll(const Mapping& m, const LiveState& live, flo
                  "  \xC2\xB7  " + (newBeats > 0 ? beatsText(newBeats, beatsPerBar_) : std::string(seconds));
     }
     const float shownLength = static_cast<float>(std::max(newLength, st.length));
-    auto xAtSample = [&](float sample) { return gx0 + (ax1 - gx0) * sample / shownLength; };  // clip
+    // The editor's view: zoomed `viewZoom_` times, from `viewStart_` (a fraction of the loop).
+    if (!editing_ || !clip) {
+        if (editing_) {
+            viewZoom_ = 1;
+            viewStart_ = 0;
+        }
+    }
+    const float zoom = editing_ ? viewZoom_ : 1.0f, viewFrom = editing_ ? viewStart_ : 0.0f;
+    auto xAtSample = [&](float sample) { return gx0 + (ax1 - gx0) * (sample / shownLength - viewFrom) * zoom; };  // clip
+    auto sampleAtX = [&](float sx) { return ((sx - gx0) / std::max(ax1 - gx0, 1.0f) / zoom + viewFrom) * shownLength; };
+    if (editing_) {
+        rollGx0_ = gx0;
+        rollAx1_ = ax1;
+        editorClip_ = clip;
+    }
 
     // The range: the notes in view, two octaves at least, eased.
     int lo = 127, hi = 0;
@@ -975,15 +989,16 @@ void PerformanceView::drawPianoRoll(const Mapping& m, const LiveState& live, flo
     bool noteEndHovered = false;  // on the end of a selected note: its length
     if (clip) {
         // Synced: the beats and bars of the loop. Free: half-second lines. From the loop's start, which is marked.
+        dl->PushClipRect(ImVec2(gx0 - px(2), ay0), ImVec2(ax1, ay1), true);  // zoomed, nothing over the keyboard
         if (st.beats > 0) {
-            beatGrid(dl, gMedium, gx0, ax1, ay0, ay1, newLength > st.length ? newBeats : st.beats, beatsPerBar_);
+            beatGrid(dl, gMedium, xAtSample(0), xAtSample(shownLength), ay0, ay1, newLength > st.length ? newBeats : st.beats, beatsPerBar_);
         } else {
             const float halfSecond = static_cast<float>(Engine::kLoopRateHz) * 0.5f;
             for (float s2 = halfSecond; s2 < shownLength; s2 += halfSecond)
                 dl->AddLine(ImVec2(xAtSample(s2), ay0), ImVec2(xAtSample(s2), ay1), IM_COL32(255, 255, 255, 18));
         }
-        dl->AddLine(ImVec2(gx0, ay0), ImVec2(gx0, ay1), IM_COL32(255, 255, 255, 90), px(1.2f));
-        text(dl, gMedium, px(8), gx0 + px(3), ay1 - px(6), T::kDim, "start", H::Left, V::Middle);
+        dl->AddLine(ImVec2(xAtSample(0), ay0), ImVec2(xAtSample(0), ay1), IM_COL32(255, 255, 255, 90), px(1.2f));
+        text(dl, gMedium, px(8), xAtSample(0) + px(3), ay1 - px(6), T::kDim, "start", H::Left, V::Middle);
         // Beneath the loop, what is played live scrolls by as without a loop, from
         // "now" at the right edge: faint cyan, so the loop stays in front.
         bool liveShown = false;
@@ -1004,7 +1019,7 @@ void PerformanceView::drawPianoRoll(const Mapping& m, const LiveState& live, flo
         // Notes being moved: where they go so far, the group as a block inside
         // the loop and the MIDI range, its first note on the quantize grid.
         const ImVec2 mouse = ImGui::GetIO().MousePos;
-        const float sampleAt = (mouse.x - gx0) / std::max(ax1 - gx0, 1.0f) * static_cast<float>(st.length);
+        const float sampleAt = sampleAtX(mouse.x);
         const bool byDegrees = scaleMoves_ && key_.has_value();
         if (drag_ && editing_ && drag_->resize) {
             // Lengths: every selected note alike, the grabbed end onto the
@@ -1134,9 +1149,10 @@ void PerformanceView::drawPianoRoll(const Mapping& m, const LiveState& live, flo
             // and the handle, at the right edge at rest.
             const float endX = xAtSample(static_cast<float>(newLength)), oldX = xAtSample(static_cast<float>(st.length));
             if (newLength < st.length) {
-                dl->AddRectFilled(ImVec2(endX, ay0), ImVec2(ax1, ay1), IM_COL32(10, 10, 12, 130));
-                dl->PushClipRect(ImVec2(endX, ay0), ImVec2(ax1, ay1), true);
-                for (float hx = endX - (ay1 - ay0); hx < ax1; hx += px(10))
+                const float cutTo = std::min(oldX, ax1);
+                dl->AddRectFilled(ImVec2(endX, ay0), ImVec2(cutTo, ay1), IM_COL32(10, 10, 12, 130));
+                dl->PushClipRect(ImVec2(endX, ay0), ImVec2(cutTo, ay1), true);
+                for (float hx = endX - (ay1 - ay0); hx < cutTo; hx += px(10))
                     dl->AddLine(ImVec2(hx, ay1), ImVec2(hx + (ay1 - ay0), ay0), IM_COL32(255, 255, 255, 16), px(1));
                 dl->PopClipRect();
                 dl->AddLine(ImVec2(oldX - px(1), ay0), ImVec2(oldX - px(1), ay1), alpha(kViolet, 0.3f), px(1));
@@ -1147,19 +1163,25 @@ void PerformanceView::drawPianoRoll(const Mapping& m, const LiveState& live, flo
                     text(dl, gMedium, px(10), (oldX + ax1) * 0.5f, ay1 - px(10), alpha(kViolet, 0.7f), "silence added", H::Center, V::Middle);
             }
             const ImVec2 at = ImGui::GetIO().MousePos;
-            lengthHovered_ = !drag_ && !bandFrom_ && ImGui::IsWindowHovered() && at.x >= ax1 - px(8) && at.x <= ax1 + px(3) && at.y >= ay0 && at.y <= ay1;
+            const float restX = std::min(xAtSample(shownLength), ax1);  // the end, at the right edge unzoomed
+            const bool endShown = xAtSample(shownLength) <= ax1 + px(1);
+            lengthHovered_ = endShown && !drag_ && !bandFrom_ && ImGui::IsWindowHovered() && at.x >= restX - px(8) &&
+                             at.x <= restX + px(3) && at.y >= ay0 && at.y <= ay1;
             const bool active = lengthDrag_ || lengthHovered_;
-            const float hx = (newLength < st.length ? endX : ax1) - px(1);
-            if (active)
-                dl->AddLine(ImVec2(hx, ay0), ImVec2(hx, ay1), alpha(kViolet, 0.25f), px(6));
-            dl->AddLine(ImVec2(hx, ay0), ImVec2(hx, ay1), alpha(kViolet, active ? 1.0f : 0.65f), px(2));
-            const float gy = (ay0 + ay1) * 0.5f;
-            // Its grip, inside the roll.
-            dl->AddRectFilled(ImVec2(hx - px(6), gy - px(14)), ImVec2(hx + px(1), gy + px(14)), alpha(kViolet, active ? 1.0f : 0.8f), px(3));
-            for (int k = -1; k <= 1; ++k)
-                dl->AddLine(ImVec2(hx - px(4), gy + static_cast<float>(k) * px(5)), ImVec2(hx - px(1.5f), gy + static_cast<float>(k) * px(5)),
-                            IM_COL32(0x28, 0x1E, 0x3C, 255), px(1));
+            const float hx = (newLength < st.length ? endX : restX) - px(1);
+            if (endShown || lengthDrag_) {
+                if (active)
+                    dl->AddLine(ImVec2(hx, ay0), ImVec2(hx, ay1), alpha(kViolet, 0.25f), px(6));
+                dl->AddLine(ImVec2(hx, ay0), ImVec2(hx, ay1), alpha(kViolet, active ? 1.0f : 0.65f), px(2));
+                const float gy = (ay0 + ay1) * 0.5f;
+                // Its grip, inside the roll.
+                dl->AddRectFilled(ImVec2(hx - px(6), gy - px(14)), ImVec2(hx + px(1), gy + px(14)), alpha(kViolet, active ? 1.0f : 0.8f), px(3));
+                for (int k = -1; k <= 1; ++k)
+                    dl->AddLine(ImVec2(hx - px(4), gy + static_cast<float>(k) * px(5)), ImVec2(hx - px(1.5f), gy + static_cast<float>(k) * px(5)),
+                                IM_COL32(0x28, 0x1E, 0x3C, 255), px(1));
+            }
         }
+        dl->PopClipRect();
         noteHovered = hovered;
         any = true;
     } else {
@@ -1213,6 +1235,10 @@ void PerformanceView::drawPianoRoll(const Mapping& m, const LiveState& live, flo
         drag_.reset();
         if (editing_ || !clip)
             lengthDrag_.reset();
+        if (editing_) {
+            viewZoom_ = 1;
+            viewStart_ = 0;
+        }
         bandFrom_.reset();
         selection_.clear();
         selectionChannel_ = live.channel;
@@ -1224,7 +1250,21 @@ void PerformanceView::drawPianoRoll(const Mapping& m, const LiveState& live, flo
     }
     const ImGuiIO& io = ImGui::GetIO();
     const ImVec2 mouse = io.MousePos;
-    const float sampleAt = (mouse.x - gx0) / std::max(ax1 - gx0, 1.0f) * static_cast<float>(st.length);
+    // The wheel zooms around the mouse, from the whole loop to a second (or a
+    // beat) across; a sideways scroll moves along. The window does not scroll.
+    ImGui::SetItemKeyOwner(ImGuiKey_MouseWheelY);
+    if (hovering && !lengthDrag_ && !drag_ && (io.MouseWheel != 0.0f || io.MouseWheelH != 0.0f)) {
+        const float most = std::max(1.0f, st.beats > 0 ? static_cast<float>(st.beats) : static_cast<float>(st.length) / Engine::kLoopRateHz);
+        if (io.MouseWheel != 0.0f) {
+            const float f = std::clamp((mouse.x - gx0) / std::max(ax1 - gx0, 1.0f), 0.0f, 1.0f);
+            const float under = viewStart_ + f / viewZoom_;  // the place under the mouse stays there
+            viewZoom_ = std::clamp(viewZoom_ * std::pow(1.25f, io.MouseWheel), 1.0f, most);
+            viewStart_ = under - f / viewZoom_;
+        }
+        viewStart_ -= io.MouseWheelH * 0.1f / viewZoom_;
+        viewStart_ = std::clamp(viewStart_, 0.0f, 1.0f - 1.0f / viewZoom_);
+    }
+    const float sampleAt = sampleAtX(mouse.x);
     const bool byDegrees = scaleMoves_ && key_.has_value();
     // The selection keeps only notes still there (once an edit had time to land).
     if (time_ - lastNoteEdit_ > 0.5)
@@ -1358,9 +1398,33 @@ void PerformanceView::drawNoteEditor(const Mapping& mapping, const LiveState& li
     const ImVec2 at = ImGui::GetCursorScreenPos();
     editing_ = true;
     escapeTaken_ = false;
+    editorClip_ = false;
     drawPianoRoll(mapping, live, at.x, at.y, w, h);
     editing_ = false;
-    ImGui::SetCursorScreenPos(ImVec2(at.x, at.y + h));
+    // Under the roll, a scrollbar: its thumb the part of the loop shown. Drag
+    // it, or click beside it to go there.
+    const float barY = at.y + h + px(4), barH = px(8);
+    if (editorClip_) {
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        const float x0 = rollGx0_, bw = std::max(rollAx1_ - rollGx0_, 1.0f), span = 1.0f / viewZoom_;
+        ImGui::SetCursorScreenPos(ImVec2(x0, barY - px(2)));
+        ImGui::InvisibleButton("##rollscroll", ImVec2(bw, barH + px(4)));
+        const float mouseX = ImGui::GetIO().MousePos.x;
+        if (ImGui::IsItemActivated()) {
+            const float tx0 = x0 + viewStart_ * bw;
+            scrollGrab_ = mouseX >= tx0 && mouseX <= tx0 + span * bw ? mouseX - tx0 : span * bw * 0.5f;
+        }
+        if (ImGui::IsItemActive())
+            viewStart_ = std::clamp((mouseX - scrollGrab_ - x0) / bw, 0.0f, 1.0f - span);
+        const float tx0 = x0 + viewStart_ * bw, tx1 = tx0 + span * bw;
+        dl->AddRectFilled(ImVec2(x0, barY), ImVec2(x0 + bw, barY + barH), IM_COL32(0x1E, 0x20, 0x24, 255), px(4));
+        dl->AddRect(ImVec2(x0, barY), ImVec2(x0 + bw, barY + barH), IM_COL32(0x3A, 0x3E, 0x45, 255), px(4), px(1));
+        const ImU32 thumb = viewZoom_ <= 1.0f ? IM_COL32(0x4E, 0x53, 0x5C, 255)
+                            : ImGui::IsItemActive() || ImGui::IsItemHovered() ? IM_COL32(0x9A, 0xA0, 0xAC, 255)
+                                                                              : IM_COL32(0x78, 0x7E, 0x8A, 255);
+        dl->AddRectFilled(ImVec2(tx0 + 1, barY + 1), ImVec2(tx1 - 1, barY + barH - 1), thumb, px(3));
+    }
+    ImGui::SetCursorScreenPos(ImVec2(at.x, barY + barH + px(2)));
     ImGui::Dummy(ImVec2(w, 0));
 }
 
