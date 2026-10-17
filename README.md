@@ -36,6 +36,9 @@ Written in C++20, Linux first; Windows and macOS packages are planned.
 - **Expressive controls.** Two sticks, two analog triggers and two touchpad
   fingers, each axis with its own CC, range and direction. Freeze a stick at its
   current value; split the touchpad into four pads.
+- **A Shift layer.** Hold or latch a Shift button and the buttons, the D-pad
+  and the touchpad pads play a second mapping, while the sticks and fingers
+  stretch, compress, widen or narrow their loops.
 - **Sixteen channels, sixteen layouts.** Switch channels while playing; each
   channel can have its own mapping, so one controller drives a whole
   multitimbral setup.
@@ -47,7 +50,9 @@ Written in C++20, Linux first; Windows and macOS packages are planned.
   on the beat and follow tempo changes; their notes can be quantized to 1/8,
   1/16 or 1/32 without delaying what you hear. Set the tempo with the mouse
   wheel, type it, or tap it (TAP, or a controller button); with Link, the other
-  apps follow. Without a clock, MidiPad plays free.
+  apps follow. With the internal clock, MidiPad sends MIDI Clock, Start and
+  Stop, so drum machines and sequencers follow it. Without a clock, MidiPad
+  plays free.
 - **Humanize** velocity and timing per channel.
 - **Built for the stage.** One window that plays and edits at the same time, a
   1 kHz real-time input thread, a PANIC button, and a headless mode without any
@@ -116,7 +121,10 @@ Click a control (a pad, a D-pad direction, a touchpad zone, an axis pill, a
 screen, a LOOP panel) to edit it in a window over the view. Channel 1's mapping
 is played by every channel without its own: on channel 1 the window edits it, and
 on another channel your first change gives that channel its own mapping (a copy
-of channel 1's), which a button turns back into channel 1's.
+of channel 1's), which a button turns back into channel 1's. Buttons, D-pad
+directions and touchpad pads have a Normal and a Shift tab: what they play
+normally, and while Shift is on. Channel 1's Shift and Loop record controls work
+on every channel.
 
 ![A mapping window: a chord on the Cross button](docs/media/mapping.png)
 
@@ -135,7 +143,7 @@ available; a note or chord outside the scale is flagged.
 **Options** (☰ menu): the MIDI interface (a drop-down showing the name under
 which each port is seen; a saved port that is missing shows in red), the
 VirMIDI ports, SYNC (the clock: free, internal or Ableton Link; the loops'
-snap; beats per bar; the note quantizer; start / stop sync), the D-pad delay,
+snap; beats per bar; the note quantizer; MIDI clock out; start / stop sync), the D-pad delay,
 humanization and the presets folder.
 
 ![The Options window](docs/media/options.png)

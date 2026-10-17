@@ -116,7 +116,7 @@ std::string compact(const TriggerBinding& b, bool flats) {
     case ActionType::ChannelStep: return std::string("Ch ") + (b.channelStep > 0 ? "+" : "") + std::to_string(b.channelStep);
     case ActionType::Freeze: return "Freeze";
     case ActionType::LoopRecord: return "Rec";
-    case ActionType::LoopStretch: return "Stretch";
+    case ActionType::Shift: return "Shift";
     case ActionType::TapTempo: return "Tap";
     case ActionType::ProgramChange:
         return b.programStep != 0 ? std::string("PC ") + (b.programStep > 0 ? "+1" : "-1") : "PC " + std::to_string(b.number + 1);
@@ -723,8 +723,25 @@ void PerformanceView::drawStretchGauge(ImDrawList* dl, ImVec2 ga, ImVec2 gb, std
     text(dl, gBold, px(10), vx, ly, alpha(T::kText, a), value, H::Center, V::Middle);
 }
 
-std::optional<std::string> PerformanceView::draw(const Mapping& mapping, const LiveState& live,
+std::optional<std::string> PerformanceView::draw(const Mapping& normalMapping, const LiveState& live,
                                                  const std::optional<Key>& key) {
+    // While Shift is on, the pads, D-pad and touchpad pads show their Shift layer.
+    Mapping shifted;
+    if (live.stretchHeld) {
+        shifted = normalMapping;
+        auto overlay = [](TriggerBinding& shown, const TriggerBinding& layer) {
+            if (shown.type != ActionType::Shift && layer.isSet() && layer.type != ActionType::Shift)
+                shown = layer;
+        };
+        for (std::size_t i = 0; i < shifted.buttons.size(); ++i)
+            overlay(shifted.buttons[i], normalMapping.shift.buttons[i]);
+        for (std::size_t i = 0; i < shifted.dpad.size(); ++i)
+            overlay(shifted.dpad[i], normalMapping.shift.dpad[i]);
+        for (std::size_t f = 0; f < shifted.fingers.size(); ++f)
+            for (std::size_t z = 0; z < shifted.fingers[f].zones.size(); ++z)
+                overlay(shifted.fingers[f].zones[z], normalMapping.shift.zones[f][z]);
+    }
+    const Mapping& mapping = live.stretchHeld ? shifted : normalMapping;
     gMedium = fonts_.medium ? fonts_.medium : ImGui::GetFont();
     gBold = fonts_.bold ? fonts_.bold : gMedium;
     gCondensed = fonts_.condensed ? fonts_.condensed : gBold;
@@ -1010,9 +1027,7 @@ void PerformanceView::drawPianoRoll(const Mapping& m, const LiveState& live, flo
             if (!dragged && chosen)
                 dl->AddRect(ImVec2(na.x - 1, na.y - 1), ImVec2(nb.x + 1, nb.y + 1), T::kCyan, px(1), px(1.5f));
         }
-        if (drag_ && editing_ && drag_->resize) {  // their new ends, and the grabbed note's length
-            ImVec2 label(0, 0);
-            int was = 0, now = 0;
+        if (drag_ && editing_ && drag_->resize) {  // their new ends
             for (const NoteInterval& n : drag_->notes) {
                 const float yb = yOf(n.note);
                 const int end = static_cast<int>(n.end) + drag_->samples;
@@ -1024,32 +1039,8 @@ void PerformanceView::drawPianoRoll(const Mapping& m, const LiveState& live, flo
                     dl->AddRectFilled(ImVec2(newX, na.y), ImVec2(oldX, yb - 0.5f), IM_COL32(0, 0, 0, 150), px(1));
                 dl->AddRect(ImVec2(na.x - 1, na.y - 1), ImVec2(newX + 1, yb + 0.5f), T::kCyan, px(1), px(1.5f));
                 dl->AddRectFilled(ImVec2(newX - px(3), na.y - px(1)), ImVec2(newX + px(1), yb + px(0.5f)), IM_COL32_WHITE, px(1));
-                if (static_cast<int>(n.end) == drag_->grabEnd && label.x == 0) {
-                    label = ImVec2(newX, na.y);
-                    was = static_cast<int>(n.end - n.start);
-                    now = end - static_cast<int>(n.start);
-                }
             }
-            if (label.x > 0) {
-                auto length = [&](int samples) {
-                    char buf[32];
-                    if (st.beats > 0) {
-                        const double beats = samples * st.beats / st.length;
-                        std::snprintf(buf, sizeof buf, "%.2g %s", beats, std::abs(beats - 1.0) < 0.005 ? "beat" : "beats");
-                    } else {
-                        std::snprintf(buf, sizeof buf, "%.2f s", static_cast<double>(samples) / Engine::kLoopRateHz);
-                    }
-                    return std::string(buf);
-                };
-                const std::string textLine = "Length  " + length(now) + "   (was " + length(was) + ")";
-                ImDrawList* fg = ImGui::GetForegroundDrawList();
-                const float tw = textWidth(gBold, px(11), textLine);
-                const ImVec2 a(label.x + px(12), label.y - px(22)), b(label.x + px(24) + tw, label.y - px(4));
-                fg->AddRectFilled(a, b, IM_COL32(0x20, 0x22, 0x26, 240), px(4));
-                fg->AddRect(a, b, T::kCyan, px(4), px(1));
-                text(fg, gBold, px(11), a.x + px(6), (a.y + b.y) * 0.5f, T::kText, textLine, H::Left, V::Middle);
-            }
-        } else if (drag_ && editing_) {  // where they go
+                } else if (drag_ && editing_) {  // where they go
             for (const NoteInterval& n : drag_->notes) {
                 const float yb = yOf(movedNote(n.note));
                 const int start = n.start + drag_->samples, end = std::max(static_cast<int>(n.end), static_cast<int>(n.start) + 1) + drag_->samples;
@@ -1409,12 +1400,6 @@ void PerformanceView::drawStick(int index, const Mapping& m, const LiveState& li
         if (frozen)
             badge(dl, gBold, px(12), c.x, s.b.y - px(30), px(22), away ? "FROZEN  \xC2\xB7  find the spot" : "FROZEN",
                   T::kIce, alpha(T::kIce, 0.16f), T::kIce);
-        if (live.stretchHeld) {  // the stick stretches its loop instead of playing
-            const LoopStatus& ls = live.loops[static_cast<std::size_t>(index)].status;
-            const std::string label = ls.state == LoopStatus::State::Playing ? "STRETCH  \xC2\xB7  " + stretchText(ls.stretch)
-                                                                             : std::string("STRETCH  \xC2\xB7  no loop");
-            badge(dl, gBold, px(12), c.x, s.a.y + px(22), px(22), label, accent, IM_COL32(0x16, 0x18, 0x1C, 235), accent);
-        }
     });
     if (hoverButton(index == 0 ? "##stickL" : "##stickR", s.a, s.b))
         click(index == 0 ? "axes:left_x,left_y" : "axes:right_x,right_y");
@@ -1815,13 +1800,6 @@ void PerformanceView::drawTouchpad(const Mapping& m, const LiveState& live, floa
         if (!live.hasTouchpad && live.connected)
             text(dl, gMedium, px(13), (s.a.x + s.b.x) * 0.5f, s.a.y + Hh * 0.45f, T::kLabel, "touchpad not detected",
                  H::Center, V::Middle);
-        if (live.stretchHeld && m.fingers[0].mode != TouchMode::Zones && m.fingers[1].mode != TouchMode::Zones) {
-            const auto& l1 = live.loops[static_cast<std::size_t>(LoopSource::Finger1)].status;
-            const auto& l2 = live.loops[static_cast<std::size_t>(LoopSource::Finger2)].status;
-            const LoopStatus* ls = l1.state == LoopStatus::State::Playing ? &l1 : l2.state == LoopStatus::State::Playing ? &l2 : nullptr;
-            const std::string label = ls ? "STRETCH  \xC2\xB7  " + stretchText(ls->stretch) : std::string("STRETCH  \xC2\xB7  no loop");
-            badge(dl, gBold, px(12), (s.a.x + s.b.x) * 0.5f, s.a.y + px(22), px(22), label, T::kCyan, IM_COL32(0x16, 0x18, 0x1C, 235), T::kCyan);
-        }
     });
     if (hoverButton("##touchscreen", s.a, s.b))
         click("fingers");

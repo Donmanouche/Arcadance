@@ -199,7 +199,10 @@ public:
     static constexpr float kStretchTouchStep = 0.03f;      // of the touchpad's width
     static constexpr int kStretchPauseMs = 400;
     static constexpr double kAmplitudeMaxRate = 20;
-    bool stretchHeld() const { return stretchHolders_.any(); }
+    // A Shift binding held (momentary) or latched (toggle): the Shift layer
+    // plays, and the sticks and fingers stretch their loops.
+    bool stretchHeld() const { return stretchHolders_.any() || shiftLatched_; }
+    bool shiftActive() const { return stretchHeld(); }
     // The notes of a channel's note loop, at most `max`; returns how many.
     int noteLoopIntervals(int channel, NoteInterval* out, int max) const;
     // Editing a note loop: notes moved together by `samples` and `semitones`
@@ -283,6 +286,7 @@ private:
     };
 
     const TriggerBinding& bindingFor(int slot) const;
+    static const TriggerBinding& normalBinding(const Mapping& m, int slot);
     void press(int slot);
     void release(int slot);
     Sounding soundingFor(const TriggerBinding& binding, int channel);
@@ -451,6 +455,7 @@ private:
     // LoopStretch: who holds it, the stick turns not yet a whole step, the
     // finger sliding and where it last counted, when 1x was reached per source.
     std::bitset<kSlotCount> stretchHolders_;
+    bool shiftLatched_ = false;  // a Shift binding in toggle mode, pressed once
     std::array<double, 2> stickStretchRest_{}, stickAmplitudeRest_{};
     int stretchFinger_ = -1;
     float stretchFingerX_ = 0, stretchFingerY_ = 0;

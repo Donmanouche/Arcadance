@@ -36,6 +36,7 @@ struct AppSettings {
     Clock clock = Clock::Free;
     Clock lastClock = Clock::Link;  // the one the top bar's button turns on
     double tempo = 120;             // the internal clock's, in beats a minute
+    bool midiClockOut = true;       // with the internal clock: MIDI Clock, Start and Stop out
     enum class LoopSnap { Free, Beat, Bar, TwoBars, FourBars };
     LoopSnap loopSnap = LoopSnap::Beat;
     int beatsPerBar = 4;

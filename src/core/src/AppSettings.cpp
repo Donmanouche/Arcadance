@@ -100,6 +100,7 @@ AppSettings loadSettings(const std::filesystem::path& file, AppSettings s) {
             s.lastClock = value;
     }
     read(j, "tempo", s.tempo);
+    read(j, "midi_clock_out", s.midiClockOut);
     s.tempo = std::clamp(s.tempo, 20.0, 999.0);
     std::string snap;
     read(j, "loop_snap", snap);
@@ -150,6 +151,7 @@ void saveSettings(const AppSettings& s, const std::filesystem::path& file) {
     j["clock"] = kClockNames[static_cast<int>(s.clock)];
     j["clock_last"] = kClockNames[static_cast<int>(s.lastClock)];
     j["tempo"] = s.tempo;
+    j["midi_clock_out"] = s.midiClockOut;
     static constexpr const char* kSnapNames[] = {"free", "beat", "bar", "2bars", "4bars"};
     j["loop_snap"] = kSnapNames[static_cast<int>(s.loopSnap)];
     j["beats_per_bar"] = s.beatsPerBar;

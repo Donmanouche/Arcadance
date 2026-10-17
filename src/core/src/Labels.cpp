@@ -112,8 +112,8 @@ std::string describe(const TriggerBinding& b, bool flats) {
         return std::string("Channel ") + (b.channelStep > 0 ? "+" : "") + std::to_string(b.channelStep);
     case ActionType::LoopRecord:
         return "Loop record";
-    case ActionType::LoopStretch:
-        return "Loop stretch";
+    case ActionType::Shift:
+        return b.mode == Mode::Toggle ? "Shift (toggle)" : "Shift";
     case ActionType::TapTempo:
         return "Tap tempo";
     case ActionType::ProgramChange:

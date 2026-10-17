@@ -84,6 +84,11 @@ public:
         if (runtime_.reportMidi_.load(std::memory_order_relaxed))
             runtime_.report({Report::Kind::Midi, m});
     }
+    // MIDI Clock and its Start / Stop: out, not reported (24 a beat would flood the monitor).
+    void sendClock(const MidiMessage& m) {
+        if (output_)
+            output_->send(m);
+    }
     void channelChanged(int channel) override {
         Report r{Report::Kind::Channel};
         r.channel = channel;
@@ -369,6 +374,8 @@ void Runtime::run(std::stop_token stop, Options options, std::shared_ptr<const P
     bool linkPlaying = false, linkPlayingKnown = false;  // the Link session's transport, as last seen
     double internalBeat = 0;                           // the internal clock's beat, at internalAt
     std::uint64_t internalAt = 0;
+    std::int64_t clockPulse = -1;  // MIDI Clock: the last pulse sent (24 a beat); -1: none yet
+    bool clockWasInternal = false;
     const std::uint64_t period = 1'000'000'000ull / static_cast<std::uint64_t>(std::max(options.pollHz, 1));
     std::uint64_t next = SDL_GetTicksNS();
     while (!stop.stop_requested()) {
@@ -429,6 +436,17 @@ void Runtime::run(std::stop_token stop, Options options, std::shared_ptr<const P
                     engine.playLoops();
                 else
                     engine.pauseLoops();
+                if (clock_.load(std::memory_order_relaxed) == ClockMode::Internal && midiClockOut_.load(std::memory_order_relaxed)) {
+                    // External devices: Start from the beat's start, or Stop.
+                    if (play) {
+                        internalBeat = 0;
+                        internalAt = start;
+                        clockPulse = -1;
+                        tap.sendClock(MidiMessage::realtime(0xFA));
+                    } else {
+                        tap.sendClock(MidiMessage::realtime(0xFC));
+                    }
+                }
                 if (clock_.load(std::memory_order_relaxed) == ClockMode::Link && startStopSync_.load(std::memory_order_relaxed)) {
                     // And the session, for the other apps; MidiPad is already there.
                     auto state = link_->link.captureAudioSessionState();
@@ -484,11 +502,29 @@ void Runtime::run(std::stop_token stop, Options options, std::shared_ptr<const P
             tempo_.store(tempo, std::memory_order_relaxed);
             beat_.store(internalBeat, std::memory_order_relaxed);
             linkPlayingKnown = false;
+            // MIDI Clock out: every pulse the beat has passed (after a stall, one).
+            if (midiClockOut_.load(std::memory_order_relaxed)) {
+                const auto pulse = static_cast<std::int64_t>(std::floor(internalBeat * 24.0));
+                if (clockPulse < 0 || pulse - clockPulse > 24 || pulse < clockPulse)
+                    clockPulse = pulse - 1;
+                while (clockPulse < pulse) {
+                    ++clockPulse;
+                    tap.sendClock(MidiMessage::realtime(0xF8));
+                }
+            } else {
+                clockPulse = -1;
+            }
         } else {
             engine.setBeatClock({});
             linkPlayingKnown = false;
         }
         internalAt = start;
+        // Leaving the internal clock: the devices that followed it stop.
+        if (clockWasInternal && mode != ClockMode::Internal && midiClockOut_.load(std::memory_order_relaxed))
+            tap.sendClock(MidiMessage::realtime(0xFC));
+        if (mode != ClockMode::Internal)
+            clockPulse = -1;
+        clockWasInternal = mode == ClockMode::Internal;
         engine.setDpadSettle(dpadSettlePress_.load(std::memory_order_relaxed),
                              dpadSettleRelease_.load(std::memory_order_relaxed));
         engine.setHumanize(unpack(humanize_.load(std::memory_order_relaxed)));

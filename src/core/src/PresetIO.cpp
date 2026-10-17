@@ -168,8 +168,8 @@ TriggerBinding triggerFromJson(const Json& j, const std::string& where) {
             b.bankLsb = readU7(j, "bank_lsb", 0, where);
     } else if (type == "loop_record") {
         b.type = ActionType::LoopRecord;
-    } else if (type == "loop_stretch") {
-        b.type = ActionType::LoopStretch;
+    } else if (type == "shift" || type == "loop_stretch") {  // "loop_stretch": before the Shift layer
+        b.type = ActionType::Shift;
     } else if (type == "tap_tempo") {
         b.type = ActionType::TapTempo;
     } else if (type == "freeze") {
@@ -236,8 +236,10 @@ Json triggerToJson(const TriggerBinding& b) {
     case ActionType::LoopRecord:
         j["type"] = "loop_record";
         return j;
-    case ActionType::LoopStretch:
-        j["type"] = "loop_stretch";
+    case ActionType::Shift:
+        j["type"] = "shift";
+        if (b.mode == Mode::Toggle)
+            j["mode"] = "toggle";
         return j;
     case ActionType::TapTempo:
         j["type"] = "tap_tempo";
@@ -414,6 +416,37 @@ Mapping mappingFromJson(const Json& j, const std::string& where) {
             }
         }
     }
+    if (j.contains("shift")) {
+        const std::string at = where + ".shift";
+        const Json& sj = requireObject(j["shift"], at);
+        if (sj.contains("buttons"))
+            for (const auto& [key, value] : requireObject(sj["buttons"], at + ".buttons").items()) {
+                auto button = parseButton(key);
+                if (!button || isDpad(*button))
+                    fail(at + ".buttons." + key, "unknown button");
+                m.shift.buttons[static_cast<std::size_t>(*button)] = triggerFromJson(value, at + ".buttons." + key);
+            }
+        if (sj.contains("dpad"))
+            for (const auto& [key, value] : requireObject(sj["dpad"], at + ".dpad").items()) {
+                auto dir = parseHatDir(key);
+                if (!dir)
+                    fail(at + ".dpad." + key, "unknown direction");
+                m.shift.dpad[static_cast<std::size_t>(*dir)] = triggerFromJson(value, at + ".dpad." + key);
+            }
+        if (sj.contains("touchpad"))
+            for (const auto& [key, value] : requireObject(sj["touchpad"], at + ".touchpad").items()) {
+                const int finger = key == "finger1" ? 0 : key == "finger2" ? 1 : -1;
+                if (finger < 0)
+                    fail(at + ".touchpad." + key, "expected \"finger1\" or \"finger2\"");
+                for (const auto& [zoneKey, zoneValue] : requireObject(value, at + ".touchpad." + key).items()) {
+                    auto zone = parseZone(zoneKey);
+                    if (!zone)
+                        fail(at + ".touchpad." + key + "." + zoneKey, "unknown zone");
+                    m.shift.zones[static_cast<std::size_t>(finger)][static_cast<std::size_t>(*zone)] =
+                        triggerFromJson(zoneValue, at + ".touchpad." + key + "." + zoneKey);
+                }
+            }
+    }
     if (j.contains("loops")) {
         for (const auto& [key, value] : requireObject(j["loops"], where + ".loops").items()) {
             const std::string at = where + ".loops." + key;
@@ -488,6 +521,33 @@ Json mappingToJson(const Mapping& m) {
     }
     if (!touchpad.empty())
         j["touchpad"] = touchpad;
+
+    Json shift = Json::object();
+    {
+        Json sb = Json::object(), sd = Json::object(), st = Json::object();
+        for (int i = 0; i < kButtonCount; ++i)
+            if (m.shift.buttons[static_cast<std::size_t>(i)].isSet() && !isDpad(static_cast<Button>(i)))
+                sb[std::string(toString(static_cast<Button>(i)))] = triggerToJson(m.shift.buttons[static_cast<std::size_t>(i)]);
+        for (int i = 0; i < kHatDirCount; ++i)
+            if (m.shift.dpad[static_cast<std::size_t>(i)].isSet())
+                sd[std::string(toString(static_cast<HatDir>(i)))] = triggerToJson(m.shift.dpad[static_cast<std::size_t>(i)]);
+        for (int f = 0; f < kFingerCount; ++f) {
+            Json zones = Json::object();
+            for (int z = 0; z < kZoneCount; ++z)
+                if (m.shift.zones[static_cast<std::size_t>(f)][static_cast<std::size_t>(z)].isSet())
+                    zones[std::string(toString(static_cast<Zone>(z)))] = triggerToJson(m.shift.zones[static_cast<std::size_t>(f)][static_cast<std::size_t>(z)]);
+            if (!zones.empty())
+                st[f == 0 ? "finger1" : "finger2"] = zones;
+        }
+        if (!sb.empty())
+            shift["buttons"] = sb;
+        if (!sd.empty())
+            shift["dpad"] = sd;
+        if (!st.empty())
+            shift["touchpad"] = st;
+    }
+    if (!shift.empty())
+        j["shift"] = shift;
 
     Json loops = Json::object();
     for (std::size_t s = 0; s < m.loops.size(); ++s) {

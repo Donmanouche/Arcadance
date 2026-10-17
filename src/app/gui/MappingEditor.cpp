@@ -292,21 +292,25 @@ bool MappingEditor::drawControl(const std::string& spec, Mapping& m, const LiveS
     ImGui::PushID(spec.c_str());
     bool changed = false;
     TriggerBinding* trigger = nullptr;
+    TriggerBinding* shifted = nullptr;  // its entry in the Shift layer
     if (p.size() == 2 && p[0] == "button") {
         if (auto b = parseButton(p[1]); b && !isDpad(*b)) {
             selection_ = {Selection::Kind::Button, static_cast<int>(*b)};
             trigger = &m.buttons[static_cast<std::size_t>(*b)];
+            shifted = &m.shift.buttons[static_cast<std::size_t>(*b)];
         }
     } else if (p.size() == 2 && p[0] == "dpad") {
         if (auto d = parseHatDir(p[1])) {
             selection_ = {Selection::Kind::Dpad, static_cast<int>(*d)};
             trigger = &m.dpad[static_cast<std::size_t>(*d)];
+            shifted = &m.shift.dpad[static_cast<std::size_t>(*d)];
         }
     } else if (p.size() == 3 && p[0] == "zone" && (p[1] == "1" || p[1] == "2")) {
         if (auto z = parseZone(p[2])) {
             const int finger = p[1][0] - '1';
             selection_ = {Selection::Kind::Zone, static_cast<int>(*z), finger};
             trigger = &m.fingers[static_cast<std::size_t>(finger)].zones[static_cast<std::size_t>(*z)];
+            shifted = &m.shift.zones[static_cast<std::size_t>(finger)][static_cast<std::size_t>(*z)];
         }
     } else if ((p.size() == 2 && p[0] == "axis") || (p.size() == 3 && p[0] == "axes")) {
         for (std::size_t i = 1; i < p.size(); ++i) {
@@ -338,8 +342,32 @@ bool MappingEditor::drawControl(const std::string& spec, Mapping& m, const LiveS
             changed |= drawLoopForm(2 + f, m);
         }
     }
-    if (trigger)
+    if (trigger && shifted && trigger->type != ActionType::Shift) {
+        // Two layers: what it plays normally, and while Shift is on.
+        if (ImGui::BeginTabBar("##layer")) {
+            if (ImGui::BeginTabItem("Normal")) {
+                ImGui::Spacing();
+                changed |= drawTriggerEditor(*trigger);
+                ImGui::EndTabItem();
+            }
+            if (ImGui::BeginTabItem(shifted->isSet() ? "Shift *" : "Shift")) {
+                ImGui::PushStyleColor(ImGuiCol_Text, kHintColor);
+                ImGui::TextWrapped("While a Shift button is held (or latched), this control plays what you set here; "
+                                   "with No action, it plays its normal mapping.");
+                ImGui::PopStyleColor();
+                ImGui::Spacing();
+                changed |= drawTriggerEditor(*shifted);
+                if (shifted->type == ActionType::Shift) {  // no Shift inside the Shift layer
+                    *shifted = TriggerBinding{};
+                    changed = true;
+                }
+                ImGui::EndTabItem();
+            }
+            ImGui::EndTabBar();
+        }
+    } else if (trigger) {
         changed |= drawTriggerEditor(*trigger);
+    }
     ImGui::PopID();
     return changed;
 }
@@ -443,7 +471,7 @@ bool MappingEditor::drawLoopForm(int source, Mapping& m) {
 bool MappingEditor::drawTriggerEditor(TriggerBinding& b) {
     bool changed = false;
     static const char* kTypes[] = {"No action", "Note", "CC", "Chord", "Transport", "Channel change", "Axis freeze",
-                                   "Loop record", "Program change", "Loop stretch", "Tap tempo"};
+                                   "Loop record", "Program change", "Shift", "Tap tempo"};
     int type = static_cast<int>(b.type);
     ImGui::SetNextItemWidth(ImGui::GetFontSize() * 14);
     if (ImGui::Combo("Action", &type, kTypes, IM_ARRAYSIZE(kTypes)) && type != static_cast<int>(b.type)) {
@@ -553,13 +581,14 @@ bool MappingEditor::drawTriggerEditor(TriggerBinding& b) {
         ImGui::PopStyleColor();
         break;
     }
-    case ActionType::LoopStretch:
+    case ActionType::Shift:
+        changed |= modeRadio(b.mode);
         ImGui::PushStyleColor(ImGuiCol_Text, kHintColor);
-        ImGui::TextWrapped("Hold, then move a stick or a finger on the touchpad: left or right stretches or compresses "
-                           "its loop in time, as Shift + mouse wheel over its LOOP panel does; up or down widens or "
-                           "narrows its amplitude, as Ctrl + mouse wheel does. Only the way it mostly moves counts. A "
-                           "stick pushed further turns faster; on the touchpad, each slide of the finger counts. "
-                           "Meanwhile they send no CC. What you set stays when you release.");
+        ImGui::TextWrapped("While Shift is on (held, or pressed once in Toggle mode), the buttons, the D-pad and the "
+                           "touchpad pads play their Shift layer (the Shift tab of their window), and a stick or a "
+                           "finger on the touchpad reshapes its loop: left or right stretches or compresses it in "
+                           "time, as Shift + mouse wheel over its LOOP panel does; up or down widens or narrows its "
+                           "amplitude, as Ctrl + mouse wheel does. Meanwhile they send no CC. What you set stays.");
         ImGui::PopStyleColor();
         break;
     case ActionType::TapTempo:

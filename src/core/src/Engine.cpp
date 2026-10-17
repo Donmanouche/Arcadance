@@ -329,6 +329,7 @@ void Engine::reset() {
     releaseAll();
     pressed_.reset();
     stretchHolders_.reset();
+    shiftLatched_ = false;
     dpadBits_ = 0;
     hatDir_.reset();
     pendingHatDir_.reset();
@@ -337,16 +338,42 @@ void Engine::reset() {
     triggerDown_ = {};
 }
 
-const TriggerBinding& Engine::bindingFor(int slot) const {
+// A control's normal binding in `m` (unbound: a touchpad zone of a finger
+// not in pad mode).
+const TriggerBinding& Engine::normalBinding(const Mapping& m, int slot) {
     static const TriggerBinding kUnbound;
     if (slot < kHatSlotBase)
-        return mapping_->buttons[static_cast<std::size_t>(slot)];
+        return m.buttons[static_cast<std::size_t>(slot)];
     if (slot < kZoneSlotBase)
-        return mapping_->dpad[static_cast<std::size_t>(slot - kHatSlotBase)];
+        return m.dpad[static_cast<std::size_t>(slot - kHatSlotBase)];
     const auto finger = static_cast<std::size_t>((slot - kZoneSlotBase) / kZoneCount);
     const auto zone = static_cast<std::size_t>((slot - kZoneSlotBase) % kZoneCount);
-    const FingerBinding& f = mapping_->fingers[finger];
-    return f.mode == TouchMode::Zones ? f.zones[zone] : kUnbound;
+    return m.fingers[finger].mode == TouchMode::Zones ? m.fingers[finger].zones[zone] : kUnbound;
+}
+
+// What a control plays now. Channel 1's Shift and Loop record controls are
+// the same on every channel. Otherwise, with Shift on, its Shift layer entry
+// when set (never for a Shift binding itself), else its normal one.
+const TriggerBinding& Engine::bindingFor(int slot) const {
+    static const TriggerBinding kUnbound;
+    if (const TriggerBinding& first = normalBinding(preset_->base, slot);
+        first.type == ActionType::Shift || first.type == ActionType::LoopRecord)
+        return first;
+    const TriggerBinding* normal = &normalBinding(*mapping_, slot);
+    const TriggerBinding* layered = &kUnbound;
+    if (slot < kHatSlotBase) {
+        layered = &mapping_->shift.buttons[static_cast<std::size_t>(slot)];
+    } else if (slot < kZoneSlotBase) {
+        layered = &mapping_->shift.dpad[static_cast<std::size_t>(slot - kHatSlotBase)];
+    } else {
+        const auto finger = static_cast<std::size_t>((slot - kZoneSlotBase) / kZoneCount);
+        if (mapping_->fingers[finger].mode != TouchMode::Zones)
+            return kUnbound;
+        layered = &mapping_->shift.zones[finger][static_cast<std::size_t>((slot - kZoneSlotBase) % kZoneCount)];
+    }
+    if (shiftActive() && normal->type != ActionType::Shift && layered->isSet() && layered->type != ActionType::Shift)
+        return *layered;
+    return *normal;
 }
 
 void Engine::press(int slot) {
@@ -386,14 +413,17 @@ void Engine::press(int slot) {
         if (const auto tempo = tapTempo_.tap(now_))
             tappedTempo_ = tempo;
         return;
-    case ActionType::LoopStretch:
-        if (stretchHolders_.none()) {
+    case ActionType::Shift:
+        if (!stretchHeld()) {
             stickStretchRest_ = {};
             stickAmplitudeRest_ = {};
             stretchFinger_ = -1;
             lastStretchTick_ = now_;
         }
-        stretchHolders_.set(static_cast<std::size_t>(slot));
+        if (binding.mode == Mode::Toggle)
+            shiftLatched_ = !shiftLatched_;  // pressed once on, once off
+        else
+            stretchHolders_.set(static_cast<std::size_t>(slot));
         return;
     case ActionType::Note:
     case ActionType::Chord:

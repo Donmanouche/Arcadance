@@ -91,6 +91,45 @@ std::vector<int> versionNumbers(std::string_view text) {
     return out;
 }
 
+// Channel 1's Shift and Loop record controls work on every channel: the
+// mapping `m` shows them in their place.
+Mapping withChannelOneControls(Mapping m, const Mapping& first) {
+    auto keep = [](TriggerBinding& shown, const TriggerBinding& own) {
+        if (own.type == ActionType::Shift || own.type == ActionType::LoopRecord)
+            shown = own;
+    };
+    for (std::size_t i = 0; i < m.buttons.size(); ++i)
+        keep(m.buttons[i], first.buttons[i]);
+    for (std::size_t i = 0; i < m.dpad.size(); ++i)
+        keep(m.dpad[i], first.dpad[i]);
+    for (std::size_t f = 0; f < m.fingers.size(); ++f)
+        if (first.fingers[f].mode == TouchMode::Zones)
+            for (std::size_t z = 0; z < m.fingers[f].zones.size(); ++z)
+                keep(m.fingers[f].zones[z], first.fingers[f].zones[z]);
+    return m;
+}
+
+// The binding a control spec ("button:south", "dpad:up", "zone:1:top_left")
+// names in `m`, if it names one.
+const TriggerBinding* specBinding(const Mapping& m, const std::string& spec) {
+    std::vector<std::string> p;
+    for (std::size_t at = 0; at <= spec.size();) {
+        const std::size_t next = std::min(spec.find(':', at), spec.size());
+        p.push_back(spec.substr(at, next - at));
+        at = next + 1;
+    }
+    if (p.size() == 2 && p[0] == "button")
+        if (auto b = parseButton(p[1]); b && !isDpad(*b))
+            return &m.buttons[static_cast<std::size_t>(*b)];
+    if (p.size() == 2 && p[0] == "dpad")
+        if (auto d = parseHatDir(p[1]))
+            return &m.dpad[static_cast<std::size_t>(*d)];
+    if (p.size() == 3 && p[0] == "zone" && (p[1] == "1" || p[1] == "2"))
+        if (auto z = parseZone(p[2]))
+            return &m.fingers[static_cast<std::size_t>(p[1][0] - '1')].zones[static_cast<std::size_t>(*z)];
+    return nullptr;
+}
+
 constexpr const char* kReleasesUrl = "https://github.com/Donmanouche/MidiPad/releases/latest";
 
 // Asks GitHub for the latest release (through curl, so MidiPad links no
@@ -402,6 +441,7 @@ private:
     int overlayPlacingFrames_ = 0;
     bool optionsOpen_ = false;  // the Options panel over the animated view
     bool optionsAppearing_ = false;
+    int optionsPlacingFrames_ = 0;
 
     std::mutex pendingLogMutex_;
     std::vector<std::string> pendingLog_;  // from the input thread
@@ -1485,7 +1525,7 @@ void GuiApp::drawPerformance(const LiveState& live) {
     ImGui::PushStyleColor(ImGuiCol_ChildBg, color(Theme::kBackground));
     ImGui::BeginChild("modules", ImVec2(0, -statusH), ImGuiChildFlags_None, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
     performance_.setQuantize(settings_.quantize);
-    const auto clicked = performance_.draw(preset_.forChannel(live.channel), live, settings_.key);
+    const auto clicked = performance_.draw(withChannelOneControls(preset_.forChannel(live.channel), preset_.base), live, settings_.key);
     if (auto edit = performance_.takeNoteEdit()) {  // from the note loop's editor (the last frame's)
         if (edit->remove)
             runtime_->removeLoopNotes(std::move(edit->notes));
@@ -1590,13 +1630,18 @@ void GuiApp::drawOptionsOverlay() {
     ImFont* bold = uiFonts_.bold ? uiFonts_.bold : ImGui::GetFont();
     ImFont* medium = uiFonts_.medium ? uiFonts_.medium : ImGui::GetFont();
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
-    // Centered, every frame: its height follows the window and the content.
-    ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + viewport->WorkSize.x * 0.5f,
-                                   viewport->WorkPos.y + viewport->WorkSize.y * 0.5f),
-                            ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+    // Centered as it opens (a few frames, while its size settles); then it
+    // stays where it is moved.
     if (optionsAppearing_) {
         ImGui::SetNextWindowFocus();
         optionsAppearing_ = false;
+        optionsPlacingFrames_ = 12;
+    }
+    if (optionsPlacingFrames_ > 0) {
+        --optionsPlacingFrames_;
+        ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + viewport->WorkSize.x * 0.5f,
+                                       viewport->WorkPos.y + viewport->WorkSize.y * 0.5f),
+                                ImGuiCond_Always, ImVec2(0.5f, 0.5f));
     }
     ImGui::SetNextWindowSize(ImVec2(px(560), 0));
     pushWindowLook();
@@ -1841,6 +1886,14 @@ void GuiApp::drawOptionsOverlay() {
                 settings_.quantize = kGrids[quantize];
                 changed = true;
             }
+            rowLabel("MIDI clock out");
+            ImGui::BeginDisabled(settings_.clock != AppSettings::Clock::Internal);
+            const int clockOut = choice("clockout", {"Off", "On"}, settings_.midiClockOut ? 1 : 0);
+            ImGui::EndDisabled();
+            if (clockOut >= 0 && (clockOut == 1) != settings_.midiClockOut) {
+                settings_.midiClockOut = clockOut == 1;
+                changed = true;
+            }
             rowLabel("Start / stop sync");
             const int startStop = choice("startstop", {"Off", "On"}, settings_.startStopSync ? 1 : 0);
             if (startStop >= 0 && (startStop == 1) != settings_.startStopSync) {
@@ -1852,7 +1905,8 @@ void GuiApp::drawOptionsOverlay() {
             ImGui::TextColored(color(Theme::kLabel), "With a clock, a loop takes a whole number of these, starts on the\n"
                                                      "beat and follows the tempo; its notes go on the quantize grid as\n"
                                                      "they are recorded (what you hear live is never delayed). With Link,\n"
-                                                     "Play and Stop follow the session.");
+                                                     "Play and Stop follow the session. With the internal clock, MIDI clock\n"
+                                                     "out sends 24 pulses a beat, Start with Play and Stop with Stop.");
             ImGui::PopFont();
             if (changed) {
                 applySync();
@@ -2135,31 +2189,33 @@ void GuiApp::drawMappingOverlay(const LiveState& live) {
         Mapping& target = own ? *own : first ? preset_.base : copy;
         const std::string channelName = "channel " + std::to_string(live.channel + 1);
         bool backToBase = false;  // done once the window no longer uses `own`
-        ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(Theme::kDim), "%s",
-                           own     ? ("Editing the mapping of " + channelName + " (its own)").c_str()
-                           : first ? "Editing channel 1: every channel not changed on its own plays this mapping"
-                                   : ("Editing " + channelName + ": it plays channel 1's mapping until you change it").c_str());
-        if (own) {
-            ImGui::SameLine();
-            ImGui::PushFont(uiFonts_.medium ? uiFonts_.medium : ImGui::GetFont(), 12.0f);
-            if (ImGui::SmallButton("Use channel 1's mapping again"))
-                ImGui::OpenPopup("Use the base mapping");
-            ImGui::SetItemTooltip("Removes this channel's own mapping: it then plays channel 1's, as the other channels do");
-            ImGui::PopFont();
-            if (beginDialog("Use the base mapping")) {
-                ImGui::Text("Channel %d's own mapping is removed; it then plays channel 1's.", live.channel + 1);
-                ImGui::TextColored(kHintColor, "Revert brings it back until you save the preset.");
-                const int button = dialogButtons({"Remove", "Cancel"});
-                if (button == 0) {
-                    backToBase = true;
-                    ImGui::CloseCurrentPopup();
+        if (spec != "notes") {  // the note loop editor goes straight to its piano roll
+            ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(Theme::kDim), "%s",
+                               own     ? ("Editing the mapping of " + channelName + " (its own)").c_str()
+                               : first ? "Editing channel 1: every channel not changed on its own plays this mapping"
+                                       : ("Editing " + channelName + ": it plays channel 1's mapping until you change it").c_str());
+            if (own) {
+                ImGui::SameLine();
+                ImGui::PushFont(uiFonts_.medium ? uiFonts_.medium : ImGui::GetFont(), 12.0f);
+                if (ImGui::SmallButton("Use channel 1's mapping again"))
+                    ImGui::OpenPopup("Use the base mapping");
+                ImGui::SetItemTooltip("Removes this channel's own mapping: it then plays channel 1's, as the other channels do");
+                ImGui::PopFont();
+                if (beginDialog("Use the base mapping")) {
+                    ImGui::Text("Channel %d's own mapping is removed; it then plays channel 1's.", live.channel + 1);
+                    ImGui::TextColored(kHintColor, "Revert brings it back until you save the preset.");
+                    const int button = dialogButtons({"Remove", "Cancel"});
+                    if (button == 0) {
+                        backToBase = true;
+                        ImGui::CloseCurrentPopup();
+                    }
+                    if (button == 1 || ImGui::IsKeyPressed(ImGuiKey_Escape))
+                        ImGui::CloseCurrentPopup();
+                    endDialog();
                 }
-                if (button == 1 || ImGui::IsKeyPressed(ImGuiKey_Escape))
-                    ImGui::CloseCurrentPopup();
-                endDialog();
             }
+            ImGui::Spacing();
         }
-        ImGui::Spacing();
         // The forms scroll when the window is too short; the buttons stay in view.
         ImGui::SetNextWindowSizeConstraints(ImVec2(0, 0),
                                             ImVec2(FLT_MAX, std::max(ImGui::GetFontSize() * 10,
@@ -2168,6 +2224,17 @@ void GuiApp::drawMappingOverlay(const LiveState& live) {
         ImGui::BeginChild("mappingbody", ImVec2(0, 0), ImGuiChildFlags_AutoResizeX | ImGuiChildFlags_AutoResizeY);
         ImGui::PopStyleColor();
         editor_.setHumanizeChannels(settings_.humanize.channels);
+        // Channel 1's Shift or Loop record control: the same on every channel, set on channel 1.
+        const TriggerBinding* firstControl = live.channel != 0 ? specBinding(preset_.base, spec) : nullptr;
+        const bool channelOneControl =
+            firstControl && (firstControl->type == ActionType::Shift || firstControl->type == ActionType::LoopRecord);
+        if (channelOneControl) {
+            ImGui::TextColored(kWarningColor, "On every channel, this control is channel 1's %s.",
+                               firstControl->type == ActionType::Shift ? "Shift" : "Loop record");
+            ImGui::TextColored(kHintColor, "Change it on channel 1.");
+            ImGui::Spacing();
+        }
+        ImGui::BeginDisabled(channelOneControl);
         if (spec == "notes") {  // the note loop's editor: a large piano roll, above its settings
             const float em = ImGui::GetFontSize();
             ImGui::BeginDisabled(!settings_.key);
@@ -2198,6 +2265,7 @@ void GuiApp::drawMappingOverlay(const LiveState& live) {
                 own = std::move(copy);  // its first change: the channel gets its own mapping
             edited();
         }
+        ImGui::EndDisabled();
         if (backToBase) {
             own.reset();
             edited();
@@ -2522,6 +2590,7 @@ void GuiApp::applySync() {
     runtime_->setLinkStartStopSync(settings_.startStopSync);
     runtime_->setSync(settings_.snapBeats(), settings_.beatsPerBar, settings_.quantize);
     runtime_->setInternalTempo(settings_.tempo);
+    runtime_->setMidiClockOut(settings_.midiClockOut);
     runtime_->setClock(static_cast<ClockMode>(settings_.clock));  // the same order: Free, Internal, Link
 }
 

@@ -16,7 +16,7 @@ enum class Mode : std::uint8_t {
 };
 
 enum class ActionType : std::uint8_t {
-    None, Note, ControlChange, Chord, Transport, ChannelStep, Freeze, LoopRecord, ProgramChange, LoopStretch, TapTempo
+    None, Note, ControlChange, Chord, Transport, ChannelStep, Freeze, LoopRecord, ProgramChange, Shift, TapTempo
 };
 
 enum class TransportCommand : std::uint8_t { Start, Stop, Continue };
@@ -114,12 +114,21 @@ struct FingerBinding {
     std::array<TriggerBinding, kZoneCount> zones;  // TouchMode::Zones
 };
 
+// What the buttons, D-pad directions and touchpad pads play while a Shift
+// binding is held (or latched); an unset entry plays the normal mapping's.
+struct ShiftLayer {
+    std::array<TriggerBinding, kButtonCount> buttons;  // D-pad entries unused: see dpad
+    std::array<TriggerBinding, kHatDirCount> dpad;
+    std::array<std::array<TriggerBinding, kZoneCount>, kFingerCount> zones;
+};
+
 struct Mapping {
     std::array<TriggerBinding, kButtonCount> buttons;  // D-pad entries unused: see dpad
     std::array<TriggerBinding, kHatDirCount> dpad;
     std::array<AxisBinding, kAxisCount> axes;
     std::array<FingerBinding, kFingerCount> fingers;
     std::array<LoopBinding, kLoopSourceCount> loops = kDefaultLoops;  // by LoopSource
+    ShiftLayer shift;
 };
 
 struct Preset {

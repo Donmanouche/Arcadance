@@ -159,6 +159,9 @@ public:
     // session's (every app in it follows). A TapTempo binding sets it too.
     void setTempo(double bpm);
     void setInternalTempo(double bpm) { internalTempo_.store(bpm, std::memory_order_relaxed); }
+    // With the internal clock, MIDI Clock out (24 pulses a beat) for devices
+    // to follow, Start with Play (from the beat's start) and Stop with Stop.
+    void setMidiClockOut(bool on) { midiClockOut_.store(on, std::memory_order_relaxed); }
     void setLinkStartStopSync(bool on);
     void setSync(int snapBeats, int beatsPerBar, int quantize) {
         snapBeats_.store(snapBeats, std::memory_order_relaxed);
@@ -233,6 +236,7 @@ private:
     std::unique_ptr<LinkSession> link_;
     std::atomic<ClockMode> clock_{ClockMode::Free};
     std::atomic<bool> startStopSync_{true};
+    std::atomic<bool> midiClockOut_{true};
     std::atomic<double> internalTempo_{120}, requestedTempo_{0};  // 0: no tempo asked for
     std::atomic<int> snapBeats_{1}, beatsPerBar_{4}, quantize_{0};
     std::atomic<double> tempo_{120}, beat_{0};
