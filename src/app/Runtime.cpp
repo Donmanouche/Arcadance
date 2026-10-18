@@ -170,6 +170,9 @@ void Runtime::setChainStep(int channel, int step, int clip, int repeats) {
 void Runtime::setChainLoop(int channel, bool on) { commands_.push({Command::Kind::ChainLoop, channel, on ? 1 : 0}); }
 void Runtime::chainGoTo(int channel, int step) { commands_.push({Command::Kind::ChainGo, channel, step}); }
 void Runtime::stopChain(int channel) { commands_.push({Command::Kind::ChainStop, channel}); }
+void Runtime::clearClip(int channel, int slot) { commands_.push({Command::Kind::ClearClip, channel, slot}); }
+void Runtime::copyClip(int channel, int from, int to) { commands_.push({Command::Kind::CopyClip, channel, from, to}); }
+void Runtime::resetLoopShape(int source, int axis) { commands_.push({Command::Kind::ResetShape, source, 0, axis}); }
 void Runtime::toggleLoopLock(int source, int axis) { commands_.push({Command::Kind::ToggleLock, source, 0, axis}); }
 void Runtime::launchClip(int channel, int slot) { commands_.push({Command::Kind::LaunchClip, channel, slot}); }
 void Runtime::setRecordSlot(int channel, int slot) { commands_.push({Command::Kind::RecordSlot, channel, slot}); }
@@ -548,6 +551,12 @@ void Runtime::run(std::stop_token stop, Options options, std::shared_ptr<const P
                 engine.chainGoTo(command->channel, command->value);
             } else if (command->kind == Command::Kind::ChainStop) {
                 engine.stopChain(command->channel);
+            } else if (command->kind == Command::Kind::ClearClip) {
+                engine.clearClip(command->channel, command->value);
+            } else if (command->kind == Command::Kind::CopyClip) {
+                engine.copyClip(command->channel, command->value, command->axis);
+            } else if (command->kind == Command::Kind::ResetShape) {
+                engine.resetLoopShape(engine.channel(), command->channel, command->axis);
             } else if (command->kind == Command::Kind::ToggleLock) {
                 if (command->axis < 0)  // `channel` holds the source
                     engine.toggleLoopLock(engine.channel(), command->channel);
@@ -699,6 +708,11 @@ void Runtime::run(std::stop_token stop, Options options, std::shared_ptr<const P
             engine.setKey(std::nullopt);
         engine.setSessionMode(sessionMode_.load(std::memory_order_relaxed));
         engine.setSessionValues(sessionValues_.load(std::memory_order_relaxed));
+        {
+            const int nav = navButtons_.load(std::memory_order_relaxed);
+            auto button = [](int v) { return v > 0 ? std::optional<Button>(static_cast<Button>(v - 1)) : std::nullopt; };
+            engine.setNavButtons(button(nav & 0xFF), button((nav >> 8) & 0xFF), button((nav >> 16) & 0xFF));
+        }
         engine.tick(start);
         gamepad.poll(start);
         while (const auto e = engine.takeSessionEvent())

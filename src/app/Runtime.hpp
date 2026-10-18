@@ -103,7 +103,11 @@ struct LiveState {
     // whether it loops, the step playing (-1: off), the turns it played, the
     // step asked for next (-1: none).
     struct Chain {
-        std::array<std::int8_t, midipad::Engine::kChainSteps> clip{};
+        std::array<std::int8_t, midipad::Engine::kChainSteps> clip = [] {
+            std::array<std::int8_t, midipad::Engine::kChainSteps> empty{};
+            empty.fill(-1);
+            return empty;
+        }();
         std::array<std::uint8_t, midipad::Engine::kChainSteps> repeats{};
         bool loop = true;
         std::int8_t at = -1, next = -1;
@@ -175,6 +179,14 @@ public:
     // the controller asks of it, oldest first.
     void setSessionMode(bool on) { sessionMode_.store(on, std::memory_order_relaxed); }
     void setSessionValues(bool on) { sessionValues_.store(on, std::memory_order_relaxed); }  // Engine::setSessionValues
+    // Engine::setNavButtons; -1: none.
+    void setNavButtons(int select, int menu, int back) {
+        navButtons_.store((select + 1) | (menu + 1) << 8 | (back + 1) << 16, std::memory_order_relaxed);
+    }
+    // Engine::clearClip, copyClip, resetLoopShape (on the active channel).
+    void clearClip(int channel, int slot);
+    void copyClip(int channel, int from, int to);
+    void resetLoopShape(int source, int axis);
     // Chains (Engine::setChainStep, setChainLoop, chainGoTo, stopChain), on any channel.
     void setChainStep(int channel, int step, int clip, int repeats);
     void setChainLoop(int channel, bool on);
@@ -241,7 +253,7 @@ private:
     class Tap;
     struct Command {
         enum class Kind : std::uint8_t {
-            SetChannel, Panic, ClearLoop, ToggleLock, ChainStep, ChainLoop, ChainGo, ChainStop, LaunchClip, RecordSlot, StretchLoop, AmplifyLoop, AxisLength, PauseLoops, PlayLoops,
+            SetChannel, Panic, ClearLoop, ToggleLock, ChainStep, ChainLoop, ChainGo, ChainStop, ClearClip, CopyClip, ResetShape, LaunchClip, RecordSlot, StretchLoop, AmplifyLoop, AxisLength, PauseLoops, PlayLoops,
             SaveLoops, LoadLoops, EditNotes
         } kind;
         int channel = 0;
@@ -269,6 +281,7 @@ private:
     midipad::SpscRing<Command, 64> commands_;
     midipad::SpscRing<midipad::Engine::SessionEvent, 64> sessionEvents_;
     std::atomic<bool> sessionMode_{false}, sessionValues_{false};
+    std::atomic<int> navButtons_{0};
 
     std::mutex pendingMutex_;
     std::shared_ptr<const midipad::Preset> pendingPreset_;

@@ -143,6 +143,10 @@ void Engine::tick(std::uint64_t nowNs) {
         }
     if (!loopsPaused_)
         runChains();
+    if (modeSlot_ >= 0 && !modeHelp_ && now_ - modeAt_ >= static_cast<std::uint64_t>(kHelpHoldMs) * 1'000'000u) {
+        modeHelp_ = true;  // held: its help
+        pushSessionEvent(SessionEvent::HelpOn);
+    }
     runLoops();
     stretchFromControls();
     navigate();
@@ -426,7 +430,10 @@ void Engine::press(int slot) {
     // shows, L3, R3 and the D-pad drive it, unless Record is held.
     const TriggerBinding& binding = bindingFor(slot);
     if (binding.type == ActionType::SessionScreen || (!presetHasSession_ && slot == slotOf(Button::Guide))) {
-        pushSessionEvent(SessionEvent::Toggle);
+        modeSlot_ = slot;  // its event when let go (or its help, held)
+        modeAt_ = now_;
+        modeShift_ = stretchHeld();
+        modeHelp_ = false;
         return;
     }
     if (stretchHeld() && recordHolders_.none() && !navigating()) {  // Shift + a click: lengths or amplitudes
@@ -441,10 +448,19 @@ void Engine::press(int slot) {
         }
     }
     if (navigating()) {
+        auto is = [&](const std::optional<Button>& b) { return b && slot == slotOf(*b); };
+        if (is(navSelect_) || is(navMenu_) || is(navBack_)) {
+            pushSessionEvent(is(navSelect_) ? SessionEvent::Press : is(navMenu_) ? SessionEvent::Menu : SessionEvent::Back);
+            return;
+        }
+    }
+    if (navigating() && !navSelect_) {
         if (slot == slotOf(Button::LeftStick) || slot == slotOf(Button::RightStick)) {
             pushSessionEvent(sessionValues_ && slot == slotOf(Button::RightStick) ? SessionEvent::PressRight : SessionEvent::Press);
             return;
         }
+    }
+    if (navigating()) {
         if (slot >= kHatSlotBase && slot < kZoneSlotBase) {
             static constexpr std::optional<SessionEvent> kMoves[kHatDirCount] = {
                 SessionEvent::Up, std::nullopt, SessionEvent::Right, std::nullopt,
@@ -541,6 +557,11 @@ void Engine::release(int slot) {
     if (!pressed_.test(static_cast<std::size_t>(slot)))
         return;
     pressed_.reset(static_cast<std::size_t>(slot));
+    if (slot == modeSlot_) {  // the Mode control let go
+        pushSessionEvent(modeHelp_ ? SessionEvent::HelpOff : modeShift_ ? SessionEvent::Edit : SessionEvent::Toggle);
+        modeSlot_ = -1;
+        return;
+    }
     if (slot >= kHatSlotBase && slot < kZoneSlotBase)
         hatNav_.reset();
     if (recordHolders_.test(static_cast<std::size_t>(slot))) {
@@ -2040,6 +2061,59 @@ void Engine::clearTrack(std::size_t index) {
     const int track = trackOfLoop(index);
     if (track == kNoteTrack && overdubChannel_ == channelOfLoop(index))
         overdubChannel_ = -1;
+}
+
+void Engine::clearClip(int channel, int slot) {
+    channel = std::clamp(channel, 0, kChannelCount - 1);
+    slot = std::clamp(slot, 0, kClipSlots - 1);
+    const auto c = static_cast<std::size_t>(channel);
+    for (int track = 0; track < kTrackCount; ++track)
+        clearTrack(slotIndex(channel, slot, track));
+    noteEvents_[c * kClipSlots + static_cast<std::size_t>(slot)].clear();
+    if (queued_[c] == slot)
+        queued_[c] = -1;
+    if (slot == currentSlot_[c])
+        clipPlaying_[c] = false;
+}
+
+bool Engine::copyClip(int channel, int from, int to) {
+    channel = std::clamp(channel, 0, kChannelCount - 1);
+    from = std::clamp(from, 0, kClipSlots - 1);
+    to = std::clamp(to, 0, kClipSlots - 1);
+    if (from == to || !clipHasLoops(channel, from))
+        return false;
+    const auto c = static_cast<std::size_t>(channel);
+    for (int track = 0; track < kTrackCount; ++track) {
+        const std::size_t si = slotIndex(channel, from, track), di = slotIndex(channel, to, track);
+        silenceLoop(di);
+        Loop& src = loops_[si];
+        Loop& dst = loops_[di];
+        // Everything but the samples, then the samples into the buffer it has (no allocation).
+        std::vector<std::uint16_t> srcX = std::move(src.x), dstX = std::move(dst.x);
+        dst = src;
+        src.x = std::move(srcX);
+        dst.x = std::move(dstX);
+        if (!src.x.empty() && !dst.x.empty())
+            std::copy_n(src.x.begin(), std::min(src.x.size(), dst.x.size()), dst.x.begin());
+        dst.position = 0;
+        dst.phase = 0;
+        dst.turns = 0;
+        dst.locked = false;
+        dst.nextAt = now_;
+        dst.sentX = -1;
+    }
+    noteEvents_[c * kClipSlots + static_cast<std::size_t>(to)] = noteEvents_[c * kClipSlots + static_cast<std::size_t>(from)];
+    if (to == currentSlot_[c] && clipPlaying_[c])
+        startClipLoops(channel);
+    return true;
+}
+
+void Engine::resetLoopShape(int channel, int source, int axis) {
+    if (source < 0 || source >= kLoopSourceCount || source == static_cast<int>(LoopSource::Notes))
+        return;
+    Loop& loop = loops_[loopIndex(std::clamp(channel, 0, kChannelCount - 1), trackOf(source, axis))];
+    loop.stretch = 0;
+    loop.amplitude = 100;  // eased in
 }
 
 void Engine::stopLoops(int channel) {

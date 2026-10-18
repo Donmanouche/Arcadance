@@ -1,4 +1,5 @@
 #include "midipad/AppSettings.hpp"
+#include "midipad/Controls.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -121,6 +122,17 @@ AppSettings loadSettings(const std::filesystem::path& file, AppSettings s) {
         s.frameRate = frameRate == "screen" ? 0 : std::stoi(frameRate);
     read(j, "background_30fps", s.slowInBackground);
     read(j, "standard_resolution", s.standardResolution);
+    auto navButton = [&](const char* key, int& out) {
+        std::string name;
+        read(j, key, name);
+        if (const auto b = parseButton(name))
+            out = static_cast<int>(*b);
+        else if (name == "none")
+            out = -1;
+    };
+    navButton("nav_select", s.navSelect);
+    navButton("nav_menu", s.navMenu);
+    navButton("nav_back", s.navBack);
     std::string quantize;
     read(j, "quantize_notes", quantize);
     static constexpr std::pair<const char*, int> kGrids[] = {{"off", 0}, {"1/8", 2}, {"1/16", 4}, {"1/32", 8}};
@@ -166,6 +178,10 @@ void saveSettings(const AppSettings& s, const std::filesystem::path& file) {
     j["frame_rate"] = s.frameRate == 60 ? "60" : s.frameRate == 30 ? "30" : "screen";
     j["background_30fps"] = s.slowInBackground;
     j["standard_resolution"] = s.standardResolution;
+    auto navName = [](int b) { return b < 0 ? std::string("none") : std::string(toString(static_cast<Button>(b))); };
+    j["nav_select"] = navName(s.navSelect);
+    j["nav_menu"] = navName(s.navMenu);
+    j["nav_back"] = navName(s.navBack);
     j["quantize_notes"] = s.quantize == 2 ? "1/8" : s.quantize == 4 ? "1/16" : s.quantize == 8 ? "1/32" : "off";
 
     std::filesystem::create_directories(file.parent_path());

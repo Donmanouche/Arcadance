@@ -703,7 +703,7 @@ bool MappingEditor::drawStepsForm(int source, Mapping& m) {
 bool MappingEditor::drawTriggerEditor(TriggerBinding& b) {
     bool changed = false;
     static const char* kTypes[] = {"No action", "Note", "CC", "Chord", "Transport", "Channel change", "Axis freeze",
-                                   "Loop record", "Program change", "Shift", "Tap tempo", "Session screen"};
+                                   "Loop record", "Program change", "Shift", "Tap tempo", "Mode (session, edit)"};
     int type = static_cast<int>(b.type);
     ImGui::SetNextItemWidth(ImGui::GetFontSize() * 14);
     if (ImGui::Combo("Action", &type, kTypes, IM_ARRAYSIZE(kTypes)) && type != static_cast<int>(b.type)) {
@@ -825,8 +825,11 @@ bool MappingEditor::drawTriggerEditor(TriggerBinding& b) {
         break;
     case ActionType::SessionScreen:
         ImGui::PushStyleColor(ImGuiCol_Text, kHintColor);
-        ImGui::TextWrapped("Opens and closes the session screen: the clips of every channel. Set on channel 1, it works on "
-                           "every channel. Without one in the preset, the PS / Guide button does it.");
+        ImGui::TextWrapped("Opens and closes the session screen (the clips of every channel); with Shift, the edit mode "
+                           "(a cursor on the main screen, to set things up from the controller); held, the help of the "
+                           "screen you are on. Set on channel 1, it works on every channel. Without one in the preset, "
+                           "the PS / Guide button does it. The buttons that select, open menus and go back in these "
+                           "screens are chosen in Options \u203a CONTROLLER.");
         ImGui::PopStyleColor();
         break;
     case ActionType::TapTempo:

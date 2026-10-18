@@ -101,13 +101,41 @@ public:
     // after or before `repeats` (by `steps`, kept within them).
     static constexpr std::array<int, 15> kChainRepeats{1, 2, 3, 4, 5, 6, 7, 8, 12, 16, 24, 32, 48, 64, 0};
     static int nextRepeats(int repeats, int steps);
-    // A right-click on a LOOP panel's lane (that axis), its header (both
-    // axes) or the piano roll, during the last draw(): the LoopSource and axis
-    // (-1: all) to lock or unlock (Engine::toggleLoopLock).
-    struct LockRequest {
+    struct LockRequest {  // a LoopSource and an axis (-1: both)
         int source = 0, axis = -1;
     };
-    std::optional<LockRequest> takeLockRequest() { return std::exchange(lockRequest_, std::nullopt); }
+    // What a context menu is for: a lane (an axis loop), a LOOP panel (its
+    // axes), the note loop, a control (its window, `spec`), a clip, a chain
+    // step (`slot` is the step), a channel's column.
+    struct MenuTarget {
+        enum class Kind : std::uint8_t { Lane, Panel, NoteLoop, Control, Clip, Step, Channel } kind = Kind::Control;
+        int channel = 0, slot = 0, source = 0, axis = -1;
+        std::string spec;
+        MenuTarget() = default;
+        MenuTarget(Kind k, int ch = 0, int sl = 0, int src = 0, int ax = -1, std::string sp = {})
+            : kind(k), channel(ch), slot(sl), source(src), axis(ax), spec(std::move(sp)) {}
+    };
+    // A right-click on one of them during the last draw: its menu, opened
+    // where the mouse is.
+    struct MenuRequest {
+        MenuTarget target;
+        ImVec2 at;
+    };
+    std::optional<MenuRequest> takeMenuRequest() { return std::exchange(menuRequest_, std::nullopt); }
+    // Edit mode: a cursor on the controls, the lanes and the piano roll of the
+    // main view, drawn by the next draw(). moveFocus goes to the nearest one
+    // that way; activateFocus clicks it at the next draw (opens its window,
+    // or the note loop's editor); focusTarget: what is under it, for its menu.
+    void setEditMode(bool on) { editMode_ = on; }
+    void moveFocus(int dx, int dy);
+    void activateFocus() { focusClick_ = true; }
+    std::optional<MenuTarget> focusTarget() const;
+    // Where the controller's cursor is (edit mode, or the session screen, as
+    // last drawn): its box, for a menu opened beside it.
+    std::pair<ImVec2, ImVec2> cursorBox() const;
+    // The help: a legend of (keys, what they do).
+    void drawHelp(const std::string& title, ImU32 color, const std::string& closeHint,
+                  const std::vector<std::pair<std::vector<std::string>, std::string>>& rows);
     // A click on the x of a lane, during the last draw(): that axis' loop to
     // clear (Engine::clearLoop), as a LockRequest.
     std::optional<LockRequest> takeClearRequest() { return std::exchange(clearRequest_, std::nullopt); }
@@ -198,12 +226,24 @@ private:
     std::optional<std::string> clicked_;
     int beatsPerBar_ = 4;  // of the sync, for the loops' beat grids
     std::optional<StretchRequest> stretch_;
-    std::optional<LockRequest> lockRequest_, clearRequest_;
+    std::optional<LockRequest> clearRequest_;
+    std::optional<MenuRequest> menuRequest_;
+    bool editMode_ = false, focusClick_ = false;
+    std::string focus_;  // the id of the item under the edit cursor
+    std::pair<ImVec2, ImVec2> sessionCursorBox_{};  // the session screen's cursor, as last drawn
+    struct FocusItem {
+        std::string id;
+        ImVec2 a, b;
+    };
+    std::vector<FocusItem> focusItems_;  // gathered by the last draw in edit mode
+    std::vector<std::pair<std::string, MenuTarget>> focusTargets_;  // the items with a menu of their own
+    // A lane, the piano roll: a focus item with its menu; true when the edit cursor clicks it.
+    bool focusable(const std::string& id, ImVec2 a, ImVec2 b, const MenuTarget& target);
     std::optional<LockRequest> laneClearHovered_;  // the x under the mouse, while drawing a LOOP panel
     // Over the item just drawn (a LOOP panel, the piano roll), within (a, b)
-    // when given: a right-click locks or unlocks `source`'s loop (`axis`, -1:
-    // all), which a tooltip says once there is one.
-    void lockOnRightClick(int source, bool recorded, bool locked, int axis = -1, const ImVec2* a = nullptr, const ImVec2* b = nullptr);
+    // when given: a right-click asks for the menu of `target`; a tooltip says
+    // so once there is a loop.
+    void menuOnRightClick(const MenuTarget& target, bool recorded, bool locked, const ImVec2* a = nullptr, const ImVec2* b = nullptr);
     std::optional<NoteEdit> noteEdit_;
     int quantize_ = 0;
     bool editing_ = false;     // drawing the note loop editor, not the view's piano roll

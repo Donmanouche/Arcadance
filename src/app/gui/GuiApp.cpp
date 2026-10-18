@@ -363,6 +363,36 @@ private:
     // channel records into its current clip again.
     void toggleSession(const LiveState& live);
     bool sessionView_ = false;
+    bool editView_ = false;   // edit mode: a cursor on the main view (Shift + Mode)
+    bool helpShown_ = false;  // the Mode control held: the help of the screen
+    // Context menus: the same small list for the mouse (where it clicked) and
+    // the controller (beside its cursor).
+    struct MenuEntry {
+        std::string label;
+        int id = 0;
+        bool enabled = true;
+    };
+    struct ContextMenu {
+        PerformanceView::MenuTarget target;
+        std::string title;
+        std::vector<MenuEntry> items;
+        bool fromController = false, opened = false;  // opened by the controller: beside its cursor
+        int selected = 0;
+        ImVec2 at;
+    };
+    std::optional<ContextMenu> menu_;
+    void toggleEdit(const LiveState& live);
+    void openMenu(const PerformanceView::MenuTarget& target, const LiveState& live, bool fromController, ImVec2 at);
+    void runMenu(const PerformanceView::MenuTarget& target, int id, const LiveState& live);
+    void menuEvent(Engine::SessionEvent e, const LiveState& live);
+    void editEvent(Engine::SessionEvent e, const LiveState& live);
+    void drawContextMenu(const LiveState& live);
+    void drawHelpOverlay();
+    // A button of the controller as named in the help, from its role.
+    std::string buttonName(int button, const char* fallback) const {
+        return button >= 0 ? label(static_cast<Button>(button)) : std::string(fallback);
+    }
+    std::string bindingName(ActionType type, const char* fallback) const;
     int sessionSlot_ = 0, sessionChannel_ = 0;  // sessionSlot_ kClipSlots: the cursor is in the chain
     int chainCursor_ = 0;  // its step there (kChainSteps: the end)
     // The cursor in the chain: L3 (`press`), R3 (`clear`), the right stick (`clipSteps` up / down, `repeatSteps` left / right).
@@ -577,6 +607,7 @@ bool GuiApp::init() {
                                              pendingLog_.push_back(line);
                                          });
     applySync();
+    runtime_->setNavButtons(settings_.navSelect, settings_.navMenu, settings_.navBack);
 
     // At standard resolution, a scaled screen's compositor stretches the
     // window, drawn at its size in points: fewer pixels for MidiPad to draw.
@@ -609,7 +640,7 @@ bool GuiApp::init() {
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO();
     io.IniFilename = nullptr;  // the layout is fixed
-    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_NavEnableGamepad;
 #ifdef NDEBUG
     io.ConfigDebugHighlightIdConflicts = false;  // a programmer's warning: debug builds only
 #endif
@@ -753,6 +784,7 @@ void GuiApp::frame() {
     fitPage();
     if (options_.record)  // the same time step whatever the rendering speed
         ImGui::GetIO().DeltaTime = 1.0f / static_cast<float>(options_.fps);
+    ImGui::GetIO().BackendFlags |= ImGuiBackendFlags_HasGamepad;  // fed by editEvent, never by the backend
     ImGui::NewFrame();
     draw();
     ImGui::Render();
@@ -1209,11 +1241,42 @@ void GuiApp::pressClip(int channel, int slot, const LiveState& live) {
 
 void GuiApp::sessionEvent(Engine::SessionEvent e, const LiveState& live) {
     using E = Engine::SessionEvent;
+    if (e == E::HelpOn || e == E::HelpOff) {
+        helpShown_ = e == E::HelpOn;
+        return;
+    }
+    if (e == E::Edit) {
+        toggleEdit(live);
+        return;
+    }
     if (e == E::Toggle) {
-        toggleSession(live);
+        if (editView_)
+            toggleEdit(live);
+        else
+            toggleSession(live);
+        return;
+    }
+    if (menu_ && menu_->fromController) {
+        menuEvent(e, live);
+        return;
+    }
+    if (editView_) {
+        editEvent(e, live);
         return;
     }
     if (!sessionView_)
+        return;
+    if (e == E::Menu) {  // the menu of the clip, step or end under the cursor
+        using K = PerformanceView::MenuTarget::Kind;
+        if (sessionSlot_ < Engine::kClipSlots)
+            openMenu({K::Clip, sessionChannel_, sessionSlot_}, live, true, {});
+        else if (chainCursor_ < Engine::kChainSteps)
+            openMenu({K::Step, sessionChannel_, chainCursor_}, live, true, {});
+        else
+            openMenu({K::Channel, sessionChannel_}, live, true, {});
+        return;
+    }
+    if (e == E::Back)
         return;
     if (sessionSlot_ == Engine::kClipSlots) {  // in the chain
         chainEvent(e, live);
@@ -1235,11 +1298,7 @@ void GuiApp::sessionEvent(Engine::SessionEvent e, const LiveState& live) {
     case E::Right: moveSessionCursor((sessionChannel_ + 1) % kChannelCount, sessionSlot_, live); break;
     case E::Press:
     case E::PressRight: pressClip(sessionChannel_, sessionSlot_, live); break;
-    case E::ValueUp:
-    case E::ValueDown:
-    case E::ValueLeft:
-    case E::ValueRight:
-    case E::Toggle: break;
+    default: break;
     }
 }
 
@@ -1278,20 +1337,388 @@ void GuiApp::chainEvent(Engine::SessionEvent e, const LiveState& live) {
         if (!onEnd && clip >= 0)
             setChainStep(ch, chainCursor_, clip, PerformanceView::nextRepeats(repeats, e == E::ValueRight ? 1 : -1));
         break;
-    case E::Down:
-    case E::Toggle: break;
+    default: break;
+    }
+}
+
+void GuiApp::toggleEdit(const LiveState& live) {
+    if (sessionView_)
+        toggleSession(live);
+    editView_ = !editView_;
+    menu_.reset();
+    runtime_->setSessionMode(sessionView_ || editView_);
+}
+
+// In edit mode: the cursor on the main view, or, while a window is open, the
+// window's fields (ImGui's gamepad navigation, fed from here).
+void GuiApp::editEvent(Engine::SessionEvent e, const LiveState& live) {
+    using E = Engine::SessionEvent;
+    ImGuiIO& io = ImGui::GetIO();
+    auto tap = [&](ImGuiKey key) {
+        io.AddKeyEvent(key, true);
+        io.AddKeyEvent(key, false);
+    };
+    if (overlaySpec_ || optionsOpen_) {
+        switch (e) {
+        case E::Up: tap(ImGuiKey_GamepadDpadUp); break;
+        case E::Down: tap(ImGuiKey_GamepadDpadDown); break;
+        case E::Left: tap(ImGuiKey_GamepadDpadLeft); break;
+        case E::Right: tap(ImGuiKey_GamepadDpadRight); break;
+        case E::Press: tap(ImGuiKey_GamepadFaceDown); break;
+        case E::Back:
+            if (ImGui::IsAnyItemActive()) {
+                tap(ImGuiKey_GamepadFaceRight);
+            } else {
+                overlaySpec_.reset();
+                optionsOpen_ = false;
+            }
+            break;
+        default: break;
+        }
+        return;
+    }
+    switch (e) {
+    case E::Up: performance_.moveFocus(0, -1); break;
+    case E::Down: performance_.moveFocus(0, 1); break;
+    case E::Left: performance_.moveFocus(-1, 0); break;
+    case E::Right: performance_.moveFocus(1, 0); break;
+    case E::Press:
+    case E::PressRight: performance_.activateFocus(); break;
+    case E::Menu:
+        if (const auto target = performance_.focusTarget())
+            openMenu(*target, live, true, {});
+        break;
+    case E::Back: toggleEdit(live); break;
+    default: break;
     }
 }
 
 void GuiApp::toggleSession(const LiveState& live) {
+    if (editView_ && !sessionView_) {
+        editView_ = false;
+        menu_.reset();
+    }
     sessionView_ = !sessionView_;
-    runtime_->setSessionMode(sessionView_);
+    runtime_->setSessionMode(sessionView_ || editView_);
     if (sessionView_) {
         sessionChannel_ = live.channel;
         sessionSlot_ = live.currentClip[static_cast<std::size_t>(live.channel)];
     } else {
         for (int ch = 0; ch < kChannelCount; ++ch)
             runtime_->setRecordSlot(ch, live.currentClip[static_cast<std::size_t>(ch)]);
+    }
+}
+
+namespace {
+
+enum MenuId : int {
+    kLaunch, kStop, kRecordHere, kDuplicate, kAddToChain, kClearClip,
+    kStartHere, kRandom, kInsertStep, kDeleteStep, kEmptyStep,
+    kChannelStop, kChainOn, kChainOff, kEndLoop, kEndStop, kClearChain,
+    kLock, kUnlock, kClearLoop, kResetShape, kSettings, kEditNotes
+};
+
+}  // namespace
+
+void GuiApp::openMenu(const PerformanceView::MenuTarget& t, const LiveState& live, bool fromController, ImVec2 at) {
+    using K = PerformanceView::MenuTarget::Kind;
+    ContextMenu menu;
+    menu.target = t;
+    menu.fromController = fromController;
+    menu.at = at;
+    auto add = [&](std::string label, int id, bool enabled = true) { menu.items.push_back({std::move(label), id, enabled}); };
+    const auto c = static_cast<std::size_t>(std::clamp(t.channel, 0, kChannelCount - 1));
+    const LiveState::Chain& chain = live.chains[c];
+    static constexpr const char* kSourceNames[] = {"LEFT STICK", "RIGHT STICK", "FINGER 1", "FINGER 2", "TRIGGERS", "NOTES"};
+    const int source = std::clamp(t.source, 0, kLoopSourceCount - 1);
+    switch (t.kind) {
+    case K::Clip: {
+        const bool has = live.clips[c * Engine::kClipSlots + static_cast<std::size_t>(t.slot)].sources != 0;
+        const bool plays = ((live.clipsPlaying >> t.channel) & 1u) && live.currentClip[c] == t.slot;
+        bool freeSlot = false, freeStep = false;
+        for (int k = 0; k < Engine::kClipSlots; ++k)
+            freeSlot = freeSlot || live.clips[c * Engine::kClipSlots + static_cast<std::size_t>(k)].sources == 0;
+        for (int k = 0; k < Engine::kChainSteps; ++k)
+            freeStep = freeStep || chain.clip[static_cast<std::size_t>(k)] < 0;
+        menu.title = "CLIP " + std::to_string(t.slot + 1) + "\nchannel " + std::to_string(t.channel + 1);
+        if (plays)
+            add("Stop", kStop);
+        else
+            add("Launch", kLaunch, has);
+        add("Record here", kRecordHere);
+        add("Duplicate", kDuplicate, has && freeSlot);
+        add("Add to the chain", kAddToChain, has && freeStep);
+        add("Clear", kClearClip, has);
+        break;
+    }
+    case K::Step: {
+        const bool has = chain.clip[static_cast<std::size_t>(t.slot)] >= 0;
+        menu.title = "STEP " + std::to_string(t.slot + 1) + "\nchain " + std::to_string(t.channel + 1);
+        add("Start from here", kStartHere, has);
+        add("Random (R)", kRandom);
+        add("Insert a step", kInsertStep);
+        add("Delete the step", kDeleteStep);
+        add("Empty it", kEmptyStep, has);
+        break;
+    }
+    case K::Channel: {
+        bool any = false;
+        for (int k = 0; k < Engine::kChainSteps; ++k)
+            any = any || chain.clip[static_cast<std::size_t>(k)] >= 0;
+        menu.title = "CHANNEL " + std::to_string(t.channel + 1);
+        add("Stop", kChannelStop, ((live.clipsPlaying >> t.channel) & 1u) != 0);
+        if (chain.at >= 0)
+            add("Chain off", kChainOff);
+        else
+            add("Chain on", kChainOn, any);
+        if (chain.loop)
+            add("End: stop", kEndStop);
+        else
+            add("End: back to step 1", kEndLoop);
+        add("Clear the chain", kClearChain, any);
+        break;
+    }
+    case K::Lane:
+    case K::Panel: {
+        const LiveState::Loop& loop = live.loops[static_cast<std::size_t>(source)];
+        const bool lane = t.kind == K::Lane;
+        const LoopStatus& st = lane ? loop.lanes[static_cast<std::size_t>(t.axis & 1)].status : loop.status;
+        const bool triggers = source == static_cast<int>(LoopSource::Triggers);
+        const std::string axis = !lane ? "" : triggers ? (t.axis == 0 ? " L2" : " R2") : (t.axis == 0 ? " X" : " Y");
+        menu.title = std::string(kSourceNames[source]) + "\nloop" + axis;
+        const bool plays = st.state == LoopStatus::State::Playing;
+        if (st.locked)
+            add("Unlock", kUnlock);
+        else
+            add("Lock", kLock, plays);
+        add(lane ? "Clear" + axis : "Clear", kClearLoop, st.state != LoopStatus::State::Empty);
+        add("Back to 1x \xC2\xB7 100%", kResetShape, plays);
+        add("Settings\xE2\x80\xA6", kSettings);
+        break;
+    }
+    case K::NoteLoop: {
+        const LoopStatus& st = live.loops[static_cast<std::size_t>(LoopSource::Notes)].status;
+        menu.title = "NOTE LOOP";
+        if (st.locked)
+            add("Unlock", kUnlock);
+        else
+            add("Lock", kLock, st.state == LoopStatus::State::Playing);
+        add("Edit the notes\xE2\x80\xA6", kEditNotes);
+        add("Clear", kClearLoop, st.state != LoopStatus::State::Empty);
+        break;
+    }
+    case K::Control:
+        menu.title = "CONTROL";
+        add("Settings\xE2\x80\xA6", kSettings);
+        break;
+    }
+    menu.selected = 0;
+    while (menu.selected < static_cast<int>(menu.items.size()) - 1 && !menu.items[static_cast<std::size_t>(menu.selected)].enabled)
+        ++menu.selected;
+    menu_ = std::move(menu);
+}
+
+void GuiApp::runMenu(const PerformanceView::MenuTarget& t, int id, const LiveState& live) {
+    using K = PerformanceView::MenuTarget::Kind;
+    const int ch = std::clamp(t.channel, 0, kChannelCount - 1);
+    const auto c = static_cast<std::size_t>(ch);
+    const LiveState::Chain& chain = live.chains[c];
+    auto openWindow = [&](const std::string& spec) {
+        overlayAppearing_ = overlaySpec_ != spec;
+        overlaySpec_ = spec;
+        optionsOpen_ = false;
+    };
+    // The chain's steps, rewritten from `steps` (clip, repeats).
+    auto writeChain = [&](const std::vector<std::pair<int, int>>& steps) {
+        for (int k = 0; k < Engine::kChainSteps; ++k)
+            setChainStep(ch, k, steps[static_cast<std::size_t>(k)].first, steps[static_cast<std::size_t>(k)].second);
+    };
+    std::vector<std::pair<int, int>> steps;
+    for (int k = 0; k < Engine::kChainSteps; ++k)
+        steps.push_back({chain.clip[static_cast<std::size_t>(k)], chain.repeats[static_cast<std::size_t>(k)]});
+    const bool loopTarget = t.kind == K::Lane || t.kind == K::Panel || t.kind == K::NoteLoop;
+    const int axis = t.kind == K::Lane ? t.axis : -1;
+    switch (id) {
+    case kLaunch: runtime_->launchClip(ch, t.slot); break;
+    case kStop: runtime_->stopClip(ch); break;
+    case kRecordHere: moveSessionCursor(ch, t.slot, live); break;
+    case kDuplicate:
+        for (int k = 0; k < Engine::kClipSlots; ++k)
+            if (live.clips[c * Engine::kClipSlots + static_cast<std::size_t>(k)].sources == 0) {
+                runtime_->copyClip(ch, t.slot, k);
+                break;
+            }
+        break;
+    case kAddToChain:
+        for (int k = 0; k < Engine::kChainSteps; ++k)
+            if (chain.clip[static_cast<std::size_t>(k)] < 0) {
+                setChainStep(ch, k, t.slot, 1);
+                break;
+            }
+        break;
+    case kClearClip: runtime_->clearClip(ch, t.slot); break;
+    case kStartHere: runtime_->chainGoTo(ch, t.slot); break;
+    case kRandom:
+        setChainStep(ch, t.slot, Engine::kChainRandom, std::max<int>(chain.repeats[static_cast<std::size_t>(t.slot)], 0));
+        break;
+    case kInsertStep:
+        steps.insert(steps.begin() + t.slot, {-1, 1});
+        steps.pop_back();
+        writeChain(steps);
+        break;
+    case kDeleteStep:
+        steps.erase(steps.begin() + t.slot);
+        steps.push_back({-1, 1});
+        writeChain(steps);
+        break;
+    case kEmptyStep: setChainStep(ch, t.slot, -1, 1); break;
+    case kChannelStop: runtime_->stopClip(ch); break;
+    case kChainOn: runtime_->chainGoTo(ch, 0); break;
+    case kChainOff: runtime_->stopChain(ch); break;
+    case kEndLoop: runtime_->setChainLoop(ch, true); break;
+    case kEndStop: runtime_->setChainLoop(ch, false); break;
+    case kClearChain:
+        runtime_->stopChain(ch);
+        writeChain(std::vector<std::pair<int, int>>(Engine::kChainSteps, {-1, 1}));
+        break;
+    case kLock:
+    case kUnlock:
+        if (loopTarget)
+            runtime_->toggleLoopLock(t.source, axis);
+        break;
+    case kClearLoop:
+        if (loopTarget)
+            runtime_->clearLoop(t.source, axis);
+        break;
+    case kResetShape:
+        for (int a = 0; a < 2; ++a)
+            if (axis < 0 || axis == a)
+                runtime_->resetLoopShape(t.source, a);
+        break;
+    case kEditNotes: openWindow("notes"); break;
+    case kSettings:
+        if (t.kind == K::Control)
+            performance_.activateFocus();  // its window, as a click
+        else if (!t.spec.empty())
+            openWindow(t.spec);
+        break;
+    default: break;
+    }
+}
+
+// The controller in a menu: up and down (D-pad or a stick) go from item to
+// item, Select chooses, Menu or Back closes.
+void GuiApp::menuEvent(Engine::SessionEvent e, const LiveState& live) {
+    using E = Engine::SessionEvent;
+    if (!menu_)
+        return;
+    const int n = static_cast<int>(menu_->items.size());
+    auto move = [&](int by) {
+        for (int tries = 0; tries < n; ++tries) {
+            menu_->selected = (menu_->selected + by + n) % n;
+            if (menu_->items[static_cast<std::size_t>(menu_->selected)].enabled)
+                break;
+        }
+    };
+    switch (e) {
+    case E::Down:
+    case E::ValueDown: move(1); break;
+    case E::Up:
+    case E::ValueUp: move(-1); break;
+    case E::Press: {
+        const MenuEntry entry = menu_->items[static_cast<std::size_t>(menu_->selected)];
+        const PerformanceView::MenuTarget target = menu_->target;
+        if (entry.enabled) {
+            menu_.reset();
+            runMenu(target, entry.id, live);
+        }
+        break;
+    }
+    case E::Menu:
+    case E::Back: menu_.reset(); break;
+    default: break;
+    }
+}
+
+// The same small menu for the mouse (where it clicked) and the controller
+// (beside its cursor, the selected item lit; the stick moves it, Select
+// chooses, Menu or Back closes).
+void GuiApp::drawContextMenu(const LiveState& live) {
+    if (!menu_->opened) {
+        ImGui::OpenPopup("##context");
+        menu_->opened = true;
+        if (menu_->fromController) {  // beside the controller's cursor: under it, or above when there is no room
+            const auto [a, b] = performance_.cursorBox();
+            const float h = ImGui::GetFrameHeightWithSpacing() * static_cast<float>(menu_->items.size() + 2), gap = ImGui::GetFontSize() * 0.25f;
+            const ImGuiViewport* vp = ImGui::GetMainViewport();
+            menu_->at = b.y + gap + h < vp->Pos.y + vp->Size.y ? ImVec2(a.x, b.y + gap) : ImVec2(a.x, a.y - gap - h);
+        }
+    }
+    ImGui::SetNextWindowPos(menu_->at, ImGuiCond_Appearing);
+    if (ImGui::BeginPopup("##context")) {
+        const std::string title = menu_->title.substr(0, menu_->title.find('\n'));
+        const auto nl = menu_->title.find('\n');
+        ImGui::TextDisabled("%s%s%s", title.c_str(), nl == std::string::npos ? "" : "  \xC2\xB7  ",
+                            nl == std::string::npos ? "" : menu_->title.substr(nl + 1).c_str());
+        ImGui::Separator();
+        std::optional<int> chosen;
+        for (int k = 0; k < static_cast<int>(menu_->items.size()); ++k) {
+            const MenuEntry& item = menu_->items[static_cast<std::size_t>(k)];
+            if (ImGui::Selectable(item.label.c_str(), menu_->fromController && k == menu_->selected, item.enabled ? 0 : ImGuiSelectableFlags_Disabled))
+                chosen = item.id;
+        }
+        ImGui::EndPopup();
+        if (chosen) {
+            const PerformanceView::MenuTarget target = menu_->target;
+            menu_.reset();
+            runMenu(target, *chosen, live);
+        }
+    } else {
+        menu_.reset();  // closed
+    }
+}
+
+std::string GuiApp::bindingName(ActionType type, const char* fallback) const {
+    for (int b = 0; b < kButtonCount; ++b)
+        if (preset_.base.buttons[static_cast<std::size_t>(b)].type == type)
+            return label(static_cast<Button>(b));
+    return fallback;
+}
+
+// While the Mode control is held: what the controller does on this screen, with its buttons.
+void GuiApp::drawHelpOverlay() {
+    using T = PerformanceView::Theme;
+    const std::string mode = bindingName(ActionType::SessionScreen, "PS"), rec = bindingName(ActionType::LoopRecord, "Rec"),
+                      shift = bindingName(ActionType::Shift, "Shift");
+    std::vector<std::string> select = settings_.navSelect >= 0 ? std::vector<std::string>{buttonName(settings_.navSelect, "")}
+                                                               : std::vector<std::string>{"L3", "R3"};
+    const std::string menu = buttonName(settings_.navMenu, ""), back = buttonName(settings_.navBack, "");
+    const std::string unset = "(choose it in Options \xE2\x80\xBA CONTROLLER)";
+    std::vector<std::pair<std::vector<std::string>, std::string>> rows;
+    const std::string closeHint = "let go of " + mode + " to close";
+    if (sessionView_) {
+        rows = {{{"Left stick", "D-pad"}, "move the cursor (down past the clips: the chain)"},
+                {select, "launch or stop the clip; in the chain: start there, or go on"},
+                {{menu.empty() ? "Menu" : menu}, menu.empty() ? "the menu " + unset : "the menu: duplicate, clear, add to the chain\xE2\x80\xA6"},
+                {{"Right stick"}, "in the chain: the clip (up, down), its repeats (left, right)"},
+                {{rec}, "record into the slot under the cursor"},
+                {{back.empty() ? "Back" : back}, back.empty() ? "close a menu " + unset : "close a menu"},
+                {{mode}, "back to the main screen;  " + shift + " + " + mode + ": edit mode"}};
+        performance_.drawHelp("SESSION", T::kGreen, closeHint, rows);
+    } else if (editView_) {
+        rows = {{{"Left stick", "D-pad"}, "move the cursor; in a window, from field to field"},
+                {select, "open (a control's window, the note editor); in a window, change the field"},
+                {{menu.empty() ? "Menu" : menu}, menu.empty() ? "the menu " + unset : "the menu: lock, clear, back to 1x\xE2\x80\xA6"},
+                {{back.empty() ? "Back" : back}, back.empty() ? "close, leave " + unset : "close the window, or leave edit mode"},
+                {{shift, mode}, "leave edit mode"}};
+        performance_.drawHelp("EDIT", IM_COL32(0xB0, 0x8C, 0xFF, 255), closeHint, rows);
+    } else {
+        rows = {{{rec}, "held: record what you play or move;  a tap: stop the loops, or overdub"},
+                {{shift}, "the Shift layer; with a stick or a finger: the loops' lengths"},
+                {{shift, "L3"}, "a stick: lengths or amplitudes"},
+                {{mode}, "the session screen: clips and chains"},
+                {{shift, mode}, "edit mode: set things up from the controller"}};
+        performance_.drawHelp("MAIN SCREEN", T::kBlue, closeHint, rows);
     }
 }
 
@@ -1671,7 +2098,14 @@ void GuiApp::drawPerformance(const LiveState& live) {
                               sessionView_ ? (Theme::kGreen & ~IM_COL32_A_MASK) | IM_COL32(0, 0, 0, 60)
                               : sessionHovered ? Theme::kControlBorder : Theme::kControl, px(5));
             dl->AddRect(sp, ImVec2(sp.x + sw, sp.y + lh), sessionView_ ? Theme::kGreen : Theme::kControlBorder, px(5), px(1));
-            for (int k = 0; k < 4; ++k) {
+            if (editView_) {  // edit mode: the button says so
+                constexpr ImU32 kViolet = IM_COL32(0xB0, 0x8C, 0xFF, 255);
+                dl->AddRectFilled(sp, ImVec2(sp.x + sw, sp.y + lh), IM_COL32(0x46, 0x38, 0x66, 255), px(5));
+                dl->AddRect(sp, ImVec2(sp.x + sw, sp.y + lh), kViolet, px(5), px(1));
+                const ImVec2 esz = bold->CalcTextSizeA(px(10.5f), FLT_MAX, 0, "EDIT");
+                dl->AddText(bold, px(10.5f), ImVec2(sp.x + (sw - esz.x) * 0.5f, cy - esz.y * 0.5f), Theme::kText, "EDIT");
+            }
+            for (int k = 0; k < 4 && !editView_; ++k) {
                 const float gx = sp.x + sw * 0.5f + (k % 2 ? px(1.5f) : -px(8.5f)), gy = cy + (k / 2 ? px(1.5f) : -px(8.5f));
                 dl->AddRectFilled(ImVec2(gx, gy), ImVec2(gx + px(7), gy + px(7)), sessionView_ ? Theme::kGreen : Theme::kLabel, px(1.5f));
             }
@@ -1719,7 +2153,9 @@ void GuiApp::drawPerformance(const LiveState& live) {
         sessionChannel_ = live.channel;
         sessionSlot_ = live.currentClip[static_cast<std::size_t>(live.channel)];
     }
-    runtime_->setSessionValues(sessionView_ && sessionSlot_ == Engine::kClipSlots);  // the right stick sets the chain's values
+    // The right stick sets the chain's values, and moves in a menu.
+    runtime_->setSessionValues((sessionView_ && sessionSlot_ == Engine::kClipSlots) || (menu_ && menu_->fromController));
+    performance_.setEditMode(editView_ && !overlaySpec_ && !optionsOpen_);
     if (sessionView_) {
         // A clip clicked: the cursor goes there, its channel becomes the active
         // one, and Record records there; a clip is launched, an empty slot only chosen.
@@ -1758,8 +2194,8 @@ void GuiApp::drawPerformance(const LiveState& live) {
         else
             runtime_->moveLoopNotes(std::move(edit->notes), edit->samples, edit->semitones, edit->byDegrees);
     }
-    if (const auto lock = performance_.takeLockRequest())  // a right-click on a LOOP panel, a lane or the piano roll
-        runtime_->toggleLoopLock(lock->source, lock->axis);
+    if (const auto request = performance_.takeMenuRequest())  // a right-click
+        openMenu(request->target, live, false, request->at);
     if (const auto clear = performance_.takeClearRequest())  // the x of a lane
         runtime_->clearLoop(clear->source, clear->axis);
     if (const auto stretch = performance_.takeStretchRequest())  // Shift + wheel over a LOOP panel
@@ -1798,6 +2234,10 @@ void GuiApp::drawPerformance(const LiveState& live) {
         drawMappingOverlay(live);
     if (optionsOpen_)
         drawOptionsOverlay();
+    if (menu_)
+        drawContextMenu(live);
+    if (helpShown_)
+        drawHelpOverlay();
     drawDialogs();
 
     ImGui::PopStyleVar(kVars);
@@ -2313,6 +2753,50 @@ void GuiApp::drawOptionsOverlay() {
         }
         ImGui::PopFont();
         endCard();
+
+        // Controller: the buttons that drive the session screen and the edit mode.
+        beginCard("##cardcontroller", "CONTROLLER", Theme::kCyan);
+        ImGui::PushFont(medium, 12.0f);
+        ImGui::TextColored(color(Theme::kLabel), "The buttons that drive the session screen and the edit mode. There, they do this");
+        ImGui::TextColored(color(Theme::kLabel), "instead of what the preset gives them; on the main screen they play as usual.");
+        ImGui::TextColored(color(Theme::kLabel), "Mode (session, edit, help) is an action of the mapping: PS without one.");
+        ImGui::PopFont();
+        ImGui::Spacing();
+        ImGui::PushFont(medium, 13.0f);
+        {
+            static constexpr Button kChoices[] = {Button::South, Button::East, Button::West, Button::North, Button::LeftStick,
+                                                  Button::RightStick, Button::LeftShoulder, Button::RightShoulder, Button::Touchpad,
+                                                  Button::Back, Button::Start, Button::Guide, Button::Misc1};
+            auto navCombo = [&](const char* name, const char* what, int& value, const char* none) {
+                rowLabel(name);
+                ImGui::SetNextItemWidth(px(200));
+                const std::string shown = value < 0 ? std::string(none) : label(static_cast<Button>(value));
+                bool changed = false;
+                if (ImGui::BeginCombo((std::string("##nav") + name).c_str(), shown.c_str())) {
+                    if (ImGui::Selectable(none, value < 0)) {
+                        value = -1;
+                        changed = true;
+                    }
+                    for (Button b : kChoices)
+                        if (ImGui::Selectable(label(b).c_str(), value == static_cast<int>(b))) {
+                            value = static_cast<int>(b);
+                            changed = true;
+                        }
+                    ImGui::EndCombo();
+                }
+                ImGui::SameLine();
+                ImGui::TextColored(color(Theme::kLabel), "%s", what);
+                if (changed) {
+                    persistSettings();
+                    runtime_->setNavButtons(settings_.navSelect, settings_.navMenu, settings_.navBack);
+                }
+            };
+            navCombo("Select", "launch, choose, open", settings_.navSelect, "L3 / R3");
+            navCombo("Menu", "the menu under the cursor", settings_.navMenu, "None");
+            navCombo("Back", "close a menu, leave edit mode", settings_.navBack, "None");
+        }
+        ImGui::PopFont();
+        endCard();
         ImGui::EndChild();
         ImGui::Spacing();
         ImGui::PushFont(bold, 13.0f);
@@ -2495,7 +2979,7 @@ void GuiApp::drawMappingOverlay(const LiveState& live) {
             ImGui::TextColored(kWarningColor, "On every channel, this control is channel 1's %s.",
                                firstControl->type == ActionType::Shift        ? "Shift"
                                : firstControl->type == ActionType::LoopRecord ? "Loop record"
-                                                                              : "Session screen");
+                                                                              : "Mode");
             ImGui::TextColored(kHintColor, "Change it on channel 1.");
             ImGui::Spacing();
         }
@@ -2521,7 +3005,7 @@ void GuiApp::drawMappingOverlay(const LiveState& live) {
             performance_.setScaleMoves(settings_.notesInScale);
             performance_.drawNoteEditor(target, live, em * 56, em * 24);
             ImGui::TextColored(kHintColor, "Drag: move a note or the selection  \xC2\xB7  Drag on empty space: select  \xC2\xB7  "
-                                           "Ctrl + click: add  \xC2\xB7  Double-click: a chord  \xC2\xB7  Wheel: zoom");
+                                           "Ctrl + click: add  \xC2\xB7  Double-click: a chord  \xC2\xB7  Ctrl + wheel: zoom");
             ImGui::TextColored(kHintColor, "Drag the end of a selected note: its length  \xC2\xB7  Drag the right edge: the loop's length  \xC2\xB7  "
                                            "Right-click or Delete: delete");
             ImGui::Spacing();

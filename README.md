@@ -59,6 +59,11 @@ MidiPad runs on Linux; Windows and macOS versions are planned.
   the tempo with the mouse wheel, type it, or tap it. With the internal clock,
   drum machines and sequencers can follow MidiPad.
 - **Humanize** velocity and timing per channel.
+- **Set it up from the controller.** An edit mode puts a cursor on the screen:
+  open a control's settings, lock or clear a loop, duplicate a clip or edit a
+  chain from small menus, the same ones a right-click opens. You choose which
+  buttons select, open menus and go back; hold the Mode button for a help of
+  the screen you are on.
 - **Built for the stage.** One window that plays and edits at the same time,
   a PANIC button, and a mode without any window.
 

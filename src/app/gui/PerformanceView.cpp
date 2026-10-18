@@ -280,6 +280,32 @@ void row(ImDrawList* dl, float x, float y, float w, float h, ImU32 fill, ImU32 b
     dl->AddRect(ImVec2(x, y), ImVec2(x + w, y + h), border, px(6), px(1.3f));
 }
 
+// Edit mode, during a draw: the items the cursor can go to, the one it is
+// on, and whether it clicks it this frame. gNoFocus: the next button is not one.
+struct FocusEntry {
+    std::string id;
+    ImVec2 a, b;
+};
+std::vector<FocusEntry>* gFocusItems = nullptr;
+const std::string* gFocusId = nullptr;
+bool gFocusClick = false;
+bool gNoFocus = false;
+
+void focusFrame(ImVec2 a, ImVec2 b) {
+    ImGui::GetWindowDrawList()->AddRect(ImVec2(a.x - px(2), a.y - px(2)), ImVec2(b.x + px(2), b.y + px(2)), IM_COL32(0x78, 0xDC, 0xFF, 255), px(7), px(2.5f));
+}
+
+// Registers a focus item; true when the edit cursor is on it and clicks it now.
+bool focusItem(const std::string& id, ImVec2 a, ImVec2 b) {
+    if (!gFocusItems || gNoFocus)
+        return false;
+    gFocusItems->push_back({id, a, b});
+    if (!gFocusId || *gFocusId != id)
+        return false;
+    focusFrame(a, b);
+    return std::exchange(gFocusClick, false);
+}
+
 bool hoverButton(const char* id, ImVec2 a, ImVec2 b) {
     ImGui::SetCursorScreenPos(a);
     ImGui::InvisibleButton(id, ImVec2(std::max(b.x - a.x, 1.0f), std::max(b.y - a.y, 1.0f)));
@@ -287,7 +313,8 @@ bool hoverButton(const char* id, ImVec2 a, ImVec2 b) {
         ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
         ImGui::GetWindowDrawList()->AddRect(a, b, IM_COL32(255, 255, 255, 70), px(6), px(1));
     }
-    return ImGui::IsItemClicked();
+    const bool focusClicked = focusItem(id, a, b);
+    return ImGui::IsItemClicked() || focusClicked;
 }
 
 // A padlock `h` high, its left edge at `x`, centred on `y`: the sign of a locked loop.
@@ -632,19 +659,65 @@ float PerformanceView::smooth(int id, float target, float speed) {
 
 void PerformanceView::click(const std::string& spec) { clicked_ = spec; }
 
-void PerformanceView::lockOnRightClick(int source, bool recorded, bool locked, int axis, const ImVec2* a, const ImVec2* b) {
-    if (!ImGui::IsItemHovered() || (!recorded && !locked) || (a && !ImGui::IsMouseHoveringRect(*a, *b)))
+void PerformanceView::menuOnRightClick(const MenuTarget& target, bool recorded, bool locked, const ImVec2* a, const ImVec2* b) {
+    if (!ImGui::IsItemHovered() || (a && !ImGui::IsMouseHoveringRect(*a, *b)))
         return;
     if (ImGui::IsMouseClicked(ImGuiMouseButton_Right))
-        lockRequest_ = LockRequest{source, axis};
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal) && ImGui::BeginTooltip()) {
-        ImGui::TextUnformatted(locked ? "Locked: Record keeps it"
-                               : a && axis >= 0 ? "Right-click: lock this axis' loop"
-                               : a              ? "Right-click: lock these loops"
-                                                : "Right-click: lock this loop");
-        ImGui::TextDisabled(locked ? "Right-click: unlock" : "Record will not erase it");
+        menuRequest_ = MenuRequest{target, ImGui::GetIO().MousePos};
+    if ((recorded || locked) && ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal) && ImGui::BeginTooltip()) {
+        if (locked)
+            ImGui::TextUnformatted("Locked: Record keeps it");
+        ImGui::TextDisabled("Right-click: lock, clear\xE2\x80\xA6");
         ImGui::EndTooltip();
     }
+}
+
+bool PerformanceView::focusable(const std::string& id, ImVec2 a, ImVec2 b, const MenuTarget& target) {
+    if (!gFocusItems)
+        return false;
+    focusTargets_.push_back({id, target});
+    return focusItem(id, a, b);
+}
+
+std::optional<PerformanceView::MenuTarget> PerformanceView::focusTarget() const {
+    for (const auto& [id, target] : focusTargets_)
+        if (id == focus_)
+            return target;
+    for (const FocusItem& item : focusItems_)
+        if (item.id == focus_)
+            return MenuTarget{MenuTarget::Kind::Control};  // its window
+    return std::nullopt;
+}
+
+void PerformanceView::moveFocus(int dx, int dy) {
+    const FocusItem* now = nullptr;
+    for (const FocusItem& item : focusItems_)
+        if (item.id == focus_)
+            now = &item;
+    if (!now) {
+        if (!focusItems_.empty())
+            focus_ = focusItems_.front().id;
+        return;
+    }
+    const ImVec2 c((now->a.x + now->b.x) * 0.5f, (now->a.y + now->b.y) * 0.5f);
+    const FocusItem* best = nullptr;
+    float bestScore = 1e9f;
+    for (const FocusItem& item : focusItems_) {
+        if (&item == now)
+            continue;
+        const ImVec2 o((item.a.x + item.b.x) * 0.5f, (item.a.y + item.b.y) * 0.5f);
+        const float along = dx != 0 ? (o.x - c.x) * static_cast<float>(dx) : (o.y - c.y) * static_cast<float>(dy);
+        if (along <= px(2))
+            continue;
+        const float across = dx != 0 ? std::abs(o.y - c.y) : std::abs(o.x - c.x);
+        const float score = along + across * 2.5f;
+        if (score < bestScore) {
+            bestScore = score;
+            best = &item;
+        }
+    }
+    if (best)
+        focus_ = best->id;
 }
 
 void PerformanceView::stretchWheel(std::uint16_t tracks, ImVec2 a, ImVec2 b) {
@@ -799,6 +872,15 @@ std::optional<std::string> PerformanceView::draw(const Mapping& normalMapping, c
     clicked_.reset();
     stretch_.reset();
     key_ = key;
+    // Edit mode: gather the items the cursor goes to; it clicks the one it is on.
+    focusItems_.clear();
+    focusTargets_.clear();
+    std::vector<FocusEntry> gathered;
+    if (editMode_) {
+        gFocusItems = &gathered;
+        gFocusId = &focus_;
+        gFocusClick = std::exchange(focusClick_, false);
+    }
     beatsPerBar_ = std::max(live.beatsPerBar, 1);
     trackFrozenPositions(live);
     // A stretch that changed, from the wheel or the controller, shows its gauge.
@@ -851,6 +933,20 @@ std::optional<std::string> PerformanceView::draw(const Mapping& normalMapping, c
 
     ImGui::SetCursorScreenPos(ImVec2(origin.x, origin.y + avail.y));
     ImGui::Dummy(ImVec2(0, 0));
+    if (editMode_) {
+        gFocusItems = nullptr;
+        gFocusId = nullptr;
+        gFocusClick = false;
+        for (const FocusEntry& e : gathered)
+            focusItems_.push_back({e.id, e.a, e.b});
+        const bool known = std::any_of(focusItems_.begin(), focusItems_.end(), [&](const FocusItem& i) { return i.id == focus_; });
+        if (!known && !focusItems_.empty())  // a cursor to start with: the top-left item
+            focus_ = std::min_element(focusItems_.begin(), focusItems_.end(), [](const FocusItem& l, const FocusItem& r) {
+                         return l.a.y + l.a.x * 0.2f < r.a.y + r.a.x * 0.2f;
+                     })->id;
+    } else {
+        focusTargets_.clear();
+    }
     return clicked_;
 }
 
@@ -1243,8 +1339,12 @@ void PerformanceView::drawPianoRoll(const Mapping& m, const LiveState& live, flo
         drawLockedBorder(dl, ImVec2(ax0, ay0), ImVec2(ax1, ay1), kViolet, px(3));
     const bool pressed = hoverButton("##pianoroll", ImVec2(ax0, ay0), ImVec2(ax1, ay1));
     const bool hovering = ImGui::IsItemHovered();
-    if (!editing_)  // in the editor, a right-click deletes notes
-        lockOnRightClick(static_cast<int>(kNotes), clip, st.locked);
+    if (!editing_) {  // in the editor, a right-click deletes notes
+        const MenuTarget target{MenuTarget::Kind::NoteLoop, 0, 0, static_cast<int>(kNotes), -1, "notes"};
+        menuOnRightClick(target, clip, st.locked);
+        if (gFocusItems)
+            focusTargets_.push_back({"##pianoroll", target});
+    }
     if (!clip || live.channel != selectionChannel_) {
         drag_.reset();
         if (editing_ || !clip)
@@ -1264,16 +1364,19 @@ void PerformanceView::drawPianoRoll(const Mapping& m, const LiveState& live, flo
     }
     const ImGuiIO& io = ImGui::GetIO();
     const ImVec2 mouse = io.MousePos;
-    // The wheel zooms around the mouse, from the whole loop to a second (or a
-    // beat) across; a sideways scroll moves along. The window does not scroll.
+    // Ctrl + wheel zooms around the mouse, from the whole loop to a second (or
+    // a beat) across; the wheel alone or a sideways scroll moves along. The
+    // window does not scroll.
     ImGui::SetItemKeyOwner(ImGuiKey_MouseWheelY);
     if (hovering && !lengthDrag_ && !drag_ && (io.MouseWheel != 0.0f || io.MouseWheelH != 0.0f)) {
         const float most = std::max(1.0f, st.beats > 0 ? static_cast<float>(st.beats) : static_cast<float>(st.length) / Engine::kLoopRateHz);
-        if (io.MouseWheel != 0.0f) {
+        if (io.MouseWheel != 0.0f && io.KeyCtrl) {  // Ctrl + wheel: zoom, as everywhere
             const float f = std::clamp((mouse.x - gx0) / std::max(ax1 - gx0, 1.0f), 0.0f, 1.0f);
             const float under = viewStart_ + f / viewZoom_;  // the place under the mouse stays there
             viewZoom_ = std::clamp(viewZoom_ * std::pow(1.25f, io.MouseWheel), 1.0f, most);
             viewStart_ = under - f / viewZoom_;
+        } else if (io.MouseWheel != 0.0f) {  // the wheel alone moves along
+            viewStart_ -= io.MouseWheel * 0.1f / viewZoom_;
         }
         viewStart_ -= io.MouseWheelH * 0.1f / viewZoom_;
         viewStart_ = std::clamp(viewStart_, 0.0f, 1.0f - 1.0f / viewZoom_);
@@ -1478,6 +1581,8 @@ std::optional<PerformanceView::SessionAction> PerformanceView::drawSession(const
         ImGui::SetCursorScreenPos(ImVec2(x, origin.y));
         if (ImGui::InvisibleButton("##head", ImVec2(colW, headH)))
             action = SessionAction{SessionAction::Kind::Channel, ch, 0};
+        if (ImGui::IsItemHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Right))
+            menuRequest_ = MenuRequest{MenuTarget{MenuTarget::Kind::Channel, ch}, ImGui::GetIO().MousePos};
         for (int slot = 0; slot < kSlots; ++slot) {
             const LiveState::Clip& clip = live.clips[c * kSlots + static_cast<std::size_t>(slot)];
             const float cy = origin.y + headH + cellH * static_cast<float>(slot);
@@ -1498,6 +1603,8 @@ std::optional<PerformanceView::SessionAction> PerformanceView::drawSession(const
             ImGui::PopID();
             if (clicked)
                 action = SessionAction{SessionAction::Kind::Launch, ch, slot};
+            if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Right))
+                menuRequest_ = MenuRequest{MenuTarget{MenuTarget::Kind::Clip, ch, slot}, ImGui::GetIO().MousePos};
             if (!clip.sources) {
                 dl->AddRectFilled(a, b, IM_COL32(0x24, 0x26, 0x2A, 255), px(5));
                 dl->AddRect(a, b, hovered ? T::kControlBorder : IM_COL32(0x34, 0x38, 0x3E, 255), px(5), px(1));
@@ -1574,6 +1681,7 @@ std::optional<PerformanceView::SessionAction> PerformanceView::drawSession(const
                 }
             }
             if (active && slot == cursorSlot) {  // the cursor
+                sessionCursorBox_ = {a, b};
                 dl->AddRect(ImVec2(a.x - px(3), a.y - px(3)), ImVec2(b.x + px(3), b.y + px(3)), T::kCyan, px(7), px(2.5f));
                 if (!clip.sources) {
                     text(dl, gBold, px(16), (a.x + b.x) * 0.5f, (a.y + b.y) * 0.5f - px(7), T::kCyan, "+", H::Center, V::Middle);
@@ -1609,6 +1717,69 @@ std::optional<PerformanceView::SessionAction> PerformanceView::drawSession(const
         sessionFirst_ = sessionFirst_ == 0 ? 8 : 0;
     text(dl, gMedium, px(10), origin.x + width - px(12), by + px(15), ImGui::IsItemHovered() ? T::kText : T::kDim, other, H::Right, V::Middle);
     return action;
+}
+
+std::pair<ImVec2, ImVec2> PerformanceView::cursorBox() const {
+    if (editMode_)
+        for (const FocusItem& item : focusItems_)
+            if (item.id == focus_)
+                return {item.a, item.b};
+    return sessionCursorBox_;
+}
+
+// A controller button as a small sign: the face buttons' symbols, a pill with the name for the others.
+float buttonSign(ImDrawList* dl, float x, float y, const std::string& name) {
+    const float r = px(12);
+    ImU32 col = 0;
+    if (name == "Cross") col = IM_COL32(0x6E, 0x8C, 0xFF, 255);
+    if (name == "Circle") col = IM_COL32(0xFF, 0x5A, 0x5A, 255);
+    if (name == "Square") col = IM_COL32(0xFF, 0x78, 0xC8, 255);
+    if (name == "Triangle") col = IM_COL32(0x40, 0xD2, 0xAA, 255);
+    if (col) {
+        dl->AddCircleFilled(ImVec2(x + r, y), r, IM_COL32(0x1E, 0x20, 0x24, 255));
+        dl->AddCircle(ImVec2(x + r, y), r, col, 0, px(1.6f));
+        const float q = px(5.5f);
+        if (name == "Cross") {
+            dl->AddLine(ImVec2(x + r - q, y - q), ImVec2(x + r + q, y + q), col, px(1.8f));
+            dl->AddLine(ImVec2(x + r + q, y - q), ImVec2(x + r - q, y + q), col, px(1.8f));
+        } else if (name == "Circle") {
+            dl->AddCircle(ImVec2(x + r, y), q, col, 0, px(1.6f));
+        } else if (name == "Square") {
+            dl->AddRect(ImVec2(x + r - q, y - q), ImVec2(x + r + q, y + q), col, 0, px(1.6f));
+        } else {
+            dl->AddTriangle(ImVec2(x + r, y - q - px(1)), ImVec2(x + r + q + px(1), y + q), ImVec2(x + r - q - px(1), y + q), col, px(1.6f));
+        }
+        return x + 2 * r;
+    }
+    const float w = textWidth(gBold, px(12), name) + px(16);
+    dl->AddRectFilled(ImVec2(x, y - r + px(1)), ImVec2(x + w, y + r - px(1)), IM_COL32(0x1E, 0x20, 0x24, 255), r);
+    dl->AddRect(ImVec2(x, y - r + px(1)), ImVec2(x + w, y + r - px(1)), T::kLabel, r, px(1));
+    text(dl, gBold, px(12), x + w * 0.5f, y, T::kText, name, H::Center, V::Middle);
+    return x + w;
+}
+
+void PerformanceView::drawHelp(const std::string& title, ImU32 color, const std::string& closeHint,
+                               const std::vector<std::pair<std::vector<std::string>, std::string>>& rows) {
+    gMedium = fonts_.medium ? fonts_.medium : ImGui::GetFont();
+    gBold = fonts_.bold ? fonts_.bold : gMedium;
+    ImDrawList* dl = ImGui::GetForegroundDrawList();
+    const ImVec2 vs = ImGui::GetMainViewport()->Size, vp = ImGui::GetMainViewport()->Pos;
+    dl->AddRectFilled(vp, ImVec2(vp.x + vs.x, vp.y + vs.y), IM_COL32(8, 9, 11, 170));
+    const float w = std::min(px(680), vs.x - px(40)), rowH = px(46);
+    const float h = px(70) + rowH * static_cast<float>(rows.size()) + px(8);
+    const ImVec2 a(vp.x + (vs.x - w) * 0.5f, vp.y + (vs.y - h) * 0.5f), b(a.x + w, a.y + h);
+    dl->AddRectFilled(a, b, IM_COL32(0x1E, 0x20, 0x24, 248), px(10));
+    dl->AddRect(a, b, T::kBorder, px(10), px(1));
+    text(dl, gBold, px(18), a.x + px(22), a.y + px(30), color, title, H::Left, V::Middle);
+    text(dl, gMedium, px(12), b.x - px(22), a.y + px(30), T::kDim, closeHint, H::Right, V::Middle);
+    float y = a.y + px(70);
+    for (const auto& [keys, what] : rows) {
+        float x = a.x + px(24);
+        for (const std::string& k : keys)
+            x = buttonSign(dl, x, y + rowH * 0.3f, k) + px(8);
+        text(dl, gMedium, px(14), a.x + px(200), y + rowH * 0.3f, T::kText, what, H::Left, V::Middle);
+        y += rowH;
+    }
 }
 
 int PerformanceView::nextRepeats(int repeats, int steps) {
@@ -1684,8 +1855,8 @@ std::optional<PerformanceView::SessionAction> PerformanceView::drawChainStrip(Im
             }
             ImGui::EndDragDropTarget();
         }
-        if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Right) && clipSlot >= 0)
-            action = SessionAction{SessionAction::Kind::ChainSet, ch, k, -1, repeats};
+        if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Right))
+            menuRequest_ = MenuRequest{MenuTarget{MenuTarget::Kind::Step, ch, k}, ImGui::GetIO().MousePos};
         if (hovered && io.MouseWheel != 0.0f) {  // over its number: the clip; over its chip: the repeats
             const int notch = io.MouseWheel > 0 ? 1 : -1;
             if (io.MousePos.x < x0 + stepW * 0.45f || clipSlot < 0)
@@ -1695,7 +1866,7 @@ std::optional<PerformanceView::SessionAction> PerformanceView::drawChainStrip(Im
                 action = SessionAction{SessionAction::Kind::ChainSet, ch, k, clipSlot, nextRepeats(repeats, notch)};
         }
         if (hovered && clipSlot >= 0)
-            ImGui::SetItemTooltip("Wheel: the clip (left; after 8, R: any clip at random)\nor its repeats (right). Right-click: empty this step");
+            ImGui::SetItemTooltip("Wheel: the clip (left; after 8, R: any clip at random)\nor its repeats (right). Right-click: its menu");
         else if (hovered)
             ImGui::SetItemTooltip("Drag a clip here, or turn the wheel");
         ImGui::PopID();
@@ -1799,6 +1970,8 @@ std::optional<PerformanceView::SessionAction> PerformanceView::drawChainStrip(Im
             }
         }
         if (cursor == k)
+            sessionCursorBox_ = {a, b};
+        if (cursor == k)
             dl->AddRect(ImVec2(x0 - px(3), y0 - px(3)), ImVec2(x1 + px(3), y1 + px(3)), T::kCyan, px(8), px(2.5f));
         // The arrow to the next step (or the end).
         const float ax0 = x1 + px(4), ax1 = x1 + gap - px(4), ay = (y0 + y1) * 0.5f;
@@ -1812,6 +1985,8 @@ std::optional<PerformanceView::SessionAction> PerformanceView::drawChainStrip(Im
         action = SessionAction{SessionAction::Kind::ChainLoop, ch, 0, -1, 1, !chain.loop};
     const bool endHovered = ImGui::IsItemHovered();
     ImGui::SetItemTooltip(chain.loop ? "At the end: back to step 1. Click: stop there instead" : "At the end: the channel stops. Click: back to step 1 instead");
+    if (ImGui::IsItemHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Right))
+        menuRequest_ = MenuRequest{MenuTarget{MenuTarget::Kind::Channel, ch}, ImGui::GetIO().MousePos};
     ImGui::PopID();
     dl->AddRectFilled(ImVec2(ex0, y0), ImVec2(ex1, y1), IM_COL32(0x20, 0x22, 0x26, 255), px(6));
     dl->AddRect(ImVec2(ex0, y0), ImVec2(ex1, y1), endHovered ? T::kControlBorder : IM_COL32(0x46, 0x4B, 0x53, 255), px(6), px(1));
@@ -1825,6 +2000,8 @@ std::optional<PerformanceView::SessionAction> PerformanceView::drawChainStrip(Im
         dl->AddRectFilled(ImVec2(ec.x - px(7), ec.y - px(7)), ImVec2(ec.x + px(7), ec.y + px(7)), T::kLabel, px(1));
     }
     text(dl, gMedium, px(8.5f), ec.x, y1 - px(10), T::kDim, chain.loop ? "to 1" : "stop", H::Center, V::Middle);
+    if (cursor == Engine::kChainSteps)
+        sessionCursorBox_ = {ImVec2(ex0, y0), ImVec2(ex1, y1)};
     if (cursor == Engine::kChainSteps)
         dl->AddRect(ImVec2(ex0 - px(3), y0 - px(3)), ImVec2(ex1 + px(3), y1 + px(3)), T::kCyan, px(8), px(2.5f));
     return action;
@@ -2173,21 +2350,27 @@ void PerformanceView::drawLoopPanel(ImDrawList* dl, float x, float w, float loop
     }
     // Shift / Ctrl + wheel over the header: every lane.
     stretchWheel(tracks, ImVec2(ga.x, loopY - px(6)), ImVec2(gb.x, ga.y));
-    if (hoverButton(id, ImVec2(ga.x, loopY - px(6)), gb)) {
+    const bool hasLanes = recording || playing || st.waiting;
+    gNoFocus = hasLanes;  // the edit cursor goes to its lanes instead
+    const bool panelClicked = hoverButton(id, ImVec2(ga.x, loopY - px(6)), gb);
+    gNoFocus = false;
+    if (panelClicked) {
         if (laneClearHovered_)  // a lane's x
             clearRequest_ = laneClearHovered_;
         else
             click(spec);
     }
-    // A right-click locks a lane's axis alone, on the header all of them.
-    const ImVec2 ha(ga.x, loopY - px(6)), hb(gb.x, ga.y);
-    lockOnRightClick(lockSource, playing, st.locked, -1, &ha, &hb);
-    if (recording || playing || st.waiting)
+    // A right-click: the menu of a lane's axis, on the header of all of them.
+    const ImVec2 ha(ga.x, loopY - px(6)), hb(gb.x, hasLanes ? ga.y : gb.y);  // empty: the whole panel
+    menuOnRightClick(MenuTarget{MenuTarget::Kind::Panel, 0, 0, lockSource, -1, spec}, playing, st.locked, &ha, &hb);
+    if (hasLanes)
         for (int k = 0; k < laneCount; ++k) {
             const LoopStatus& ls = lanes[k].lane->status;
             const auto& [la, lb] = laneBoxes[static_cast<std::size_t>(k)];
-            lockOnRightClick(Engine::sourceOfTrack(lanes[k].track), ls.state == LoopStatus::State::Playing, ls.locked,
-                             Engine::axisOfTrack(lanes[k].track), &la, &lb);
+            const MenuTarget target{MenuTarget::Kind::Lane, 0, 0, Engine::sourceOfTrack(lanes[k].track), Engine::axisOfTrack(lanes[k].track), spec};
+            menuOnRightClick(target, ls.state == LoopStatus::State::Playing, ls.locked, &la, &lb);
+            if (focusable("##lane" + std::to_string(lanes[k].track), la, lb, target))
+                click(spec);
         }
 }
 
@@ -2757,7 +2940,7 @@ void PerformanceView::drawPadLanes(ImDrawList* dl, const Mapping& m, const LiveS
         idleArt(dl, artFor(live.channel, 3), ga, gb, time_);
     if (hoverButton("##touchloop", ImVec2(ga.x, loopY - px(6)), gb))
         click("notes");
-    lockOnRightClick(static_cast<int>(LoopSource::Notes), playing, st.locked);
+    menuOnRightClick(MenuTarget{MenuTarget::Kind::NoteLoop, 0, 0, static_cast<int>(LoopSource::Notes), -1, "notes"}, playing, st.locked);
 }
 
 void PerformanceView::drawButtons(const Mapping& m, const LiveState& live, float x, float y, float w, float h) {

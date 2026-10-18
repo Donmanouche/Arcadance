@@ -227,6 +227,10 @@ public:
     void launchClip(int channel, int slot);
     void stopClip(int channel) { launchClip(channel, kClipSlots); }
     void setRecordSlot(int channel, int slot);
+    // A clip emptied (the current one stops); a clip copied into another slot
+    // (false when there is nothing to copy). Chain steps on an empty clip are skipped.
+    void clearClip(int channel, int slot);
+    bool copyClip(int channel, int from, int to);
     int recordSlot(int channel) const { return recordSlot_[static_cast<std::size_t>(std::clamp(channel, 0, kChannelCount - 1))]; }
     // The session screen, from the controller. A SessionScreen binding (channel
     // 1's works on every channel; without one in the preset, PS / Guide) asks
@@ -238,7 +242,22 @@ public:
     // takeSessionEvent(), oldest first.
     // With setSessionValues(true) (the cursor in a chain), the right stick
     // asks for ValueUp... instead of moving the cursor, and R3 for PressRight.
-    enum class SessionEvent : std::uint8_t { Toggle, Up, Down, Left, Right, Press, ValueUp, ValueDown, ValueLeft, ValueRight, PressRight };
+    //
+    // The Mode control (a SessionScreen binding, PS / Guide without one) asks
+    // for Toggle when let go, Edit with Shift on, and while held longer than
+    // kHelpHoldMs for HelpOn, then HelpOff when let go (and nothing else).
+    // setNavButtons: the buttons that, while setSessionMode(true), ask for
+    // Press (select), Menu and Back instead of their action; without a select
+    // button, L3 and R3 press.
+    enum class SessionEvent : std::uint8_t {
+        Toggle, Up, Down, Left, Right, Press, ValueUp, ValueDown, ValueLeft, ValueRight, PressRight, Menu, Back, Edit, HelpOn, HelpOff
+    };
+    static constexpr int kHelpHoldMs = 500;
+    void setNavButtons(std::optional<Button> select, std::optional<Button> menu, std::optional<Button> back) {
+        navSelect_ = select;
+        navMenu_ = menu;
+        navBack_ = back;
+    }
     void setSessionMode(bool on) { sessionMode_ = on; }
     bool sessionMode() const { return sessionMode_; }
     void setSessionValues(bool on) { sessionValues_ = on; }
@@ -290,6 +309,7 @@ public:
     // from its last value back to its first, so it closes without a jump. A
     // synced one keeps whole beats. False without that loop playing.
     bool setAxisLoopLength(int channel, int source, int axis, int length);
+    void resetLoopShape(int channel, int source, int axis);  // back to 1x and 100 %
     // An axis playing in steps (LoopBinding::steps): the samples of a step; 0 when not.
     int loopStepSamples(int channel, int source, int axis) const;
     // Shift + a stick's click (L3, R3) or the touchpad's: the stick, or the
@@ -641,6 +661,10 @@ private:
     // The session screen: its button, whether it shows, the events asked, and
     // the stick's and the D-pad's pushes held, with when they repeat.
     bool sessionMode_ = false, presetHasSession_ = false, wasNavigating_ = false, sessionValues_ = false;
+    std::optional<Button> navSelect_, navMenu_, navBack_;
+    int modeSlot_ = -1;  // the Mode control held, -1 none
+    std::uint64_t modeAt_ = 0;
+    bool modeShift_ = false, modeHelp_ = false;
     bool navigating() const { return sessionMode_ && recordHolders_.none(); }
     std::array<SessionEvent, 16> sessionEvents_{};
     int sessionEventCount_ = 0;
