@@ -99,6 +99,18 @@ struct LiveState {
     std::array<std::int8_t, midipad::kChannelCount> currentClip{}, queuedClip{}, recordSlot{};
     std::uint16_t clipsPlaying = 0;
     std::array<float, midipad::kChannelCount> clipProgress{};
+    // Every channel's chain: its steps (clip -1: empty; repeats 0: forever),
+    // whether it loops, the step playing (-1: off), the turns it played, the
+    // step asked for next (-1: none).
+    struct Chain {
+        std::array<std::int8_t, midipad::Engine::kChainSteps> clip{};
+        std::array<std::uint8_t, midipad::Engine::kChainSteps> repeats{};
+        bool loop = true;
+        std::int8_t at = -1, next = -1;
+        std::int8_t clipNow = -1;  // the clip the step plays (picked, for a random one)
+        int turns = 0;
+    };
+    std::array<Chain, midipad::kChannelCount> chains{};
     std::uint64_t sounding = 0;   // Engine::soundingSlots()
     std::uint16_t loopChannels = 0;  // Engine::channelsWithLoops()
     bool loopsPaused = false;
@@ -153,7 +165,7 @@ public:
     void setOutput(std::shared_ptr<MidiOutput> output);
     void setChannel(int channel);
     void panic();  // also stops the loops, on every channel
-    void clearLoop(int source);  // a LoopSource, on the active channel
+    void clearLoop(int source, int axis = -1);  // a LoopSource (one axis, or -1 both), on the active channel
     void toggleLoopLock(int source, int axis = -1);  // see Engine::toggleLoopLock, on the active channel; -1: both axes
     // Clips (Engine::launchClip, stopClip, setRecordSlot), on any channel.
     void launchClip(int channel, int slot);
@@ -162,6 +174,12 @@ public:
     // The session screen from the controller (Engine::setSessionMode); what
     // the controller asks of it, oldest first.
     void setSessionMode(bool on) { sessionMode_.store(on, std::memory_order_relaxed); }
+    void setSessionValues(bool on) { sessionValues_.store(on, std::memory_order_relaxed); }  // Engine::setSessionValues
+    // Chains (Engine::setChainStep, setChainLoop, chainGoTo, stopChain), on any channel.
+    void setChainStep(int channel, int step, int clip, int repeats);
+    void setChainLoop(int channel, bool on);
+    void chainGoTo(int channel, int step);
+    void stopChain(int channel);
     std::optional<midipad::Engine::SessionEvent> popSessionEvent() { return sessionEvents_.pop(); }
     // Editing the active channel's note loop (Engine::moveLoopNotes,
     // removeLoopNotes), in the order asked.
@@ -223,12 +241,13 @@ private:
     class Tap;
     struct Command {
         enum class Kind : std::uint8_t {
-            SetChannel, Panic, ClearLoop, ToggleLock, LaunchClip, RecordSlot, StretchLoop, AmplifyLoop, AxisLength, PauseLoops, PlayLoops,
+            SetChannel, Panic, ClearLoop, ToggleLock, ChainStep, ChainLoop, ChainGo, ChainStop, LaunchClip, RecordSlot, StretchLoop, AmplifyLoop, AxisLength, PauseLoops, PlayLoops,
             SaveLoops, LoadLoops, EditNotes
         } kind;
         int channel = 0;
         int value = 0;
         int axis = -1;
+        int extra = 0;
     };
 
     void run(std::stop_token stop, Options options, std::shared_ptr<const midipad::Preset> preset);
@@ -249,7 +268,7 @@ private:
     std::atomic<std::uint64_t> droppedReports_{0};
     midipad::SpscRing<Command, 64> commands_;
     midipad::SpscRing<midipad::Engine::SessionEvent, 64> sessionEvents_;
-    std::atomic<bool> sessionMode_{false};
+    std::atomic<bool> sessionMode_{false}, sessionValues_{false};
 
     std::mutex pendingMutex_;
     std::shared_ptr<const midipad::Preset> pendingPreset_;
@@ -300,6 +319,7 @@ private:
     std::array<std::int8_t, midipad::kChannelCount> currentClip_{}, queuedClip_{}, recordSlot_{};
     std::uint16_t clipsPlaying_ = 0;
     std::array<float, midipad::kChannelCount> clipProgress_{};
+    std::array<LiveState::Chain, midipad::kChannelCount> chains_{};
     int clipSketchCountdown_ = 0;  // polls until the clips' sketches are drawn again
     mutable std::mutex nameMutex_;
     std::string gamepadName_;

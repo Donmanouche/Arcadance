@@ -1410,7 +1410,7 @@ void PerformanceView::drawPianoRoll(const Mapping& m, const LiveState& live, flo
 
 // The session screen: a column per channel, a row per clip slot, a stop at
 // the bottom of each column; the clips with what they hold and their state.
-std::optional<PerformanceView::SessionAction> PerformanceView::drawSession(const LiveState& live, int cursorSlot) {
+std::optional<PerformanceView::SessionAction> PerformanceView::drawSession(const LiveState& live, int cursorSlot, int chainCursor) {
     gMedium = fonts_.medium ? fonts_.medium : ImGui::GetFont();
     gBold = fonts_.bold ? fonts_.bold : gMedium;
     gCondensed = fonts_.condensed ? fonts_.condensed : gBold;
@@ -1425,7 +1425,9 @@ std::optional<PerformanceView::SessionAction> PerformanceView::drawSession(const
     // The modules' colours, for what a clip holds: notes, left stick, right stick, triggers, touchpad.
     static constexpr ImU32 kModuleColors[] = {IM_COL32(0xEC, 0xEE, 0xF2, 255), T::kBlue, T::kOrange, T::kPink, T::kCyan};
     const float gap = px(6), colW = (width - gap * (kColumns - 1)) / kColumns;
-    const float headH = px(34), cellH = px(70), stopH = px(28);
+    const float stripH = px(104);  // the chain, under the grid
+    const float headH = px(34), stopH = px(28);
+    const float cellH = std::clamp((ImGui::GetContentRegionAvail().y - headH - stopH - px(10) - px(8) - stripH - px(4)) / kSlots, px(44), px(70));
     const float gridH = headH + cellH * kSlots + stopH + px(10);
     const bool blink = std::fmod(time_, 0.8) < 0.45;
     if (live.channel != sessionChannelSeen_) {  // the active channel changed: show its eight
@@ -1444,6 +1446,32 @@ std::optional<PerformanceView::SessionAction> PerformanceView::drawSession(const
         const bool active = ch == live.channel;
         text(dl, gBold, px(11), x + px(12), origin.y + px(17), active ? T::kText : T::kDim, "CHANNEL " + std::to_string(ch + 1), H::Left, V::Middle);
         dl->AddCircleFilled(ImVec2(x + colW - px(15), origin.y + px(17)), px(5), playing ? T::kGreen : IM_COL32(0x3C, 0x40, 0x46, 255));
+        {  // a chain sign when it has one: green with its step while it runs
+            const LiveState::Chain& chain = live.chains[c];
+            int used = 0, index = 0;
+            for (int k = 0; k < Engine::kChainSteps; ++k)
+                if (chain.clip[static_cast<std::size_t>(k)] >= 0) {
+                    ++used;
+                    if (k <= chain.at)
+                        index = used;
+                }
+            if (used > 0) {
+                const bool runs = chain.at >= 0;
+                const std::string label = runs ? std::to_string(index) + "/" + std::to_string(used) : "";
+                const float right = x + colW - px(26);
+                const float w = px(24) + (label.empty() ? 0.0f : textWidth(gBold, px(8), label) + px(3));
+                const ImU32 cc = runs ? T::kGreen : T::kDim;
+                const ImVec2 ca(right - w, origin.y + px(10)), cb(right, origin.y + px(24));
+                dl->AddRectFilled(ca, cb, alpha(cc, 0.18f), px(6));
+                dl->AddRect(ca, cb, alpha(cc, 0.8f), px(6), px(1));
+                const ImU32 link = runs ? T::kText : T::kDim;
+                const float ly = origin.y + px(17);
+                dl->AddRect(ImVec2(ca.x + px(5), ly - px(3)), ImVec2(ca.x + px(13), ly + px(3)), link, px(3), px(1.3f));
+                dl->AddRect(ImVec2(ca.x + px(10), ly - px(3)), ImVec2(ca.x + px(18), ly + px(3)), link, px(3), px(1.3f));
+                if (!label.empty())
+                    text(dl, gBold, px(8), ca.x + px(22), ly, T::kText, label, H::Left, V::Middle);
+            }
+        }
         if (active)
             dl->AddLine(ImVec2(x + px(12), origin.y + px(28)), ImVec2(x + px(12) + textWidth(gBold, px(11), "CHANNEL 16"), origin.y + px(28)), chColor, px(2));
         ImGui::PushID(ch);
@@ -1461,6 +1489,12 @@ std::optional<PerformanceView::SessionAction> PerformanceView::drawSession(const
             ImGui::SetCursorScreenPos(a);
             const bool clicked = ImGui::InvisibleButton("##clip", ImVec2(b.x - a.x, b.y - a.y));
             const bool hovered = ImGui::IsItemHovered();
+            if (clip.sources && ImGui::BeginDragDropSource()) {  // onto a step of the chain
+                const int payload[2] = {ch, slot};
+                ImGui::SetDragDropPayload("MIDIPAD_CLIP", payload, sizeof payload);
+                ImGui::Text("Clip %d", slot + 1);
+                ImGui::EndDragDropSource();
+            }
             ImGui::PopID();
             if (clicked)
                 action = SessionAction{SessionAction::Kind::Launch, ch, slot};
@@ -1564,14 +1598,235 @@ std::optional<PerformanceView::SessionAction> PerformanceView::drawSession(const
                           stopping ? alpha(T::kRed, blink ? 1.0f : 0.35f) : playing ? T::kLabel : IM_COL32(0x50, 0x55, 0x5C, 255), px(1));
         ImGui::PopID();
     }
-    // The other eight channels.
+    // The chain of the active channel, then the other eight channels' link in its header.
     const float by = origin.y + gridH + px(8);
+    if (auto chainAction = drawChainStrip(dl, live, ImVec2(origin.x, by), width, stripH, cursorSlot == kSlots ? chainCursor : -1))
+        action = chainAction;
     const char* other = sessionFirst_ == 0 ? "Channels 9\xE2\x80\x93" "16  \xE2\x80\xBA" : "\xE2\x80\xB9  Channels 1\xE2\x80\x93" "8";
-    const float ow = textWidth(gMedium, px(11), other) + px(16);
-    ImGui::SetCursorScreenPos(ImVec2(origin.x + width - ow, by));
+    const float ow = textWidth(gMedium, px(10), other) + px(16);
+    ImGui::SetCursorScreenPos(ImVec2(origin.x + width - ow - px(4), by + px(5)));
     if (ImGui::InvisibleButton("##otherchannels", ImVec2(ow, px(20))))
         sessionFirst_ = sessionFirst_ == 0 ? 8 : 0;
-    text(dl, gMedium, px(11), origin.x + width - px(8), by + px(10), ImGui::IsItemHovered() ? T::kText : T::kDim, other, H::Right, V::Middle);
+    text(dl, gMedium, px(10), origin.x + width - px(12), by + px(15), ImGui::IsItemHovered() ? T::kText : T::kDim, other, H::Right, V::Middle);
+    return action;
+}
+
+int PerformanceView::nextRepeats(int repeats, int steps) {
+    const auto at = std::find(kChainRepeats.begin(), kChainRepeats.end(), repeats);
+    const int i = at == kChainRepeats.end() ? 0 : static_cast<int>(at - kChainRepeats.begin());
+    return kChainRepeats[static_cast<std::size_t>(std::clamp(i + steps, 0, static_cast<int>(kChainRepeats.size()) - 1))];
+}
+
+// The chain strip of the session screen (see drawSession), at `at`, `w` by `h`;
+// `cursor` the step under the controller's cursor (kChainSteps: the end), -1 none.
+std::optional<PerformanceView::SessionAction> PerformanceView::drawChainStrip(ImDrawList* dl, const LiveState& live, ImVec2 at, float w, float h,
+                                                                                int cursor) {
+    static constexpr ImU32 kChannelColors[] = {T::kBlue, T::kPink, T::kGreen, T::kOrange, IM_COL32(0xB0, 0x8C, 0xFF, 255),
+                                               T::kCyan, IM_COL32(0xFF, 0xD6, 0x40, 255), IM_COL32(0xFF, 0x78, 0x5A, 255)};
+    std::optional<SessionAction> action;
+    const int ch = live.channel;
+    const auto c = static_cast<std::size_t>(ch);
+    const LiveState::Chain& chain = live.chains[c];
+    const ImU32 chColor = kChannelColors[ch % 8];
+    const bool runs = chain.at >= 0;
+    const bool blink = std::fmod(time_, 0.8) < 0.45;
+    dl->AddRectFilled(at, ImVec2(at.x + w, at.y + h), T::kPanel, px(8));
+    dl->AddRect(at, ImVec2(at.x + w, at.y + h), T::kBorder, px(8), px(1));
+    const float hy = at.y + px(15);
+    text(dl, gBold, px(11), at.x + px(12), hy, T::kText, "CHAIN", H::Left, V::Middle);
+    text(dl, gBold, px(11), at.x + px(16) + textWidth(gBold, px(11), "CHAIN"), hy, chColor, "CHANNEL " + std::to_string(ch + 1), H::Left, V::Middle);
+    // CHAIN ON / OFF, and what plays.
+    const float bw = px(84), bx = at.x + w - px(150) - bw;
+    const ImVec2 ba(bx, at.y + px(5)), bb(bx + bw, at.y + px(25));
+    ImGui::SetCursorScreenPos(ba);
+    ImGui::PushID("chain");
+    if (ImGui::InvisibleButton("##onoff", ImVec2(bw, bb.y - ba.y)))
+        action = runs ? SessionAction{SessionAction::Kind::ChainStop, ch} : SessionAction{SessionAction::Kind::ChainGo, ch, cursor >= 0 && cursor < Engine::kChainSteps ? cursor : 0};
+    const bool onHovered = ImGui::IsItemHovered();
+    ImGui::SetItemTooltip(runs ? "Stops the chain (the clip plays on)" : "Plays the chain from its first step (or the step under the cursor)");
+    dl->AddRectFilled(ba, bb, runs ? alpha(T::kGreen, 0.22f) : T::kControl, px(5));
+    dl->AddRect(ba, bb, runs ? T::kGreen : onHovered ? T::kControlBorder : T::kBorder, px(5), px(1));
+    if (runs)
+        dl->AddRectFilled(ImVec2(ba.x + px(9), at.y + px(11)), ImVec2(ba.x + px(17), at.y + px(19)), T::kText, px(1));
+    else
+        dl->AddTriangleFilled(ImVec2(ba.x + px(9), at.y + px(10)), ImVec2(ba.x + px(9), at.y + px(20)), ImVec2(ba.x + px(17), at.y + px(15)), T::kGreen);
+    text(dl, gBold, px(9.5f), ba.x + px(23), hy, T::kText, runs ? "CHAIN ON" : "CHAIN OFF", H::Left, V::Middle);
+    if (runs) {
+        const int repeats = chain.repeats[static_cast<std::size_t>(chain.at)];
+        std::string state = "step " + std::to_string(chain.at + 1) + "  \xC2\xB7  turn " + std::to_string(chain.turns + 1);
+        if (repeats > 0)
+            state += " of " + std::to_string(repeats);
+        if (chain.next >= 0)
+            state += "  \xC2\xB7  next: step " + std::to_string(chain.next + 1);
+        text(dl, gMedium, px(10.5f), bx - px(10), hy, T::kGreen, state, H::Right, V::Middle);
+    }
+    // The steps, an arrow between them, then the end.
+    const float gap = px(22), endW = px(46);
+    const float stepW = (w - px(24) - gap * static_cast<float>(Engine::kChainSteps) - endW) / static_cast<float>(Engine::kChainSteps);
+    const float y0 = at.y + px(30), y1 = at.y + h - px(8);
+    const ImGuiIO& io = ImGui::GetIO();
+    for (int k = 0; k < Engine::kChainSteps; ++k) {
+        const auto kk = static_cast<std::size_t>(k);
+        const float x0 = at.x + px(12) + static_cast<float>(k) * (stepW + gap), x1 = x0 + stepW;
+        const ImVec2 a(x0, y0), b(x1, y1);
+        const int clipSlot = chain.clip[kk];
+        const int repeats = chain.repeats[kk];
+        ImGui::PushID(k);
+        ImGui::SetCursorScreenPos(a);
+        if (ImGui::InvisibleButton("##step", ImVec2(stepW, y1 - y0)))
+            action = SessionAction{SessionAction::Kind::ChainCursor, ch, k};
+        const bool hovered = ImGui::IsItemHovered();
+        if (ImGui::BeginDragDropTarget()) {  // a clip dragged from the grid
+            if (const ImGuiPayload* p = ImGui::AcceptDragDropPayload("MIDIPAD_CLIP")) {
+                const int* v = static_cast<const int*>(p->Data);
+                if (v[0] == ch)
+                    action = SessionAction{SessionAction::Kind::ChainSet, ch, k, v[1], clipSlot >= 0 ? repeats : 1};
+            }
+            ImGui::EndDragDropTarget();
+        }
+        if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Right) && clipSlot >= 0)
+            action = SessionAction{SessionAction::Kind::ChainSet, ch, k, -1, repeats};
+        if (hovered && io.MouseWheel != 0.0f) {  // over its number: the clip; over its chip: the repeats
+            const int notch = io.MouseWheel > 0 ? 1 : -1;
+            if (io.MousePos.x < x0 + stepW * 0.45f || clipSlot < 0)
+                action = SessionAction{SessionAction::Kind::ChainSet, ch, k, std::clamp(clipSlot + notch, -1, Engine::kChainRandom),
+                                       clipSlot >= 0 ? repeats : 1};
+            else
+                action = SessionAction{SessionAction::Kind::ChainSet, ch, k, clipSlot, nextRepeats(repeats, notch)};
+        }
+        if (hovered && clipSlot >= 0)
+            ImGui::SetItemTooltip("Wheel: the clip (left; after 8, R: any clip at random)\nor its repeats (right). Right-click: empty this step");
+        else if (hovered)
+            ImGui::SetItemTooltip("Drag a clip here, or turn the wheel");
+        ImGui::PopID();
+        const bool playsNow = runs && chain.at == k;
+        const bool isNext = runs && chain.next == k;
+        if (clipSlot < 0) {
+            // Empty: skipped. A dashed outline and a +.
+            const ImU32 dash = hovered ? T::kControlBorder : IM_COL32(0x4A, 0x4F, 0x57, 255);
+            for (float t = 0; t < stepW; t += px(8)) {
+                dl->AddLine(ImVec2(x0 + t, y0), ImVec2(std::min(x0 + t + px(4), x1), y0), dash, px(1));
+                dl->AddLine(ImVec2(x0 + t, y1), ImVec2(std::min(x0 + t + px(4), x1), y1), dash, px(1));
+            }
+            for (float t = 0; t < y1 - y0; t += px(8)) {
+                dl->AddLine(ImVec2(x0, y0 + t), ImVec2(x0, std::min(y0 + t + px(4), y1)), dash, px(1));
+                dl->AddLine(ImVec2(x1, y0 + t), ImVec2(x1, std::min(y0 + t + px(4), y1)), dash, px(1));
+            }
+            text(dl, gBold, px(16), (x0 + x1) * 0.5f, (y0 + y1) * 0.5f, IM_COL32(0x5A, 0x5F, 0x67, 255), "+", H::Center, V::Middle);
+        } else {
+            // A random step: R, and while it plays the clip it picked.
+            const bool random = clipSlot == Engine::kChainRandom;
+            const int shown = random ? (playsNow ? chain.clipNow : -1) : clipSlot;
+            static const LiveState::Clip kNone{};
+            const LiveState::Clip& clip = shown >= 0 ? live.clips[c * Engine::kClipSlots + static_cast<std::size_t>(shown)] : kNone;
+            const ImU32 outline = playsNow ? T::kGreen : isNext ? alpha(T::kGreen, blink ? 0.9f : 0.3f) : hovered ? T::kControlBorder
+                                                                                                                  : IM_COL32(0x46, 0x4B, 0x53, 255);
+            dl->AddRectFilled(a, b, IM_COL32(0x20, 0x22, 0x26, 255), px(6));
+            dl->AddRect(a, b, outline, px(6), px(playsNow || isNext ? 2.0f : 1.0f));
+            dl->AddRectFilled(ImVec2(x0 + px(2), y0 + px(6)), ImVec2(x0 + px(5), y1 - px(6)), chColor, px(1));
+            const ImU32 kViolet = IM_COL32(0xB0, 0x8C, 0xFF, 255);
+            if (random) {
+                text(dl, gBold, px(26), x0 + px(12), y0 + px(19), kViolet, "R", H::Left, V::Middle);
+                text(dl, gBold, px(7.5f), x0 + px(12), y1 - px(10), T::kDim,
+                     shown >= 0 ? "CLIP " + std::to_string(shown + 1) : std::string("RANDOM"), H::Left, V::Middle);
+                if (shown < 0) {  // two dice, for any clip
+                    const float dx = x0 + px(44), dy = y0 + px(40), ds = px(16);
+                    for (int d = 0; d < 2; ++d) {
+                        const float ox = dx + static_cast<float>(d) * px(22), oy = dy + static_cast<float>(d) * px(6);
+                        dl->AddRect(ImVec2(ox, oy), ImVec2(ox + ds, oy + ds), alpha(kViolet, 0.8f), px(3), px(1.3f));
+                        const int pips = d == 0 ? 3 : 5;
+                        static constexpr float kPip[6][2] = {{0.27f, 0.27f}, {0.73f, 0.73f}, {0.5f, 0.5f}, {0.73f, 0.27f}, {0.27f, 0.73f}, {0, 0}};
+                        static constexpr int kThree[3] = {0, 2, 1}, kFive[5] = {0, 1, 2, 3, 4};
+                        for (int q = 0; q < pips; ++q) {
+                            const auto* pp = kPip[pips == 3 ? kThree[q] : kFive[q]];
+                            dl->AddCircleFilled(ImVec2(ox + ds * pp[0], oy + ds * pp[1]), px(1.4f), kViolet);
+                        }
+                    }
+                }
+            } else {
+                text(dl, gBold, px(26), x0 + px(12), y0 + px(19), clip.sources ? T::kText : T::kDim, std::to_string(clipSlot + 1), H::Left, V::Middle);
+                text(dl, gBold, px(7.5f), x0 + px(12), y1 - px(10), T::kDim, clip.sources ? "CLIP" : "EMPTY", H::Left, V::Middle);
+            }
+            // A sketch of the clip: its notes, its liveliest curve.
+            const float sx0 = x0 + px(38), sx1 = x1 - px(8), sy0 = y0 + px(31), sy1 = y1 - px(10);
+            if (clip.noteCount > 0 && sx1 > sx0) {
+                int lo = 127, hi = 0;
+                for (int i = 0; i < clip.noteCount; ++i) {
+                    lo = std::min<int>(lo, clip.notes[static_cast<std::size_t>(i)][2]);
+                    hi = std::max<int>(hi, clip.notes[static_cast<std::size_t>(i)][2]);
+                }
+                for (int i = 0; i < clip.noteCount; ++i) {
+                    const auto& n = clip.notes[static_cast<std::size_t>(i)];
+                    const float nx0 = sx0 + (sx1 - sx0) * static_cast<float>(n[0]) / 255.0f;
+                    const float nx1 = std::max(sx0 + (sx1 - sx0) * static_cast<float>(n[1]) / 255.0f, nx0 + px(2));
+                    const float t = hi > lo ? static_cast<float>(n[2] - lo) / static_cast<float>(hi - lo) : 0.5f;
+                    const float ny = sy1 - px(2) - t * (sy1 - sy0 - px(2));
+                    dl->AddRectFilled(ImVec2(nx0, ny), ImVec2(nx1, ny + px(1.8f)), IM_COL32(0xDC, 0xDE, 0xE2, 200));
+                }
+            }
+            for (int m = 0; m < 4 && sx1 > sx0; ++m) {
+                if (!(clip.sources & ~(1u << static_cast<int>(LoopSource::Notes))))
+                    break;
+                bool any = false;
+                for (auto v : clip.curves[static_cast<std::size_t>(m)])
+                    any = any || v != 0;
+                if (!any)
+                    continue;
+                ImVec2 pts[LiveState::Clip::kCurvePoints];
+                for (int i = 0; i < LiveState::Clip::kCurvePoints; ++i) {
+                    const float t = static_cast<float>(i) / static_cast<float>(LiveState::Clip::kCurvePoints - 1);
+                    const float v = static_cast<float>(clip.curves[static_cast<std::size_t>(m)][static_cast<std::size_t>(i)]) / 255.0f;
+                    pts[i] = ImVec2(sx0 + t * (sx1 - sx0), sy1 - v * (sy1 - sy0));
+                }
+                dl->AddPolyline(pts, LiveState::Clip::kCurvePoints, alpha(chColor, 0.85f), px(1.4f));
+                break;
+            }
+            // Its repeats (playing: the turn), top right.
+            const std::string label = playsNow && repeats > 0 ? std::to_string(chain.turns + 1) + "/" + std::to_string(repeats)
+                                      : repeats == 0          ? "\xE2\x88\x9E"
+                                                              : "\xC3\x97" + std::to_string(repeats);
+            const ImU32 chip = playsNow ? T::kGreen : chColor;
+            const float size = repeats == 0 && !playsNow ? px(17) : px(13);  // the infinity sign reads small
+            const float tw = std::max(textWidth(gBold, size, label) + px(18), px(34));
+            const ImVec2 ca(x1 - px(5) - tw, y0 + px(4)), cb(x1 - px(5), y0 + px(27));
+            dl->AddRectFilled(ca, cb, alpha(chip, 0.22f), px(11));
+            dl->AddRect(ca, cb, alpha(chip, 0.85f), px(11), px(1.2f));
+            text(dl, gBold, size, (ca.x + cb.x) * 0.5f, (ca.y + cb.y) * 0.5f, T::kText, label, H::Center, V::Middle);
+            if (playsNow) {  // how far in its turn
+                const float p = std::clamp(live.clipProgress[c], 0.0f, 1.0f);
+                dl->AddRectFilled(ImVec2(x0 + px(6), y1 - px(5)), ImVec2(x0 + px(6) + (stepW - px(12)) * p, y1 - px(3)), T::kGreen);
+                dl->AddTriangleFilled(ImVec2(x1 - px(16), y1 - px(18)), ImVec2(x1 - px(16), y1 - px(8)), ImVec2(x1 - px(8), y1 - px(13)), T::kGreen);
+            }
+        }
+        if (cursor == k)
+            dl->AddRect(ImVec2(x0 - px(3), y0 - px(3)), ImVec2(x1 + px(3), y1 + px(3)), T::kCyan, px(8), px(2.5f));
+        // The arrow to the next step (or the end).
+        const float ax0 = x1 + px(4), ax1 = x1 + gap - px(4), ay = (y0 + y1) * 0.5f;
+        dl->AddLine(ImVec2(ax0, ay), ImVec2(ax1 - px(3), ay), T::kLabel, px(1.6f));
+        dl->AddTriangleFilled(ImVec2(ax1, ay), ImVec2(ax1 - px(6), ay - px(4)), ImVec2(ax1 - px(6), ay + px(4)), T::kLabel);
+    }
+    // The end: back to step 1, or stop. A click switches.
+    const float ex0 = at.x + px(12) + static_cast<float>(Engine::kChainSteps) * (stepW + gap), ex1 = ex0 + endW;
+    ImGui::SetCursorScreenPos(ImVec2(ex0, y0));
+    if (ImGui::InvisibleButton("##end", ImVec2(endW, y1 - y0)))
+        action = SessionAction{SessionAction::Kind::ChainLoop, ch, 0, -1, 1, !chain.loop};
+    const bool endHovered = ImGui::IsItemHovered();
+    ImGui::SetItemTooltip(chain.loop ? "At the end: back to step 1. Click: stop there instead" : "At the end: the channel stops. Click: back to step 1 instead");
+    ImGui::PopID();
+    dl->AddRectFilled(ImVec2(ex0, y0), ImVec2(ex1, y1), IM_COL32(0x20, 0x22, 0x26, 255), px(6));
+    dl->AddRect(ImVec2(ex0, y0), ImVec2(ex1, y1), endHovered ? T::kControlBorder : IM_COL32(0x46, 0x4B, 0x53, 255), px(6), px(1));
+    const ImVec2 ec((ex0 + ex1) * 0.5f, (y0 + y1) * 0.5f - px(6));
+    if (chain.loop) {  // a round arrow
+        dl->PathArcTo(ec, px(10), 0.7f, 5.8f, 24);
+        dl->PathStroke(T::kLabel, px(2));
+        const ImVec2 tip(ec.x + px(10) * std::cos(0.7f), ec.y + px(10) * std::sin(0.7f));
+        dl->AddTriangleFilled(ImVec2(tip.x - px(5), tip.y - px(1)), ImVec2(tip.x + px(4), tip.y - px(3)), ImVec2(tip.x, tip.y + px(5)), T::kLabel);
+    } else {
+        dl->AddRectFilled(ImVec2(ec.x - px(7), ec.y - px(7)), ImVec2(ec.x + px(7), ec.y + px(7)), T::kLabel, px(1));
+    }
+    text(dl, gMedium, px(8.5f), ec.x, y1 - px(10), T::kDim, chain.loop ? "to 1" : "stop", H::Center, V::Middle);
+    if (cursor == Engine::kChainSteps)
+        dl->AddRect(ImVec2(ex0 - px(3), y0 - px(3)), ImVec2(ex1 + px(3), y1 + px(3)), T::kCyan, px(8), px(2.5f));
     return action;
 }
 
@@ -1893,6 +2148,7 @@ void PerformanceView::drawLoopPanel(ImDrawList* dl, float x, float w, float loop
         idleArt(dl, art, ga, gb, time_);
     }
     std::array<std::pair<ImVec2, ImVec2>, 4> laneBoxes{};
+    laneClearHovered_.reset();
     if (recording || playing || st.waiting) {
         const float gap = px(4);
         const float laneH = (gb.y - ga.y - gap * static_cast<float>(laneCount - 1)) / static_cast<float>(std::max(laneCount, 1));
@@ -1917,8 +2173,12 @@ void PerformanceView::drawLoopPanel(ImDrawList* dl, float x, float w, float loop
     }
     // Shift / Ctrl + wheel over the header: every lane.
     stretchWheel(tracks, ImVec2(ga.x, loopY - px(6)), ImVec2(gb.x, ga.y));
-    if (hoverButton(id, ImVec2(ga.x, loopY - px(6)), gb))
-        click(spec);
+    if (hoverButton(id, ImVec2(ga.x, loopY - px(6)), gb)) {
+        if (laneClearHovered_)  // a lane's x
+            clearRequest_ = laneClearHovered_;
+        else
+            click(spec);
+    }
     // A right-click locks a lane's axis alone, on the header all of them.
     const ImVec2 ha(ga.x, loopY - px(6)), hb(gb.x, ga.y);
     lockOnRightClick(lockSource, playing, st.locked, -1, &ha, &hb);
@@ -2032,8 +2292,24 @@ void PerformanceView::drawLane(ImDrawList* dl, ImVec2 a, ImVec2 b, const LaneLoo
     }
     // Its name, top left; its length (and stretch, amplitude), top right; its CC, bottom right.
     text(dl, gBold, small, a.x + px(7), nameY, look.color, look.name, H::Left, V::Middle);
-    if (st.locked)
+    if (st.locked) {
         drawLock(dl, a.x + px(11) + textWidth(gBold, small, look.name), nameY - px(0.5f), small, look.color);
+    } else if (playing && ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem) && ImGui::IsMouseHoveringRect(a, b)) {
+        // The lane under the mouse: an x by its name clears it alone.
+        const float r = std::max(small * 0.55f, px(5));
+        const ImVec2 xc(a.x + px(14) + textWidth(gBold, small, look.name) + r, nameY);
+        const ImVec2 mouse = ImGui::GetIO().MousePos;
+        const bool over = std::hypot(mouse.x - xc.x, mouse.y - xc.y) <= r + px(2);
+        dl->AddCircleFilled(xc, r, over ? IM_COL32(0x8A, 0x2A, 0x32, 255) : IM_COL32(0x46, 0x1E, 0x22, 255));
+        dl->AddCircle(xc, r, T::kRed, 0, px(1));
+        const float q = r * 0.45f;
+        dl->AddLine(ImVec2(xc.x - q, xc.y - q), ImVec2(xc.x + q, xc.y + q), T::kText, px(1.4f));
+        dl->AddLine(ImVec2(xc.x + q, xc.y - q), ImVec2(xc.x - q, xc.y + q), T::kText, px(1.4f));
+        if (over) {
+            laneClearHovered_ = LockRequest{Engine::sourceOfTrack(look.track), Engine::axisOfTrack(look.track)};
+            ImGui::SetTooltip("Clear %s's loop", look.name);
+        }
+    }
     if (b.y - a.y >= px(30)) {
         const std::string cc = "CC " + std::to_string(look.cc);
         const float ccW = textWidth(gCondensed, small, cc) + px(10);

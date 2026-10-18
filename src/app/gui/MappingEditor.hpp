@@ -23,8 +23,11 @@ public:
     // Humanize checkbox of notes and chords.
     void setHumanizeChannels(std::uint16_t channels) { humanizeChannels_ = channels; }
 
-    // A loop the user asked to clear (a LoopSource), once.
-    std::optional<int> takeClearLoopRequest() { return std::exchange(clearLoopRequest_, std::nullopt); }
+    // A loop the user asked to clear, once: a LoopSource and an axis (-1: both).
+    struct ClearLoop {
+        int source = 0, axis = -1;
+    };
+    std::optional<ClearLoop> takeClearLoopRequest() { return std::exchange(clearLoopRequest_, std::nullopt); }
     // An axis loop's end dragged in the control's window: its new length, once
     // (Engine::setAxisLoopLength, on the active channel).
     struct AxisLength {
@@ -64,7 +67,7 @@ private:
     std::optional<midipad::Key> chordsFor_;
     std::vector<midipad::KeyChord> chords_;
     std::uint16_t humanizeChannels_ = 0;
-    std::optional<int> clearLoopRequest_;
+    std::optional<ClearLoop> clearLoopRequest_;
     std::optional<AxisLength> axisLength_;
     std::string layerSpec_;    // the control whose layers were shown last
     bool shiftLayer_ = false;  // its Shift layer was

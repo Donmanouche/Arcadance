@@ -363,7 +363,11 @@ private:
     // channel records into its current clip again.
     void toggleSession(const LiveState& live);
     bool sessionView_ = false;
-    int sessionSlot_ = 0, sessionChannel_ = 0;
+    int sessionSlot_ = 0, sessionChannel_ = 0;  // sessionSlot_ kClipSlots: the cursor is in the chain
+    int chainCursor_ = 0;  // its step there (kChainSteps: the end)
+    // The cursor in the chain: L3 (`press`), R3 (`clear`), the right stick (`clipSteps` up / down, `repeatSteps` left / right).
+    void chainEvent(Engine::SessionEvent e, const LiveState& live);
+    void setChainStep(int channel, int step, int clip, int repeats) { runtime_->setChainStep(channel, step, clip, repeats); }
     int sessionChannelAsked_ = -1;  // a channel asked of the runtime, not shown by it yet
     void sessionEvent(midipad::Engine::SessionEvent e, const LiveState& live);
     void moveSessionCursor(int channel, int slot, const LiveState& live);
@@ -780,8 +784,8 @@ void GuiApp::handleEvent(const SDL_Event& e) {
 void GuiApp::update() {
     finishVirMidiJob();
     runtime_->setKey(settings_.key);
-    if (const auto source = editor_.takeClearLoopRequest())
-        runtime_->clearLoop(*source);
+    if (const auto clear = editor_.takeClearLoopRequest())
+        runtime_->clearLoop(clear->source, clear->axis);
     if (const auto length = editor_.takeAxisLengthRequest())  // an axis loop's end dragged in a control's window
         runtime_->setAxisLoopLength(length->source, length->axis, length->length);
     while (runtime_->popReport()) {
@@ -1211,13 +1215,70 @@ void GuiApp::sessionEvent(Engine::SessionEvent e, const LiveState& live) {
     }
     if (!sessionView_)
         return;
+    if (sessionSlot_ == Engine::kClipSlots) {  // in the chain
+        chainEvent(e, live);
+        return;
+    }
     switch (e) {
     case E::Up: moveSessionCursor(sessionChannel_, sessionSlot_ - 1, live); break;
-    case E::Down: moveSessionCursor(sessionChannel_, sessionSlot_ + 1, live); break;
+    case E::Down:
+        if (sessionSlot_ == Engine::kClipSlots - 1) {  // past the last clip: into the chain
+            const int at = live.chains[static_cast<std::size_t>(sessionChannel_)].at;
+            sessionSlot_ = Engine::kClipSlots;
+            chainCursor_ = at >= 0 ? at : 0;
+        } else {
+            moveSessionCursor(sessionChannel_, sessionSlot_ + 1, live);
+        }
+        break;
     // Left of channel 1 is channel 16, right of 16 is 1.
     case E::Left: moveSessionCursor((sessionChannel_ + kChannelCount - 1) % kChannelCount, sessionSlot_, live); break;
     case E::Right: moveSessionCursor((sessionChannel_ + 1) % kChannelCount, sessionSlot_, live); break;
-    case E::Press: pressClip(sessionChannel_, sessionSlot_, live); break;
+    case E::Press:
+    case E::PressRight: pressClip(sessionChannel_, sessionSlot_, live); break;
+    case E::ValueUp:
+    case E::ValueDown:
+    case E::ValueLeft:
+    case E::ValueRight:
+    case E::Toggle: break;
+    }
+}
+
+void GuiApp::chainEvent(Engine::SessionEvent e, const LiveState& live) {
+    using E = Engine::SessionEvent;
+    const int ch = sessionChannel_;
+    const LiveState::Chain& chain = live.chains[static_cast<std::size_t>(ch)];
+    const bool onEnd = chainCursor_ == Engine::kChainSteps;
+    const auto k = static_cast<std::size_t>(std::min(chainCursor_, Engine::kChainSteps - 1));
+    const int clip = chain.clip[k], repeats = chain.repeats[k];
+    switch (e) {
+    case E::Up: moveSessionCursor(ch, Engine::kClipSlots - 1, live); break;  // back to the clips
+    case E::Left: chainCursor_ = std::max(chainCursor_ - 1, 0); break;
+    case E::Right: chainCursor_ = std::min(chainCursor_ + 1, Engine::kChainSteps); break;
+    case E::Press:  // L3: start there; on the step playing, go on; on the end, loop or stop
+        if (onEnd)
+            runtime_->setChainLoop(ch, !chain.loop);
+        else if (chain.at >= 0 && chain.at == chainCursor_)
+            runtime_->chainGoTo(ch, (chain.at + 1) % Engine::kChainSteps);
+        else
+            runtime_->chainGoTo(ch, chainCursor_);
+        break;
+    case E::PressRight:  // R3: empty the step
+        if (!onEnd && clip >= 0)
+            setChainStep(ch, chainCursor_, -1, repeats);
+        break;
+    case E::ValueUp:
+    case E::ValueDown:
+        if (onEnd)
+            runtime_->setChainLoop(ch, !chain.loop);
+        else
+            setChainStep(ch, chainCursor_, std::clamp(clip + (e == E::ValueUp ? 1 : -1), -1, Engine::kChainRandom), clip >= 0 ? repeats : 1);
+        break;
+    case E::ValueLeft:
+    case E::ValueRight:
+        if (!onEnd && clip >= 0)
+            setChainStep(ch, chainCursor_, clip, PerformanceView::nextRepeats(repeats, e == E::ValueRight ? 1 : -1));
+        break;
+    case E::Down:
     case E::Toggle: break;
     }
 }
@@ -1658,12 +1719,24 @@ void GuiApp::drawPerformance(const LiveState& live) {
         sessionChannel_ = live.channel;
         sessionSlot_ = live.currentClip[static_cast<std::size_t>(live.channel)];
     }
+    runtime_->setSessionValues(sessionView_ && sessionSlot_ == Engine::kClipSlots);  // the right stick sets the chain's values
     if (sessionView_) {
         // A clip clicked: the cursor goes there, its channel becomes the active
         // one, and Record records there; a clip is launched, an empty slot only chosen.
-        if (const auto act = performance_.drawSession(live, sessionSlot_)) {
+        if (const auto act = performance_.drawSession(live, sessionSlot_, chainCursor_)) {
             using Kind = PerformanceView::SessionAction::Kind;
-            if (act->kind == Kind::Stop) {
+            if (act->kind == Kind::ChainSet) {
+                setChainStep(act->channel, act->slot, act->clip, act->repeats);
+            } else if (act->kind == Kind::ChainCursor) {
+                sessionSlot_ = Engine::kClipSlots;
+                chainCursor_ = act->slot;
+            } else if (act->kind == Kind::ChainGo) {
+                runtime_->chainGoTo(act->channel, act->slot);
+            } else if (act->kind == Kind::ChainStop) {
+                runtime_->stopChain(act->channel);
+            } else if (act->kind == Kind::ChainLoop) {
+                runtime_->setChainLoop(act->channel, act->on);
+            } else if (act->kind == Kind::Stop) {
                 runtime_->stopClip(act->channel);
             } else if (act->kind == Kind::Launch) {
                 moveSessionCursor(act->channel, act->slot, live);
@@ -1687,6 +1760,8 @@ void GuiApp::drawPerformance(const LiveState& live) {
     }
     if (const auto lock = performance_.takeLockRequest())  // a right-click on a LOOP panel, a lane or the piano roll
         runtime_->toggleLoopLock(lock->source, lock->axis);
+    if (const auto clear = performance_.takeClearRequest())  // the x of a lane
+        runtime_->clearLoop(clear->source, clear->axis);
     if (const auto stretch = performance_.takeStretchRequest())  // Shift + wheel over a LOOP panel
         for (int track = 0; track < Engine::kNoteTrack; ++track)
             if (stretch->tracks & (1u << track)) {
@@ -2627,6 +2702,19 @@ void GuiApp::openSession(const std::string& name) {
     pushToEngine();
     runtime_->setChannel(session.channel);
     runtime_->loadSessionLoops(std::move(session.loops));
+    // Its chains; a channel without one gets an empty chain.
+    for (int ch = 0; ch < kChannelCount; ++ch) {
+        const SessionChain* chain = nullptr;
+        for (const SessionChain& c : session.chains)
+            if (c.channel == ch)
+                chain = &c;
+        for (int k = 0; k < Engine::kChainSteps; ++k) {
+            const bool has = chain && k < static_cast<int>(chain->steps.size());
+            runtime_->setChainStep(ch, k, has ? chain->steps[static_cast<std::size_t>(k)].clip : -1,
+                                   has ? chain->steps[static_cast<std::size_t>(k)].repeats : 1);
+        }
+        runtime_->setChainLoop(ch, !chain || chain->loop);
+    }
     sessionName_ = name;
     log("Session \"" + name + "\" opened.");
 }
@@ -2655,6 +2743,19 @@ bool GuiApp::saveSessionAs(const std::string& name) {
     session.channel = now.channel;
     session.tempo = now.clock != ClockMode::Free ? now.tempo : settings_.tempo;
     session.loops = std::move(*loops);
+    for (int ch = 0; ch < kChannelCount; ++ch) {  // the chains that hold something
+        const LiveState::Chain& live = now.chains[static_cast<std::size_t>(ch)];
+        SessionChain chain;
+        chain.channel = ch;
+        chain.loop = live.loop;
+        bool any = !live.loop;
+        for (int k = 0; k < Engine::kChainSteps; ++k) {
+            chain.steps.push_back({live.clip[static_cast<std::size_t>(k)], live.repeats[static_cast<std::size_t>(k)]});
+            any = any || live.clip[static_cast<std::size_t>(k)] >= 0;
+        }
+        if (any)
+            session.chains.push_back(std::move(chain));
+    }
     try {
         midipad::saveSession(session, sessionPath(name));
     } catch (const std::exception& e) {

@@ -38,6 +38,18 @@ struct SessionLoop {
     std::vector<Note> notes;
 };
 
+// A channel's chain of clips (Engine::setChainStep): its steps, each a clip
+// slot (-1: empty; 8, Engine::kChainRandom: any, at random) and its repeats
+// (0: forever), and whether it goes back to its first step at the end.
+struct SessionChain {
+    int channel = 0;
+    bool loop = true;
+    struct Step {
+        int clip = -1, repeats = 1;
+    };
+    std::vector<Step> steps;  // up to Engine::kChainSteps
+};
+
 // What a session file keeps: the loops of every channel, the preset they play
 // with (a copy, so the session opens as it was even if the preset changed
 // since), the tonality, the active channel and the tempo. Synced loops keep
@@ -49,6 +61,7 @@ struct Session {
     int channel = 0;
     double tempo = 0;  // of the clock when saved, in beats a minute; 0: none
     std::vector<SessionLoop> loops;
+    std::vector<SessionChain> chains;
 };
 
 class SessionError : public std::runtime_error {

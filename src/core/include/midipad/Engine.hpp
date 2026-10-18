@@ -196,6 +196,34 @@ public:
     float clipSample(int channel, int slot, int source, int axis, int index) const;  // as loopSample
     int clipNoteIntervals(int channel, int slot, NoteInterval* out, int max) const;  // as noteLoopIntervals
     float clipProgress(int channel) const;  // how far the playing clip is in its turn, 0-1; -1: none plays
+    // Chains: each channel can play its clips in a sequence of kChainSteps
+    // steps, each a clip played `repeats` turns (0: until asked to go on),
+    // then the next step; empty steps (no clip, or an empty one) are skipped.
+    // After the last step it goes back to the first, or with loop off stops
+    // the channel. chainGoTo starts the chain from a step (at the end of the
+    // playing clip's turn; at once with nothing playing) or, while it runs,
+    // goes to that step at the end of the turn. Launching or stopping a clip
+    // (launchClip, stopClip), recording into another clip, PANIC and
+    // stopChain turn the chain off; its steps stay.
+    // A step's clip may be kChainRandom: each time the chain comes to that
+    // step it picks one of the channel's clips that hold loops, at random,
+    // and plays it its repeats.
+    static constexpr int kChainSteps = 8, kMaxRepeats = 64, kChainRandom = kClipSlots;
+    struct ChainStep {
+        int clip = -1;    // -1: empty; kChainRandom: any
+        int repeats = 1;  // 1 to kMaxRepeats; 0: forever
+        friend bool operator==(const ChainStep&, const ChainStep&) = default;
+    };
+    void setChainStep(int channel, int step, ChainStep s);
+    ChainStep chainStep(int channel, int step) const;
+    void setChainLoop(int channel, bool on);
+    bool chainLoop(int channel) const { return chainLoop_[static_cast<std::size_t>(std::clamp(channel, 0, kChannelCount - 1))]; }
+    void chainGoTo(int channel, int step);
+    void stopChain(int channel);
+    int chainAt(int channel) const { return chainAt_[static_cast<std::size_t>(std::clamp(channel, 0, kChannelCount - 1))]; }  // -1: off
+    int chainTurns(int channel) const { return chainTurns_[static_cast<std::size_t>(std::clamp(channel, 0, kChannelCount - 1))]; }  // of the step, done
+    int chainNext(int channel) const { return chainJump_[static_cast<std::size_t>(std::clamp(channel, 0, kChannelCount - 1))]; }  // asked for, -1 none
+    int chainClip(int channel) const { return chainClip_[static_cast<std::size_t>(std::clamp(channel, 0, kChannelCount - 1))]; }  // the step's clip (picked, for a random one)
     void launchClip(int channel, int slot);
     void stopClip(int channel) { launchClip(channel, kClipSlots); }
     void setRecordSlot(int channel, int slot);
@@ -208,9 +236,12 @@ public:
     // except while Record is held: then they play and record as usual (a stick
     // moves the cursor again once back at rest). What is asked comes out of
     // takeSessionEvent(), oldest first.
-    enum class SessionEvent : std::uint8_t { Toggle, Up, Down, Left, Right, Press };
+    // With setSessionValues(true) (the cursor in a chain), the right stick
+    // asks for ValueUp... instead of moving the cursor, and R3 for PressRight.
+    enum class SessionEvent : std::uint8_t { Toggle, Up, Down, Left, Right, Press, ValueUp, ValueDown, ValueLeft, ValueRight, PressRight };
     void setSessionMode(bool on) { sessionMode_ = on; }
     bool sessionMode() const { return sessionMode_; }
+    void setSessionValues(bool on) { sessionValues_ = on; }
     std::optional<SessionEvent> takeSessionEvent();
     static constexpr float kNavPush = 0.6f, kNavRest = 0.35f;  // of the stick's half travel
     static constexpr int kNavRepeatDelayMs = 400, kNavRepeatMs = 150;
@@ -218,6 +249,7 @@ public:
     // finger was lifted.
     float loopSample(int channel, int source, int axis, int index) const;
     void clearLoop(int channel, int source);  // both axes; also unlocks it
+    void clearLoop(int channel, int source, int axis);  // one axis of a movement loop
     // A locked loop stays: Record neither replaces it nor stops it, nor
     // overdubs a locked note loop. Clearing it (clearLoop, PANIC) unlocks it.
     // Each axis loop locks on its own: toggleLoopLock with an axis locks or
@@ -505,6 +537,19 @@ private:
     std::array<bool, kChannelCount> clipPlaying_{};
     std::array<int, kChannelCount> queued_ = [] { std::array<int, kChannelCount> a{}; a.fill(-1); return a; }();
     std::array<long long, kChannelCount> turnMark_{};
+    std::array<std::array<ChainStep, kChainSteps>, kChannelCount> chains_{};
+    std::array<bool, kChannelCount> chainLoop_ = [] { std::array<bool, kChannelCount> a{}; a.fill(true); return a; }();
+    std::array<int, kChannelCount> chainAt_ = [] { std::array<int, kChannelCount> a{}; a.fill(-1); return a; }();
+    std::array<int, kChannelCount> chainJump_ = [] { std::array<int, kChannelCount> a{}; a.fill(-1); return a; }();
+    std::array<int, kChannelCount> chainTurns_{};
+    std::array<long long, kChannelCount> chainMark_{};
+    std::array<bool, kChannelCount> chainStarting_{};
+    std::array<int, kChannelCount> chainClip_ = [] { std::array<int, kChannelCount> a{}; a.fill(-1); return a; }();
+    int chainPick(int channel, int step);  // the clip a step plays: its own, or one picked at random
+    bool chainStepPlays(int channel, int step) const;
+    int chainFind(int channel, int from) const;  // the first step from there that plays, -1 none
+    void runChains();
+    void queueClip(int channel, int slot);  // launchClip, the chain left as it is
     // The current clip's turns so far, from its leading loop (false: none plays).
     bool clipTurns(int channel, double& turns) const;
     void switchClip(int channel, int slot);  // now
@@ -595,7 +640,7 @@ private:
     bool recordedThisHold_ = false;
     // The session screen: its button, whether it shows, the events asked, and
     // the stick's and the D-pad's pushes held, with when they repeat.
-    bool sessionMode_ = false, presetHasSession_ = false, wasNavigating_ = false;
+    bool sessionMode_ = false, presetHasSession_ = false, wasNavigating_ = false, sessionValues_ = false;
     bool navigating() const { return sessionMode_ && recordHolders_.none(); }
     std::array<SessionEvent, 16> sessionEvents_{};
     int sessionEventCount_ = 0;

@@ -27,7 +27,7 @@ Written in C++20, Linux first; Windows and macOS packages are planned.
   controller) and Record keeps it.
 - **Each axis loops on its own.** A stick's X and Y, L2 and R2, a finger's two
   axes are separate loops, each with its own length, stretch, amplitude and
-  lock: record X now and Y later, at another length. Shorten or lengthen an
+  lock: record X now and Y later, at another length, clear one alone. Shorten or lengthen an
   axis loop by dragging its end, and play it in steps, held on a beat grid
   (1/32 to 1 bar) and a number of levels, like a step sequencer, the
   recording kept as it was.
@@ -35,7 +35,9 @@ Written in C++20, Linux first; Windows and macOS packages are planned.
   full set of its loops. The session screen shows them all, a column per
   channel: move with the sticks or the D-pad, press L3 or R3 to launch a clip
   (it starts at the end of the playing one's turn) or stop it, record a new
-  clip on an empty slot. Every channel plays its own clip.
+  clip on an empty slot. Every channel plays its own clip. Chain up to eight
+  steps per channel, each a clip played ×1 to ×64 or until you move on, or R
+  for a clip picked at random, from the controller or the mouse.
 - **Edit loops in a large piano roll.** Move a note, a chord or a selection in
   time and pitch (onto the scale if you like), change their length, or delete
   them, and shorten or lengthen the loop, while it plays, without recording

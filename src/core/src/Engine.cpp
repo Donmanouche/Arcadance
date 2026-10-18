@@ -141,6 +141,8 @@ void Engine::tick(std::uint64_t nowNs) {
             if (!clipPlaying_[c] || !clipTurns(channel, turns) || static_cast<long long>(std::floor(turns)) > turnMark_[c])
                 switchClip(channel, queued_[c]);
         }
+    if (!loopsPaused_)
+        runChains();
     runLoops();
     stretchFromControls();
     navigate();
@@ -440,7 +442,7 @@ void Engine::press(int slot) {
     }
     if (navigating()) {
         if (slot == slotOf(Button::LeftStick) || slot == slotOf(Button::RightStick)) {
-            pushSessionEvent(SessionEvent::Press);
+            pushSessionEvent(sessionValues_ && slot == slotOf(Button::RightStick) ? SessionEvent::PressRight : SessionEvent::Press);
             return;
         }
         if (slot >= kHatSlotBase && slot < kZoneSlotBase) {
@@ -2002,6 +2004,18 @@ float Engine::clipSample(int channel, int slot, int source, int axis, int index)
     return v == kLifted ? -1.0f : static_cast<float>(v) / 65534.0f;
 }
 
+void Engine::clearLoop(int channel, int source, int axis) {
+    channel = std::clamp(channel, 0, kChannelCount - 1);
+    source = std::clamp(source, 0, kLoopSourceCount - 1);
+    if (source == static_cast<int>(LoopSource::Notes)) {
+        clearLoop(channel, source);
+        return;
+    }
+    clearTrack(loopIndex(channel, trackOf(source, axis)));
+    if (!currentHasLoops(channel))
+        clipPlaying_[static_cast<std::size_t>(channel)] = false;
+}
+
 void Engine::clearLoop(int channel, int source) {
     channel = std::clamp(channel, 0, kChannelCount - 1);
     source = std::clamp(source, 0, kLoopSourceCount - 1);
@@ -2133,6 +2147,11 @@ bool Engine::clipTurns(int channel, double& turns) const {
 
 void Engine::launchClip(int channel, int slot) {
     channel = std::clamp(channel, 0, kChannelCount - 1);
+    stopChain(channel);  // the hand wins
+    queueClip(channel, slot);
+}
+
+void Engine::queueClip(int channel, int slot) {
     slot = std::clamp(slot, 0, kClipSlots);
     const auto c = static_cast<std::size_t>(channel);
     if ((slot < kClipSlots && slot == currentSlot_[c] && clipPlaying_[c]) || (slot == kClipSlots && !clipPlaying_[c])) {
@@ -2198,7 +2217,17 @@ void Engine::navigate() {
     const std::uint64_t repeat = static_cast<std::uint64_t>(kNavRepeatMs) * 1'000'000u;
     for (int stick = 0; stick < 2; ++stick) {
         const auto k = static_cast<std::size_t>(stick);
-        const std::optional<SessionEvent> dir = stickPush(stick);
+        std::optional<SessionEvent> dir = stickPush(stick);
+        if (dir && stick == 1 && sessionValues_) {  // the right stick sets the chain's values
+            // (Between push and rest, stickPush gives back the last one, already a value.)
+            switch (*dir) {
+            case SessionEvent::Up: dir = SessionEvent::ValueUp; break;
+            case SessionEvent::Down: dir = SessionEvent::ValueDown; break;
+            case SessionEvent::Left: dir = SessionEvent::ValueLeft; break;
+            case SessionEvent::Right: dir = SessionEvent::ValueRight; break;
+            default: break;
+            }
+        }
         if (!wasNavigating_) {
             stickNav_[k] = dir;
             stickNavNext_[k] = ~0ull;
@@ -2256,8 +2285,143 @@ void Engine::switchClip(int channel, int slot) {
 
 void Engine::enterRecordSlot(int channel) {
     const auto c = static_cast<std::size_t>(channel);
-    if (recordSlot_[c] != currentSlot_[c])
+    if (recordSlot_[c] != currentSlot_[c]) {
+        stopChain(channel);
         switchClip(channel, recordSlot_[c]);
+    }
+}
+
+void Engine::setChainStep(int channel, int step, ChainStep s) {
+    if (step < 0 || step >= kChainSteps)
+        return;
+    s.clip = s.clip < 0 ? -1 : std::min(s.clip, kChainRandom);
+    s.repeats = std::clamp(s.repeats, 0, kMaxRepeats);
+    chains_[static_cast<std::size_t>(std::clamp(channel, 0, kChannelCount - 1))][static_cast<std::size_t>(step)] = s;
+}
+
+Engine::ChainStep Engine::chainStep(int channel, int step) const {
+    if (step < 0 || step >= kChainSteps)
+        return {};
+    return chains_[static_cast<std::size_t>(std::clamp(channel, 0, kChannelCount - 1))][static_cast<std::size_t>(step)];
+}
+
+void Engine::setChainLoop(int channel, bool on) { chainLoop_[static_cast<std::size_t>(std::clamp(channel, 0, kChannelCount - 1))] = on; }
+
+bool Engine::chainStepPlays(int channel, int step) const {
+    const ChainStep& s = chains_[static_cast<std::size_t>(channel)][static_cast<std::size_t>(step)];
+    if (s.clip == kChainRandom) {
+        for (int slot = 0; slot < kClipSlots; ++slot)
+            if (clipHasLoops(channel, slot))
+                return true;
+        return false;
+    }
+    return s.clip >= 0 && clipHasLoops(channel, s.clip);
+}
+
+int Engine::chainPick(int channel, int step) {
+    const ChainStep& s = chains_[static_cast<std::size_t>(channel)][static_cast<std::size_t>(step)];
+    int clip = s.clip;
+    if (clip == kChainRandom) {
+        std::array<int, kClipSlots> recorded{};
+        int count = 0;
+        for (int slot = 0; slot < kClipSlots; ++slot)
+            if (clipHasLoops(channel, slot))
+                recorded[static_cast<std::size_t>(count++)] = slot;
+        clip = count > 0 ? recorded[static_cast<std::size_t>(randomBetween(0, count - 1))] : -1;
+    }
+    chainClip_[static_cast<std::size_t>(channel)] = clip;
+    return clip;
+}
+
+int Engine::chainFind(int channel, int from) const {
+    for (int k = 0; k < kChainSteps; ++k) {
+        const int step = (from + k) % kChainSteps;
+        if (chainStepPlays(channel, step))
+            return step;
+    }
+    return -1;
+}
+
+void Engine::chainGoTo(int channel, int step) {
+    channel = std::clamp(channel, 0, kChannelCount - 1);
+    const auto c = static_cast<std::size_t>(channel);
+    step = std::clamp(step, 0, kChainSteps - 1);
+    if (chainAt_[c] >= 0 && !chainStarting_[c]) {  // running: there at the end of the turn
+        chainJump_[c] = step;
+        return;
+    }
+    const int at = chainFind(channel, step);
+    if (at < 0) {
+        stopChain(channel);
+        return;
+    }
+    chainAt_[c] = at;
+    chainJump_[c] = -1;
+    chainTurns_[c] = 0;
+    chainStarting_[c] = true;  // counts once its clip plays
+    queueClip(channel, chainPick(channel, at));
+}
+
+void Engine::stopChain(int channel) {
+    const auto c = static_cast<std::size_t>(std::clamp(channel, 0, kChannelCount - 1));
+    chainAt_[c] = chainJump_[c] = chainClip_[c] = -1;
+    chainStarting_[c] = false;
+}
+
+// Each running chain, at the end of each turn of its clip: one more turn of
+// the step; done (or asked to go on), the next step's clip starts there.
+void Engine::runChains() {
+    for (int channel = 0; channel < kChannelCount; ++channel) {
+        const auto c = static_cast<std::size_t>(channel);
+        if (chainAt_[c] < 0 || queued_[c] >= 0)
+            continue;
+        double turns = 0;
+        if (!clipPlaying_[c] || !clipTurns(channel, turns)) {
+            if (!chainStarting_[c])
+                stopChain(channel);  // stopped, or nothing left to play
+            continue;
+        }
+        const auto whole = static_cast<long long>(std::floor(turns));
+        if (chainStarting_[c]) {  // its first clip plays: count from here
+            chainStarting_[c] = false;
+            chainMark_[c] = whole;
+            continue;
+        }
+        if (whole <= chainMark_[c])
+            continue;
+        chainMark_[c] = whole;
+        ++chainTurns_[c];
+        const ChainStep& now = chains_[c][static_cast<std::size_t>(chainAt_[c])];
+        int next = -1;
+        if (chainJump_[c] >= 0) {
+            next = chainFind(channel, chainJump_[c]);
+        } else if (now.repeats > 0 && chainTurns_[c] >= now.repeats) {
+            const int after = chainAt_[c] + 1;
+            if (after >= kChainSteps && !chainLoop_[c]) {
+                stopChain(channel);
+                switchClip(channel, kClipSlots);  // the end: the channel stops
+                continue;
+            }
+            next = chainFind(channel, after % kChainSteps);
+            if (!chainLoop_[c] && next >= 0 && next <= chainAt_[c]) {  // only empty steps after it
+                stopChain(channel);
+                switchClip(channel, kClipSlots);
+                continue;
+            }
+        } else {
+            continue;
+        }
+        chainJump_[c] = -1;
+        if (next < 0) {
+            stopChain(channel);
+            continue;
+        }
+        chainAt_[c] = next;
+        chainTurns_[c] = 0;
+        switchClip(channel, chainPick(channel, next));
+        if (clipTurns(channel, turns))
+            chainMark_[c] = static_cast<long long>(std::floor(turns));
+    }
 }
 
 // Its middle, where the amplitude closes in or widens.
@@ -2316,6 +2480,8 @@ void Engine::loadSessionLoops(const std::vector<SessionLoop>& loops) {
     recordHolders_.reset();
     overdubChannel_ = -1;
     queued_.fill(-1);
+    for (int channel = 0; channel < kChannelCount; ++channel)
+        stopChain(channel);
     fromLoop_ = true;
     for (int channel = 0; channel < kChannelCount; ++channel)  // every clip of every channel goes
         for (int slot = 0; slot < kClipSlots; ++slot) {
@@ -2395,6 +2561,8 @@ std::uint16_t Engine::channelsWithLoops() const {
 void Engine::stopLoops() {
     pendingStopChannel_ = -1;
     queued_.fill(-1);
+    for (int channel = 0; channel < kChannelCount; ++channel)
+        stopChain(channel);
     for (int channel = 0; channel < kChannelCount; ++channel) {  // the current clips; the other clips stay
         for (int track = 0; track < kTrackCount; ++track)
             if (loops_[loopIndex(channel, track)].state == LoopStatus::State::Playing)

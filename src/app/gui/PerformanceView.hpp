@@ -80,11 +80,27 @@ public:
     // channel (eight at a time), the cursor on `cursorSlot` of the active
     // channel. What a click asks for, if anything: launching a clip (or
     // choosing an empty slot), stopping a channel, choosing a channel.
+    //
+    // Under the clips, the chain of the active channel: its steps, each a clip
+    // and its repeats, played left to right (Engine::setChainStep). The cursor
+    // is in it when `cursorSlot` is kClipSlots, on step `chainCursor` (the end
+    // cell after the last step: kChainSteps). A click on a step puts the
+    // cursor there; the wheel over its number changes the clip, over its chip
+    // the repeats; a right-click empties it; a clip dragged from the grid
+    // onto it sets it. The CHAIN button starts or stops the chain; a click on
+    // the end cell switches between looping and stopping at the end.
     struct SessionAction {
-        enum class Kind : std::uint8_t { Launch, Stop, Channel } kind = Kind::Launch;
-        int channel = 0, slot = 0;
+        enum class Kind : std::uint8_t { Launch, Stop, Channel, ChainSet, ChainCursor, ChainGo, ChainStop, ChainLoop } kind = Kind::Launch;
+        int channel = 0, slot = 0;  // ChainSet / ChainCursor / ChainGo: slot is the step
+        int clip = -1, repeats = 1;  // ChainSet
+        bool on = true;  // ChainLoop
     };
-    std::optional<SessionAction> drawSession(const LiveState& live, int cursorSlot);
+    std::optional<SessionAction> drawSession(const LiveState& live, int cursorSlot, int chainCursor);
+    std::optional<SessionAction> drawChainStrip(ImDrawList* dl, const LiveState& live, ImVec2 at, float w, float h, int cursor);
+    // The repeats a chain step may take, in order (0: forever), and the one
+    // after or before `repeats` (by `steps`, kept within them).
+    static constexpr std::array<int, 15> kChainRepeats{1, 2, 3, 4, 5, 6, 7, 8, 12, 16, 24, 32, 48, 64, 0};
+    static int nextRepeats(int repeats, int steps);
     // A right-click on a LOOP panel's lane (that axis), its header (both
     // axes) or the piano roll, during the last draw(): the LoopSource and axis
     // (-1: all) to lock or unlock (Engine::toggleLoopLock).
@@ -92,6 +108,9 @@ public:
         int source = 0, axis = -1;
     };
     std::optional<LockRequest> takeLockRequest() { return std::exchange(lockRequest_, std::nullopt); }
+    // A click on the x of a lane, during the last draw(): that axis' loop to
+    // clear (Engine::clearLoop), as a LockRequest.
+    std::optional<LockRequest> takeClearRequest() { return std::exchange(clearRequest_, std::nullopt); }
     // The note loop's editor: a large piano roll, `w` by `h`, at the cursor of
     // the current window (the main view's piano roll only shows the loop; a
     // click on it opens this editor). Dragging a note moves it, or the
@@ -179,7 +198,8 @@ private:
     std::optional<std::string> clicked_;
     int beatsPerBar_ = 4;  // of the sync, for the loops' beat grids
     std::optional<StretchRequest> stretch_;
-    std::optional<LockRequest> lockRequest_;
+    std::optional<LockRequest> lockRequest_, clearRequest_;
+    std::optional<LockRequest> laneClearHovered_;  // the x under the mouse, while drawing a LOOP panel
     // Over the item just drawn (a LOOP panel, the piano roll), within (a, b)
     // when given: a right-click locks or unlocks `source`'s loop (`axis`, -1:
     // all), which a tooltip says once there is one.

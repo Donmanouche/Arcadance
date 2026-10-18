@@ -413,7 +413,7 @@ bool MappingEditor::drawLoopForm(int source, Mapping& m, const LiveState& live) 
                            "The touchpad pads have their own loops.");
         ImGui::PopStyleColor();
         if (ImGui::Button("Clear the loop"))
-            clearLoopRequest_ = source;
+            clearLoopRequest_ = ClearLoop{source, -1};
         ImGui::PopID();
         return changed;
     }
@@ -429,7 +429,7 @@ bool MappingEditor::drawLoopForm(int source, Mapping& m, const LiveState& live) 
                                : "The finger is off: nothing to record.");
         ImGui::PopStyleColor();
         if (ImGui::Button("Clear the loop"))
-            clearLoopRequest_ = source;
+            clearLoopRequest_ = ClearLoop{source, -1};
         ImGui::PopID();
         return changed;
     }
@@ -477,8 +477,15 @@ bool MappingEditor::drawLoopForm(int source, Mapping& m, const LiveState& live) 
     }
     drawAxisLanes(source, m, live);
     changed |= drawStepsForm(source, m);
-    if (ImGui::Button("Clear the loop"))
-        clearLoopRequest_ = source;
+    // Clear one axis' loop, or both.
+    const char* names[2] = {triggers ? "Clear L2" : "Clear X", triggers ? "Clear R2" : "Clear Y"};
+    for (int axis = 0; axis < 2; ++axis) {
+        if (ImGui::Button(names[axis]))
+            clearLoopRequest_ = ClearLoop{source, axis};
+        ImGui::SameLine();
+    }
+    if (ImGui::Button("Clear both"))
+        clearLoopRequest_ = ClearLoop{source, -1};
     ImGui::PopID();
     return changed;
 }
@@ -526,6 +533,24 @@ void MappingEditor::drawAxisLanes(int source, const Mapping& m, const LiveState&
         ImGui::PopID();
         dl->AddRectFilled(a, b, IM_COL32(0x20, 0x22, 0x26, 255), 4.0f);
         dl->AddText(ImVec2(a.x + 6, a.y + 4), color, name);
+        if (st.state == LoopStatus::State::Playing && !st.locked) {  // an x clears this axis alone
+            const float cx = a.x + 6 + ImGui::CalcTextSize(name).x + 12, cy = a.y + 4 + font * 0.5f, r = font * 0.42f;
+            const ImVec2 mouse = io.MousePos;
+            const bool over = (laneHovered || lanePressed) && !laneDrag_ && std::hypot(mouse.x - cx, mouse.y - cy) <= r + 2;
+            dl->AddCircleFilled(ImVec2(cx, cy), r, over ? IM_COL32(0x8A, 0x2A, 0x32, 255) : IM_COL32(0x46, 0x1E, 0x22, 255));
+            dl->AddCircle(ImVec2(cx, cy), r, IM_COL32(0xFF, 0x3B, 0x4E, 255), 0, 1.0f);
+            const float q = r * 0.45f;
+            dl->AddLine(ImVec2(cx - q, cy - q), ImVec2(cx + q, cy + q), T::kText, 1.5f);
+            dl->AddLine(ImVec2(cx + q, cy - q), ImVec2(cx - q, cy + q), T::kText, 1.5f);
+            if (over) {
+                ImGui::SetTooltip("Clear %s's loop", name);
+                if (lanePressed) {
+                    clearLoopRequest_ = ClearLoop{source, axis};
+                    ImGui::Dummy(ImVec2(0, 2));
+                    continue;
+                }
+            }
+        }
         if (st.state != LoopStatus::State::Playing || lane.points < 2 || st.length < 2) {
             const char* why = !binding.enabled ? "not enabled: not recorded" : "no loop";
             const ImVec2 size = ImGui::CalcTextSize(why);
