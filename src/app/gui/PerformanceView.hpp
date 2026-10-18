@@ -14,6 +14,10 @@
 #include <utility>
 #include <vector>
 
+// A synced loop's length ("1 BAR", "3 BEATS"), a free one's ("4.0 s", "1:30 min").
+std::string loopBeatsText(double beats, int beatsPerBar);
+std::string loopDurationText(double seconds);
+
 // The animated view: one module per part of the controller (sticks, triggers,
 // D-pad, touchpad) with a live "screen" and knobs showing the CCs sent, and a
 // strip of pads for the buttons. Everything follows the gamepad.
@@ -61,12 +65,13 @@ public:
     // "dpad:up", "zone:1:top_left", "axis:left_x", "finger:1"...).
     std::optional<std::string> draw(const midipad::Mapping& mapping, const LiveState& live,
                                     const std::optional<midipad::Key>& key);
-    // Shift + mouse wheel over a movement loop's LOOP panel, during the last
-    // draw(): the loops to stretch (a bit per LoopSource) and by how many steps
-    // (see Engine::stretchLoop; up stretches, down compresses). Ctrl + wheel:
-    // their amplitude instead (Engine::amplifyLoop; up widens).
+    // Shift + mouse wheel over a movement loop's lane (or its LOOP header:
+    // every lane), during the last draw(): the axis loops to stretch (a bit
+    // per Engine track) and by how many steps (see Engine::stretchLoop; up
+    // stretches, down compresses). Ctrl + wheel: their amplitude instead
+    // (Engine::amplifyLoop; up widens).
     struct StretchRequest {
-        std::uint8_t sources = 0;
+        std::uint16_t tracks = 0;
         int steps = 0;
         bool amplitude = false;
     };
@@ -80,9 +85,13 @@ public:
         int channel = 0, slot = 0;
     };
     std::optional<SessionAction> drawSession(const LiveState& live, int cursorSlot);
-    // A right-click on a LOOP panel or the piano roll, during the last draw():
-    // the LoopSource to lock or unlock (Engine::toggleLoopLock).
-    std::optional<int> takeLockRequest() { return std::exchange(lockRequest_, std::nullopt); }
+    // A right-click on a LOOP panel's lane (that axis), its header (both
+    // axes) or the piano roll, during the last draw(): the LoopSource and axis
+    // (-1: all) to lock or unlock (Engine::toggleLoopLock).
+    struct LockRequest {
+        int source = 0, axis = -1;
+    };
+    std::optional<LockRequest> takeLockRequest() { return std::exchange(lockRequest_, std::nullopt); }
     // The note loop's editor: a large piano roll, `w` by `h`, at the cursor of
     // the current window (the main view's piano roll only shows the loop; a
     // click on it opens this editor). Dragging a note moves it, or the
@@ -131,19 +140,32 @@ private:
     void drawPadLanes(ImDrawList* dl, const midipad::Mapping& m, const LiveState& live, float x, float w, float loopY,
                       float boxTop, float boxBottom, float timelineH);
     void drawPianoRoll(const midipad::Mapping& m, const LiveState& live, float x, float y, float w, float h);
-    void drawLoopPanel(ImDrawList* dl, float x, float w, float loopY, float bottom, const LiveState::Loop& loop,
-                       const midipad::LoopBinding& binding, ImU32 colorX, ImU32 colorY, int idleArt,
-                       const char* waitStatus, const char* id, const std::string& spec, bool invertX, bool invertY, int source,
-                       const char* legendX = nullptr, const char* legendY = nullptr);
-    // Stretching loops: reads Shift + wheel over a LOOP panel (a, b), for the
-    // loops in `sources`; draws the gauge of `stretch` at the bottom of the box
-    // while the wheel turns; the header chip and length text for a stretch.
-    void stretchWheel(std::uint8_t sources, ImVec2 a, ImVec2 b);
-    void drawStretchGauge(ImDrawList* dl, ImVec2 ga, ImVec2 gb, std::uint8_t sources, int stretch, ImU32 color);
+    // A lane of a LOOP panel: an axis loop, how it looks and what it sends.
+    struct LaneLook {
+        const LiveState::Lane* lane = nullptr;
+        int track = 0;  // Engine::trackOf
+        ImU32 color = 0;
+        const char* name = "";
+        bool enabled = true, invert = false;
+        bool flip = false;  // a finger's Y: sent the other way up
+        int cc = 0;
+        midipad::StepGrid steps;
+    };
+    // `st`: the lanes together (LiveState::Loop::status); `lockSource` the
+    // LoopSource a right-click locks.
+    void drawLoopPanel(ImDrawList* dl, float x, float w, float loopY, float bottom, const midipad::LoopStatus& st,
+                       midipad::LoopPlayback playback, const LaneLook* lanes, int laneCount, ImU32 color, int idleArt,
+                       const char* waitStatus, const char* id, const std::string& spec, int lockSource);
+    void drawLane(ImDrawList* dl, ImVec2 a, ImVec2 b, const LaneLook& look);
+    // Stretching loops: reads Shift + wheel over (a, b), for the tracks in
+    // `tracks`; draws the gauge of `stretch` at the bottom of the box while
+    // the wheel turns; the chip for a stretch.
+    void stretchWheel(std::uint16_t tracks, ImVec2 a, ImVec2 b);
+    void drawStretchGauge(ImDrawList* dl, ImVec2 ga, ImVec2 gb, std::uint16_t tracks, int stretch, ImU32 color);
     float drawStretchChip(ImDrawList* dl, float right, float y, int stretch, ImU32 color);  // returns its left edge
     // The same for the amplitude (percent of the recorded swing): chip "AMP 60%", gauge 0-800 %.
     float drawAmplitudeChip(ImDrawList* dl, float right, float y, int amplitude, ImU32 color);
-    void drawAmplitudeGauge(ImDrawList* dl, ImVec2 ga, ImVec2 gb, std::uint8_t sources, int amplitude, ImU32 color);
+    void drawAmplitudeGauge(ImDrawList* dl, ImVec2 ga, ImVec2 gb, std::uint16_t tracks, int amplitude, ImU32 color);
     float drawChip(ImDrawList* dl, float right, float y, const std::string& label, ImU32 color);
 
     // Smooths a displayed value towards its target; `id` names it across frames.
@@ -157,10 +179,11 @@ private:
     std::optional<std::string> clicked_;
     int beatsPerBar_ = 4;  // of the sync, for the loops' beat grids
     std::optional<StretchRequest> stretch_;
-    std::optional<int> lockRequest_;
-    // Over the item just drawn (a LOOP panel, the piano roll): a right-click
-    // locks or unlocks `source`'s loop, which a tooltip says once there is one.
-    void lockOnRightClick(int source, bool recorded, bool locked);
+    std::optional<LockRequest> lockRequest_;
+    // Over the item just drawn (a LOOP panel, the piano roll), within (a, b)
+    // when given: a right-click locks or unlocks `source`'s loop (`axis`, -1:
+    // all), which a tooltip says once there is one.
+    void lockOnRightClick(int source, bool recorded, bool locked, int axis = -1, const ImVec2* a = nullptr, const ImVec2* b = nullptr);
     std::optional<NoteEdit> noteEdit_;
     int quantize_ = 0;
     bool editing_ = false;     // drawing the note loop editor, not the view's piano roll
@@ -203,20 +226,20 @@ private:
     float wheelRest_ = 0;           // a partial wheel notch (touchpads scroll by fractions)
     double lastWheel_ = -1e9;       // when the last notch turned, for the acceleration
     int wheelStreak_ = 0;           // notches turned in a quick row
-    std::array<int, 8> lastStretch_{};  // per LoopSource, on lastStretchChannel_
-    std::array<int, 8> lastAmplitude_ = [] {
-        std::array<int, 8> full{};
+    std::array<int, 16> lastStretch_{};  // per Engine track, on lastStretchChannel_
+    std::array<int, 16> lastAmplitude_ = [] {
+        std::array<int, 16> full{};
         full.fill(100);
         return full;
     }();
-    std::array<double, 8> amplitudeShown_ = [] {  // per LoopSource: when its amplitude last changed
-        std::array<double, 8> never{};
+    std::array<double, 16> amplitudeShown_ = [] {  // per track: when its amplitude last changed
+        std::array<double, 16> never{};
         never.fill(-1e9);
         return never;
     }();
     int lastStretchChannel_ = -1;
-    std::array<double, 8> stretchShown_ = [] {  // per LoopSource: when its stretch last changed
-        std::array<double, 8> never{};
+    std::array<double, 16> stretchShown_ = [] {  // per track: when its stretch last changed
+        std::array<double, 16> never{};
         never.fill(-1e9);
         return never;
     }();

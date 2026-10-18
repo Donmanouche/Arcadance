@@ -25,6 +25,14 @@ public:
 
     // A loop the user asked to clear (a LoopSource), once.
     std::optional<int> takeClearLoopRequest() { return std::exchange(clearLoopRequest_, std::nullopt); }
+    // An axis loop's end dragged in the control's window: its new length, once
+    // (Engine::setAxisLoopLength, on the active channel).
+    struct AxisLength {
+        int source = 0, axis = 0, length = 0;
+    };
+    std::optional<AxisLength> takeAxisLengthRequest() { return std::exchange(axisLength_, std::nullopt); }
+    // Escape, during the last drawControl(), cancelled a drag: the panel should stay open.
+    bool tookEscape() const { return escapeTaken_; }
 
     // A title for that control: "Cross", "D-pad: Up", "Left stick X"...
     static std::string controlTitle(const std::string& spec);
@@ -41,7 +49,9 @@ private:
     bool drawChordFields(midipad::TriggerBinding& b);
     bool drawNoteField(std::uint8_t& note);
     bool drawHumanizeCheckbox(midipad::TriggerBinding& b);
-    bool drawLoopForm(int source, midipad::Mapping& m);
+    bool drawLoopForm(int source, midipad::Mapping& m, const LiveState& live);
+    void drawAxisLanes(int source, const midipad::Mapping& m, const LiveState& live);
+    bool drawStepsForm(int source, midipad::Mapping& m);
     bool drawAxisForm(const char* id, midipad::AxisBinding& a, float position, bool trigger = false);
     bool drawFingerForm(int finger, midipad::FingerBinding& f, const LiveState& live);
     const std::vector<midipad::KeyChord>& keyChords();
@@ -55,4 +65,16 @@ private:
     std::vector<midipad::KeyChord> chords_;
     std::uint16_t humanizeChannels_ = 0;
     std::optional<int> clearLoopRequest_;
+    std::optional<AxisLength> axisLength_;
+    std::string layerSpec_;    // the control whose layers were shown last
+    bool shiftLayer_ = false;  // its Shift layer was
+    // An axis loop's end being dragged: which, where the mouse took it, the
+    // samples a pixel then, its length then and so far.
+    struct LaneDrag {
+        int source = 0, axis = 0;
+        float grabX = 0, perPx = 1;
+        int length = 0, newLength = 0;
+    };
+    std::optional<LaneDrag> laneDrag_;
+    bool escapeTaken_ = false;
 };

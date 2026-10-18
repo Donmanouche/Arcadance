@@ -94,8 +94,13 @@ Json sessionToJson(const Session& session) {
         } else {
             o["stretch"] = l.stretch;
             o["amplitude"] = l.amplitude;
-            o["x"] = l.x;
-            o["y"] = l.y;
+            if (l.axis >= 0) {  // one axis
+                o["axis"] = l.axis == 0 ? "x" : "y";
+                o["samples"] = l.x;
+            } else {
+                o["x"] = l.x;
+                o["y"] = l.y;
+            }
         }
         loops.push_back(std::move(o));
     }
@@ -173,8 +178,15 @@ Session sessionFromJson(const Json& j) {
             } else {
                 l.stretch = readInt(o, "stretch", -38, 198, 0, where);
                 l.amplitude = readInt(o, "amplitude", 0, 800, 100, where);
-                l.x = readSamples(o, "x", l.length, where);
-                l.y = readSamples(o, "y", l.length, where);
+                if (o.contains("axis")) {
+                    if (!o["axis"].is_string() || (o["axis"] != "x" && o["axis"] != "y"))
+                        fail(where + ".axis", "expected \"x\" or \"y\"");
+                    l.axis = o["axis"] == "x" ? 0 : 1;
+                    l.x = readSamples(o, "samples", l.length, where);
+                } else {  // from before X and Y were apart
+                    l.x = readSamples(o, "x", l.length, where);
+                    l.y = readSamples(o, "y", l.length, where);
+                }
             }
             s.loops.push_back(std::move(l));
         }

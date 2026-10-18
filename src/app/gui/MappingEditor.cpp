@@ -3,6 +3,7 @@
 #include "midipad/Engine.hpp"
 #include "midipad/Labels.hpp"
 #include "midipad/Notes.hpp"
+#include "gui/PerformanceView.hpp"
 
 #include <imgui.h>
 #include <misc/cpp/imgui_stdlib.h>
@@ -288,6 +289,7 @@ bool MappingEditor::drawFingerForm(int finger, FingerBinding& f, const LiveState
 bool MappingEditor::drawControl(const std::string& spec, Mapping& m, const LiveState& live,
                                 const std::optional<Key>& key) {
     key_ = key;
+    escapeTaken_ = false;
     const auto p = splitSpec(spec);
     ImGui::PushID(spec.c_str());
     bool changed = false;
@@ -325,32 +327,43 @@ bool MappingEditor::drawControl(const std::string& spec, Mapping& m, const LiveS
         // A whole stick, or both triggers: their loop too.
         if (p.size() == 3) {
             if (const auto a = parseAxis(p[1]); a && (*a == Axis::LeftX || *a == Axis::RightX))
-                changed |= drawLoopForm(*a == Axis::LeftX ? 0 : 1, m);
+                changed |= drawLoopForm(*a == Axis::LeftX ? 0 : 1, m, live);
             else if (a && *a == Axis::LeftTrigger)
-                changed |= drawLoopForm(static_cast<int>(LoopSource::Triggers), m);
+                changed |= drawLoopForm(static_cast<int>(LoopSource::Triggers), m, live);
         }
     } else if (p.size() == 2 && p[0] == "finger" && (p[1] == "1" || p[1] == "2")) {
         const int finger = p[1][0] - '1';
         changed |= drawFingerForm(finger, m.fingers[static_cast<std::size_t>(finger)], live);
-        changed |= drawLoopForm(2 + finger, m);
+        changed |= drawLoopForm(2 + finger, m, live);
     } else if (p.size() == 1 && p[0] == "notes") {
-        changed |= drawLoopForm(static_cast<int>(LoopSource::Notes), m);
+        changed |= drawLoopForm(static_cast<int>(LoopSource::Notes), m, live);
     } else if (p.size() == 1 && p[0] == "fingers") {
         for (int f = 0; f < kFingerCount; ++f) {
             ImGui::SeparatorText(f == 0 ? "Finger 1" : "Finger 2");
             changed |= drawFingerForm(f, m.fingers[static_cast<std::size_t>(f)], live);
-            changed |= drawLoopForm(2 + f, m);
+            changed |= drawLoopForm(2 + f, m, live);
         }
     }
     if (trigger && shifted && trigger->type != ActionType::Shift) {
-        // Two layers: what it plays normally, and while Shift is on.
+        // Two layers: what it plays normally, and while Shift is on. Another
+        // control opens on the layer shown last, on Shift's while Shift is on.
+        const bool newControl = spec != layerSpec_;
+        if (newControl) {
+            layerSpec_ = spec;
+            shiftLayer_ = shiftLayer_ || live.stretchHeld;
+        }
         if (ImGui::BeginTabBar("##layer")) {
-            if (ImGui::BeginTabItem("Normal")) {
+            if (ImGui::BeginTabItem("Normal", nullptr, newControl && !shiftLayer_ ? ImGuiTabItemFlags_SetSelected : 0)) {
+                if (!newControl)
+                    shiftLayer_ = false;
                 ImGui::Spacing();
                 changed |= drawTriggerEditor(*trigger);
                 ImGui::EndTabItem();
             }
-            if (ImGui::BeginTabItem(shifted->isSet() ? "Shift *" : "Shift")) {
+            if (ImGui::BeginTabItem(shifted->isSet() ? "Shift *###shift" : "Shift###shift", nullptr,
+                                    newControl && shiftLayer_ ? ImGuiTabItemFlags_SetSelected : 0)) {
+                if (!newControl)
+                    shiftLayer_ = true;
                 ImGui::PushStyleColor(ImGuiCol_Text, kHintColor);
                 ImGui::TextWrapped("While a Shift button is held (or latched), this control plays what you set here; "
                                    "with No action, it plays its normal mapping.");
@@ -374,7 +387,7 @@ bool MappingEditor::drawControl(const std::string& spec, Mapping& m, const LiveS
 
 // The loop a Loop record button captures from a stick or finger (a
 // LoopSource): how it plays, and on which CCs, beside the source's own.
-bool MappingEditor::drawLoopForm(int source, Mapping& m) {
+bool MappingEditor::drawLoopForm(int source, Mapping& m, const LiveState& live) {
     static constexpr const char* kTitles[] = {"Left stick loop (recorded movement)", "Right stick loop (recorded movement)",
                                               "Finger 1 loop (recorded movement)", "Finger 2 loop (recorded movement)",
                                               "Triggers loop (recorded travel)", "Note loop (recorded notes and chords)"};
@@ -462,9 +475,203 @@ bool MappingEditor::drawLoopForm(int source, Mapping& m) {
         ImGui::TextWrapped("%s", text.c_str());
         ImGui::PopStyleColor();
     }
+    drawAxisLanes(source, m, live);
+    changed |= drawStepsForm(source, m);
     if (ImGui::Button("Clear the loop"))
         clearLoopRequest_ = source;
     ImGui::PopID();
+    return changed;
+}
+
+// Each axis loop of a movement source in a lane, over its own length, its end
+// at the right to drag as in the note editor: shorter, the part cut is
+// hatched; longer, the time added is a straight line from its end back to its
+// start. A synced loop keeps whole beats; one in steps, whole steps.
+void MappingEditor::drawAxisLanes(int source, const Mapping& m, const LiveState& live) {
+    using T = PerformanceView::Theme;
+    const LiveState::Loop& loop = live.loops[static_cast<std::size_t>(source)];
+    if (loop.status.state != LoopStatus::State::Playing)
+        return;
+    const bool finger = source == 2 || source == 3;
+    const bool triggers = source == static_cast<int>(LoopSource::Triggers);
+    const ImU32 base = source == 0 ? T::kBlue : source == 1 ? T::kOrange : triggers ? T::kPink : source == 2 ? T::kCyan : T::kOrange;
+    const ImU32 kViolet = IM_COL32(0xB0, 0x8C, 0xFF, 255);
+    auto alpha = [](ImU32 c, float a) {
+        return (c & ~IM_COL32_A_MASK) | (static_cast<ImU32>(static_cast<float>((c >> IM_COL32_A_SHIFT) & 0xFF) * a) << IM_COL32_A_SHIFT);
+    };
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    ImGuiIO& io = ImGui::GetIO();
+    const float font = ImGui::GetFontSize();
+    const float width = ImGui::GetContentRegionAvail().x, laneH = font * 4.8f;
+    const LoopBinding& lb = m.loops[static_cast<std::size_t>(source)];
+    ImGui::Spacing();
+    ImGui::TextDisabled("Loop lengths: drag the end of a lane");
+    for (int axis = 0; axis < 2; ++axis) {
+        const LiveState::Lane& lane = loop.lanes[static_cast<std::size_t>(axis)];
+        const LoopStatus& st = lane.status;
+        const ImVec4 c = ImGui::ColorConvertU32ToFloat4(base);  // Y: lighter
+        const ImU32 color = axis == 0 ? base : ImGui::ColorConvertFloat4ToU32(ImVec4((c.x + 1) * 0.5f, (c.y + 1) * 0.5f, (c.z + 1) * 0.5f, 1));
+        const char* name = triggers ? (axis == 0 ? "L2" : "R2") : axis == 0 ? "X" : "Y";
+        const Axis own = triggers ? (axis == 0 ? Axis::LeftTrigger : Axis::RightTrigger)
+                                  : static_cast<Axis>(source * 2 + axis);  // sticks only
+        const AxisBinding& binding = finger ? (axis == 0 ? m.fingers[static_cast<std::size_t>(source - 2)].x
+                                                         : m.fingers[static_cast<std::size_t>(source - 2)].y)
+                                            : m.axes[static_cast<std::size_t>(own)];
+        const ImVec2 a = ImGui::GetCursorScreenPos(), b(a.x + width, a.y + laneH);
+        ImGui::PushID(axis);
+        ImGui::InvisibleButton("##lane", ImVec2(width, laneH));
+        // (Pressed, the lane is the active item: the window no longer counts as hovered.)
+        const bool laneHovered = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
+        const bool lanePressed = ImGui::IsItemActivated();
+        ImGui::PopID();
+        dl->AddRectFilled(a, b, IM_COL32(0x20, 0x22, 0x26, 255), 4.0f);
+        dl->AddText(ImVec2(a.x + 6, a.y + 4), color, name);
+        if (st.state != LoopStatus::State::Playing || lane.points < 2 || st.length < 2) {
+            const char* why = !binding.enabled ? "not enabled: not recorded" : "no loop";
+            const ImVec2 size = ImGui::CalcTextSize(why);
+            dl->AddText(ImVec2((a.x + b.x - size.x) * 0.5f, (a.y + b.y - size.y) * 0.5f), T::kDim, why);
+            ImGui::Dummy(ImVec2(0, 2));
+            continue;
+        }
+        const bool dragging = laneDrag_ && laneDrag_->source == source && laneDrag_->axis == axis;
+        const int length = st.length;
+        const int shown = dragging ? laneDrag_->newLength : length;
+        const int span = std::max(length, shown);
+        const float x0 = a.x + 6, x1 = b.x - 10, y0 = a.y + font * 1.3f, y1 = b.y - 6;
+        auto xOf = [&](double sample) { return x0 + (x1 - x0) * static_cast<float>(sample / std::max(span - 1, 1)); };
+        auto yOf = [&](float v) {
+            if (finger && axis == 1)
+                v = 1.0f - v;  // as sent
+            if (binding.invert)
+                v = 1.0f - v;
+            return y1 - v * (y1 - y0);
+        };
+        auto sampleOf = [&](int i) { return static_cast<double>(i) * (length - 1) / (lane.points - 1); };
+        auto value = [&](int i) { return static_cast<float>(lane.v[static_cast<std::size_t>(i)]) / 255.0f; };
+        // Its steps, where they leave room.
+        if (lane.stepSamples > 0 && xOf(lane.stepSamples) - x0 > 4)
+            for (int k = lane.stepSamples; k < span; k += lane.stepSamples)
+                dl->AddLine(ImVec2(xOf(k), a.y + 2), ImVec2(xOf(k), b.y - 2), IM_COL32(255, 255, 255, 18));
+        for (int i = 1; i < lane.points; ++i)
+            if (lane.on[static_cast<std::size_t>(i)] && lane.on[static_cast<std::size_t>(i - 1)])
+                dl->AddLine(ImVec2(xOf(sampleOf(i - 1)), yOf(value(i - 1))), ImVec2(xOf(sampleOf(i)), yOf(value(i))), color, 1.8f);
+        const float endX = xOf(shown - 1);
+        if (shown < length) {  // the part cut: hatched
+            dl->AddRectFilled(ImVec2(endX, a.y + 1), ImVec2(xOf(length - 1), b.y - 1), IM_COL32(0x14, 0x16, 0x19, 170));
+            dl->PushClipRect(ImVec2(endX, a.y + 1), ImVec2(xOf(length - 1), b.y - 1), true);
+            for (float hx = endX - laneH; hx < xOf(length - 1); hx += 9)
+                dl->AddLine(ImVec2(hx, b.y), ImVec2(hx + laneH, a.y), IM_COL32(255, 255, 255, 26));
+            dl->PopClipRect();
+        } else if (shown > length) {  // the time added: back to its start
+            const float from = xOf(length - 1);
+            dl->AddRectFilled(ImVec2(from, a.y + 1), ImVec2(endX, b.y - 1), alpha(kViolet, 0.10f));
+            const bool lifted = !lane.on[static_cast<std::size_t>(lane.points - 1)] || !lane.on[0];
+            if (!lifted) {
+                const ImVec2 p0(from, yOf(value(lane.points - 1))), p1(endX, yOf(value(0)));
+                const float len = std::hypot(p1.x - p0.x, p1.y - p0.y);
+                for (float d = 0; d < len; d += 10) {
+                    const float t0 = d / len, t1 = std::min(d + 6, len) / len;
+                    dl->AddLine(ImVec2(p0.x + (p1.x - p0.x) * t0, p0.y + (p1.y - p0.y) * t0),
+                                ImVec2(p0.x + (p1.x - p0.x) * t1, p0.y + (p1.y - p0.y) * t1), color, 1.6f);
+                }
+            }
+            const char* back = "back to its start";
+            const ImVec2 size = ImGui::CalcTextSize(back);
+            if (endX - from > size.x + 12)
+                dl->AddText(ImVec2((from + endX - size.x) * 0.5f, b.y - size.y - 4), alpha(kViolet, 0.8f), back);
+        }
+        if (!dragging) {  // the playhead
+            const float hx = xOf(std::clamp(st.position, 0, length - 1));
+            dl->AddLine(ImVec2(hx, a.y + 2), ImVec2(hx, b.y - 2), IM_COL32(255, 255, 255, 150), 1.3f);
+        }
+        // Its length, top right: "4.0 s", or while dragged "4.0 s  to  5.2 s".
+        const double factor = Engine::stretchFactor(st.stretch);
+        const double perBeat = st.beats > 0 ? length * factor / st.beats : 0;  // samples a beat, as recorded
+        auto lengthText = [&](int samples) {
+            return perBeat > 0 ? loopBeatsText(std::round(samples / perBeat) * factor, std::max(live.beatsPerBar, 1))
+                               : loopDurationText(samples * factor / Engine::kLoopRateHz);
+        };
+        const std::string label = dragging && shown != length ? lengthText(length) + "  to  " + lengthText(shown) : lengthText(length);
+        const ImVec2 labelSize = ImGui::CalcTextSize(label.c_str());
+        const ImVec2 la(b.x - 16 - labelSize.x - 8, a.y + 3), lb2(b.x - 16, a.y + 5 + labelSize.y);
+        dl->AddRectFilled(la, lb2, IM_COL32(0x14, 0x16, 0x19, 220), 6);
+        dl->AddRect(la, lb2, dragging ? kViolet : alpha(color, 0.8f), 6);
+        dl->AddText(ImVec2(la.x + 4, la.y + 1), dragging ? kViolet : T::kText, label.c_str());
+        const std::string cc = "CC " + std::to_string(axis == 0 ? lb.ccX : lb.ccY);
+        const ImVec2 ccSize = ImGui::CalcTextSize(cc.c_str());
+        dl->AddText(ImVec2(b.x - 16 - ccSize.x, b.y - ccSize.y - 4), T::kDim, cc.c_str());
+        // The end: hovered, dragged.
+        const ImVec2 mouse = io.MousePos;
+        const bool hovered = !laneDrag_ && (laneHovered || lanePressed) && mouse.x >= endX - 8 && mouse.x <= endX + 6 && mouse.y >= a.y &&
+                             mouse.y <= b.y;
+        const bool active = dragging || hovered;
+        if (active) {
+            ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+            dl->AddLine(ImVec2(endX, a.y), ImVec2(endX, b.y), alpha(kViolet, 0.25f), 6);
+        }
+        dl->AddLine(ImVec2(endX, a.y), ImVec2(endX, b.y), alpha(kViolet, active ? 1.0f : 0.65f), 2);
+        const float gy = (a.y + b.y) * 0.5f;
+        dl->AddRectFilled(ImVec2(endX - 6, gy - 12), ImVec2(endX + 1, gy + 12), alpha(kViolet, active ? 1.0f : 0.8f), 3);
+        if (hovered && lanePressed)
+            laneDrag_ = LaneDrag{source, axis, mouse.x, static_cast<float>(length - 1) / std::max(x1 - x0, 1.0f), length, length};
+        if (dragging) {
+            LaneDrag& d = *laneDrag_;
+            double wanted = d.length + static_cast<double>(mouse.x - d.grabX) * d.perPx;
+            if (perBeat > 0) {
+                wanted = std::clamp(std::round(wanted / perBeat), 1.0, std::max(1.0, std::floor(Engine::kMaxLoopSamples / perBeat))) * perBeat;
+            } else if (lane.stepSamples > 0) {
+                const double step = lane.stepSamples;
+                wanted = std::max(1.0, std::round(wanted / step)) * step;
+            }
+            d.newLength = std::clamp(static_cast<int>(std::lround(wanted)), Engine::kLoopRateHz / 10, Engine::kMaxLoopSamples);
+            if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
+                laneDrag_.reset();
+                escapeTaken_ = true;
+            } else if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+                if (d.newLength != d.length)
+                    axisLength_ = AxisLength{source, axis, d.newLength};
+                laneDrag_.reset();
+            }
+        }
+        ImGui::Dummy(ImVec2(0, 2));
+    }
+}
+
+// Steps, per axis: the loop plays holding each value for a step of the beat
+// grid, on a number of levels; what it recorded stays as it was.
+bool MappingEditor::drawStepsForm(int source, Mapping& m) {
+    const bool triggers = source == static_cast<int>(LoopSource::Triggers);
+    bool changed = false;
+    LoopBinding& loop = m.loops[static_cast<std::size_t>(source)];
+    ImGui::Spacing();
+    for (int axis = 0; axis < 2; ++axis) {
+        StepGrid& grid = loop.steps[static_cast<std::size_t>(axis)];
+        ImGui::PushID(100 + axis);
+        ImGui::AlignTextToFramePadding();
+        ImGui::Text("%s", triggers ? (axis == 0 ? "L2" : "R2") : axis == 0 ? "X " : "Y ");
+        ImGui::SameLine();
+        changed |= ImGui::Checkbox("Steps", &grid.on);
+        ImGui::BeginDisabled(!grid.on);
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 6.5f);
+        if (ImGui::InputInt("Levels", &grid.levels)) {
+            grid.levels = std::clamp(grid.levels, 2, 128);
+            changed = true;
+        }
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 5);
+        int step = std::clamp(grid.step, 0, kStepChoices - 1);
+        if (ImGui::Combo("Step", &step, kStepNames.data(), kStepChoices) && step != grid.step) {
+            grid.step = step;
+            changed = true;
+        }
+        ImGui::EndDisabled();
+        ImGui::PopID();
+    }
+    ImGui::PushStyleColor(ImGuiCol_Text, kHintColor);
+    ImGui::TextWrapped("In steps, the loop holds a value per step of the beat (on the clock's tempo, or the loop's "
+                       "own beats when synced), rounded to that many levels. The recording itself stays as it was.");
+    ImGui::PopStyleColor();
     return changed;
 }
 

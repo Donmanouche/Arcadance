@@ -45,10 +45,9 @@ std::uint8_t transportStatus(TransportCommand c) {
 
 Engine::Engine(MidiSink& sink) : sink_(sink) {
     for (std::size_t i = 0; i < loops_.size(); ++i) {
-        if (sourceOfLoop(i) == static_cast<int>(LoopSource::Notes))
+        if (trackOfLoop(i) == kNoteTrack)
             continue;  // its notes are in noteEvents_
         loops_[i].x.assign(kMaxLoopSamples, 32767);
-        loops_[i].y.assign(kMaxLoopSamples, 32767);
     }
     for (auto& events : noteEvents_)
         events.reserve(kMaxNoteEvents);
@@ -264,9 +263,10 @@ void Engine::touchMoved(int finger, float x, float y) {
     if (stretchHeld() && binding.mode == TouchMode::Axis && recordHolders_.any())
         return;  // Shift + Record: the finger locks its loops (runLoops)
     if (stretchHeld() && binding.mode == TouchMode::Axis) {
-        // The finger stretches the finger loops: a step per kStretchTouchStep of
-        // its slide, right stretches. One finger at a time, from where it lands.
-        // Along Y (up widens) the amplitude, whichever way it mostly slid.
+        // The finger changes the finger loops: a step per kStretchTouchStep of
+        // its slide, sideways their X loops, up and down their Y loops (right
+        // and up lengthen or widen); their lengths, or (after Shift + the
+        // touchpad's click) their amplitudes. One finger at a time, from where it lands.
         if (stretchFinger_ < 0) {
             stretchFinger_ = finger;
             stretchFingerX_ = x;
@@ -278,16 +278,16 @@ void Engine::touchMoved(int finger, float x, float y) {
                 if (steps != 0) {
                     stretchFingerX_ += static_cast<float>(steps) * kStretchTouchStep;
                     stretchFingerY_ = y;
-                    stretchPausing(static_cast<int>(LoopSource::Finger1), steps);
-                    stretchPausing(static_cast<int>(LoopSource::Finger2), steps);
+                    for (int t : {trackOf(2, 0), trackOf(3, 0)})
+                        fingerAmplitudes_ ? amplifyPausing(t, steps) : stretchPausing(t, steps);
                 }
             } else {
                 const int steps = static_cast<int>(dy / kStretchTouchStep);
                 if (steps != 0) {
                     stretchFingerY_ -= static_cast<float>(steps) * kStretchTouchStep;
                     stretchFingerX_ = x;
-                    amplifyPausing(static_cast<int>(LoopSource::Finger1), steps);
-                    amplifyPausing(static_cast<int>(LoopSource::Finger2), steps);
+                    for (int t : {trackOf(2, 1), trackOf(3, 1)})
+                        fingerAmplitudes_ ? amplifyPausing(t, steps) : stretchPausing(t, steps);
                 }
             }
         }
@@ -426,6 +426,17 @@ void Engine::press(int slot) {
     if (binding.type == ActionType::SessionScreen || (!presetHasSession_ && slot == slotOf(Button::Guide))) {
         pushSessionEvent(SessionEvent::Toggle);
         return;
+    }
+    if (stretchHeld() && recordHolders_.none() && !navigating()) {  // Shift + a click: lengths or amplitudes
+        if (slot == slotOf(Button::LeftStick) || slot == slotOf(Button::RightStick)) {
+            auto& amplitudes = stickAmplitudes_[slot == slotOf(Button::LeftStick) ? 0 : 1];
+            amplitudes = !amplitudes;
+            return;
+        }
+        if (slot == slotOf(Button::Touchpad)) {
+            fingerAmplitudes_ = !fingerAmplitudes_;
+            return;
+        }
     }
     if (navigating()) {
         if (slot == slotOf(Button::LeftStick) || slot == slotOf(Button::RightStick)) {
@@ -682,21 +693,43 @@ bool Engine::sourcePosition(int source, float& x, float& y) const {
     return fingerDown_[f];
 }
 
+bool Engine::trackPosition(int track, float& v) const {
+    if (track == kNoteTrack) {
+        v = 0;
+        return false;
+    }
+    float x = 0, y = 0;
+    const bool on = sourcePosition(sourceOfTrack(track), x, y);
+    v = axisOfTrack(track) == 0 ? x : y;
+    return on;
+}
+
+bool Engine::trackEnabled(int channel, int track) const {
+    if (track == kNoteTrack)
+        return true;
+    const Mapping& m = preset_->forChannel(channel);
+    const int source = sourceOfTrack(track), axis = axisOfTrack(track);
+    if (source < 2)
+        return m.axes[static_cast<std::size_t>(source * 2 + axis)].enabled;
+    if (source == static_cast<int>(LoopSource::Triggers))
+        return m.axes[static_cast<std::size_t>(axis == 0 ? Axis::LeftTrigger : Axis::RightTrigger)].enabled;
+    const FingerBinding& f = m.fingers[static_cast<std::size_t>(source - 2)];
+    return f.mode == TouchMode::Axis && (axis == 0 ? f.x : f.y).enabled;
+}
+
 void Engine::beginRecordHold() {
     recordedThisHold_ = false;
     lockedThisHold_ = false;
     lockToggled_.fill(false);
     holdChannel_ = channel_;
     holdStartedAt_ = now_;
-    for (int s = 0; s < kLoopSourceCount; ++s) {
-        auto& start = holdStart_[static_cast<std::size_t>(s)];
-        holdStartOn_[static_cast<std::size_t>(s)] = sourcePosition(s, start[0], start[1]);
-        // A finger records its X/Y in axis mode; in 4-pad mode its pads play
-        // notes, which the note loop records.
-        const bool finger = s == 2 || s == 3;
-        waiting_[static_cast<std::size_t>(s)] =
-            (!finger || preset_->forChannel(holdChannel_).fingers[static_cast<std::size_t>(s - 2)].mode == TouchMode::Axis) &&
-            !loops_[slotIndex(holdChannel_, recordSlot_[static_cast<std::size_t>(holdChannel_)], s)].locked;
+    for (int t = 0; t < kTrackCount; ++t) {
+        const auto i = static_cast<std::size_t>(t);
+        holdStartOn_[i] = trackPosition(t, holdStart_[i]);
+        // An axis records when enabled (a finger in axis mode; in 4-pad mode its
+        // pads play notes, which the note loop records), and not locked.
+        waiting_[i] = trackEnabled(holdChannel_, t) &&
+                      !loops_[slotIndex(holdChannel_, recordSlot_[static_cast<std::size_t>(holdChannel_)], t)].locked;
     }
 }
 
@@ -704,8 +737,9 @@ void Engine::endRecordHold() {
     waiting_.fill(false);
     for (int channel = 0; channel < kChannelCount; ++channel) {
         bool finished = false;  // a recording of this channel's current clip ends: it plays
-        for (int source = 0; source < kLoopSourceCount; ++source) {
-            Loop& loop = loops_[loopIndex(channel, source)];
+        for (int track = 0; track < kTrackCount; ++track) {
+            const int source = sourceOfTrack(track);
+            Loop& loop = loops_[loopIndex(channel, track)];
             if (loop.state != LoopStatus::State::Recording)
                 continue;
             if (loop.length < 2) {
@@ -751,21 +785,21 @@ void Engine::endRecordHold() {
                 findMiddle(loop);
             loop.direction = playback == LoopPlayback::Reverse ? -1 : 1;
             loop.nextAt = now_;
-            loop.sentX = loop.sentY = -1;
+            loop.sentX = -1;
             loop.turns = 0;
             finished = true;
         }
         if (finished && !clipPlaying_[static_cast<std::size_t>(channel)]) {
             // The clip was stopped (or new): its other loops start with this one.
-            for (int source = 0; source < kLoopSourceCount; ++source) {
-                Loop& other = loops_[loopIndex(channel, source)];
+            for (int track = 0; track < kTrackCount; ++track) {
+                Loop& other = loops_[loopIndex(channel, track)];
                 if (other.state == LoopStatus::State::Playing && other.nextAt != now_) {
-                    const bool reverse = preset_->forChannel(channel).loops[static_cast<std::size_t>(source)].playback == LoopPlayback::Reverse;
+                    const bool reverse = preset_->forChannel(channel).loops[static_cast<std::size_t>(sourceOfTrack(track))].playback == LoopPlayback::Reverse;
                     other.position = reverse ? other.length - 1 : 0;
                     other.phase = other.position;
                     other.direction = reverse ? -1 : 1;
                     other.nextAt = now_;
-                    other.sentX = other.sentY = -1;
+                    other.sentX = -1;
                     other.turns = 0;
                 }
             }
@@ -779,7 +813,7 @@ void Engine::endRecordHold() {
     // the loops (not the locked ones).
     const bool tap = now_ - holdStartedAt_ < static_cast<std::uint64_t>(kLoopTapMs) * 1'000'000u;
     constexpr int kNotes = static_cast<int>(LoopSource::Notes);
-    const Loop& notes = loops_[loopIndex(holdChannel_, kNotes)];
+    const Loop& notes = loops_[loopIndex(holdChannel_, kNoteTrack)];
     const bool notesPlaying = notes.state == LoopStatus::State::Playing;
     if (tap && stretchHeld()) {
         // Shift + two taps: the note loop locks or unlocks, the first tap taken back.
@@ -824,24 +858,27 @@ void Engine::flushPendingStop() {
 // Shift + Record: each stick, the triggers or a finger in axis mode moving
 // (as it would start a recording) locks or unlocks its loops, once a hold.
 void Engine::lockFromControls() {
-    for (int source = 0; source < kLoopSourceCount; ++source) {
-        if (source == static_cast<int>(LoopSource::Notes))
-            continue;
-        const auto i = static_cast<std::size_t>(source);
+    // Each axis on its own, moved that way (a finger: slid from where it landed).
+    for (int track = 0; track < kNoteTrack; ++track) {
+        const auto i = static_cast<std::size_t>(track);
+        const int source = sourceOfTrack(track);
         const bool finger = source == 2 || source == 3;
-        const auto group = static_cast<std::size_t>(finger ? 2 : source);  // the fingers lock together
-        if (lockToggled_[group])
+        if (lockToggled_[i])
             continue;
-        if (finger && preset_->forChannel(holdChannel_).fingers[i - 2].mode != TouchMode::Axis)
+        if (finger && preset_->forChannel(holdChannel_).fingers[static_cast<std::size_t>(source - 2)].mode != TouchMode::Axis)
             continue;
-        float x = 0, y = 0;
-        const bool on = sourcePosition(source, x, y);
-        const bool moved = on && ((finger && !holdStartOn_[i]) || std::abs(x - holdStart_[i][0]) > kLoopMoveThreshold ||
-                                  std::abs(y - holdStart_[i][1]) > kLoopMoveThreshold);
-        if (!moved)
+        float v = 0;
+        if (!trackPosition(track, v))
             continue;
-        lockToggled_[group] = true;
-        if (toggleLoopLock(holdChannel_, source))
+        if (finger && !holdStartOn_[i]) {  // it just landed: from here
+            holdStart_[i] = v;
+            holdStartOn_[i] = true;
+            continue;
+        }
+        if (std::abs(v - holdStart_[i]) <= kLoopMoveThreshold)
+            continue;
+        lockToggled_[i] = true;
+        if (toggleLoopLock(holdChannel_, source, axisOfTrack(track)))
             lockedThisHold_ = true;
     }
 }
@@ -852,23 +889,24 @@ void Engine::runLoops() {
         lockFromControls();
     // A source that moves during the hold starts recording into its loop: a
     // stick leaving its spot, a finger landing or sliding.
-    for (int source = 0; source < kLoopSourceCount; ++source) {
-        const auto i = static_cast<std::size_t>(source);
-        if (!waiting_[i] || source == static_cast<int>(LoopSource::Notes))  // notes start when one plays
+    for (int track = 0; track < kNoteTrack; ++track) {  // (notes start when one plays)
+        const auto i = static_cast<std::size_t>(track);
+        const int source = sourceOfTrack(track);
+        if (!waiting_[i])
             continue;
         if (stretchHeld())
             continue;  // under Shift, moving stretches a loop or (with Record) locks it
         if (navigating() && (source == static_cast<int>(LoopSource::LeftStick) || source == static_cast<int>(LoopSource::RightStick)))
             continue;  // it moves the session screen's cursor
-        if (loops_[slotIndex(holdChannel_, recordSlot_[static_cast<std::size_t>(holdChannel_)], source)].locked) {  // locked during the hold
+        if (loops_[slotIndex(holdChannel_, recordSlot_[static_cast<std::size_t>(holdChannel_)], track)].locked) {  // locked during the hold
             waiting_[i] = false;
             continue;
         }
+        // Each axis on its own: a stick leaving its spot that way, a finger landing or sliding.
         const bool finger = source == 2 || source == 3;
-        float x = 0, y = 0;
-        const bool on = sourcePosition(source, x, y);
-        const bool moved = on && ((finger && !holdStartOn_[i]) || std::abs(x - holdStart_[i][0]) > kLoopMoveThreshold ||
-                                  std::abs(y - holdStart_[i][1]) > kLoopMoveThreshold);
+        float v = 0;
+        const bool on = trackPosition(track, v);
+        const bool moved = on && ((finger && !holdStartOn_[i]) || std::abs(v - holdStart_[i]) > kLoopMoveThreshold);
         if (!moved)
             continue;
         waiting_[i] = false;
@@ -876,7 +914,7 @@ void Engine::runLoops() {
         enterRecordSlot(holdChannel_);  // a new clip: there, the current one stops
         if (loopsPaused_)
             playLoops();
-        const std::size_t index = loopIndex(holdChannel_, source);
+        const std::size_t index = loopIndex(holdChannel_, track);
         silenceLoop(index);
         Loop& loop = loops_[index];
         loop.state = LoopStatus::State::Recording;
@@ -886,7 +924,7 @@ void Engine::runLoops() {
         loop.stretch = 0;
         loop.amplitude = 100;
         loop.amplitudeNow = 1;
-        loopShaping_[index] = {-1.0f, -1.0f};
+        loopShaping_[index] = -1.0f;
         loop.nextAt = now_;
         recordedThisHold_ = true;
     }
@@ -896,7 +934,8 @@ void Engine::runLoops() {
         if (loop.state == LoopStatus::State::Empty)
             continue;
         const auto channel = channelOfLoop(i);
-        const auto source = sourceOfLoop(i);
+        const auto track = trackOfLoop(i);
+        const auto source = sourceOfTrack(track);
         // Only each channel's current clip runs, while it plays (or records).
         if (slotOfLoop(i) != currentSlot_[static_cast<std::size_t>(channel)] ||
             (!clipPlaying_[static_cast<std::size_t>(channel)] && loop.state != LoopStatus::State::Recording))
@@ -911,12 +950,10 @@ void Engine::runLoops() {
                     continue;
                 }
                 if (loop.length < kMaxLoopSamples) {
-                    const auto at = static_cast<std::size_t>(loop.length);
-                    float x = 0, y = 0;
-                    const bool on = sourcePosition(source, x, y);
-                    auto sample = [](float v) { return static_cast<std::uint16_t>(std::lround(std::clamp(v, 0.0f, 1.0f) * 65534.0f)); };
-                    loop.x[at] = on ? sample(x) : kLifted;
-                    loop.y[at] = on ? sample(y) : kLifted;
+                    float v = 0;
+                    const bool on = trackPosition(track, v);
+                    loop.x[static_cast<std::size_t>(loop.length)] =
+                        on ? static_cast<std::uint16_t>(std::lround(std::clamp(v, 0.0f, 1.0f) * 65534.0f)) : kLifted;
                     ++loop.length;
                 }
                 continue;
@@ -1050,10 +1087,10 @@ double Engine::stretchFactor(int stretch) {
     return stretch >= 0 ? k : 1.0 / k;
 }
 
-void Engine::stretchLoop(int channel, int source, int steps) {
+void Engine::stretchLoop(int channel, int source, int axis, int steps) {
     if (source < 0 || source >= kLoopSourceCount || source == static_cast<int>(LoopSource::Notes))
         return;
-    Loop& loop = loops_[loopIndex(std::clamp(channel, 0, kChannelCount - 1), source)];
+    Loop& loop = loops_[loopIndex(std::clamp(channel, 0, kChannelCount - 1), trackOf(source, axis))];
     if (loop.state != LoopStatus::State::Playing)
         return;
     int next = loop.stretch + steps;
@@ -1133,31 +1170,31 @@ Engine::Shaping Engine::shaping(int channel) const {
         // Its loop: the sticks' X / Y, the triggers' L2 / R2.
         const int source = trigger ? static_cast<int>(LoopSource::Triggers) : (i < 2 ? 0 : 1);
         const int xy = trigger ? (axis == Axis::LeftTrigger ? 0 : 1) : i % 2;
-        add(a, loopShaping_[loopIndex(channel, source)][static_cast<std::size_t>(xy)], trigger, false);
+        add(a, loopShaping_[loopIndex(channel, trackOf(source, xy))], trigger, false);
     }
     for (int f = 0; f < kFingerCount; ++f) {
         const FingerBinding& fb = m.fingers[static_cast<std::size_t>(f)];
         if (fb.mode != TouchMode::Axis)
             continue;
         const auto& held = fingerHeld_[static_cast<std::size_t>(f)];
-        const auto& looped = loopShaping_[loopIndex(channel, 2 + f)];
+
         for (int xy = 0; xy < 2; ++xy) {
             const AxisBinding& a = xy == 0 ? fb.x : fb.y;
             if (a.mode != AxisMode::Velocity && a.mode != AxisMode::Transpose)
                 continue;
             if (live)
                 add(a, xy == 0 ? held[0] : 1.0f - held[1], false, false);
-            add(a, looped[static_cast<std::size_t>(xy)], false, false);
+            add(a, loopShaping_[loopIndex(channel, trackOf(2 + f, xy))], false, false);
         }
     }
     sh.velocity = std::clamp(sh.velocity, -1.0f, 1.0f);
     return sh;
 }
 
-void Engine::amplifyLoop(int channel, int source, int steps) {
+void Engine::amplifyLoop(int channel, int source, int axis, int steps) {
     if (source < 0 || source >= kLoopSourceCount || source == static_cast<int>(LoopSource::Notes))
         return;
-    Loop& loop = loops_[loopIndex(std::clamp(channel, 0, kChannelCount - 1), source)];
+    Loop& loop = loops_[loopIndex(std::clamp(channel, 0, kChannelCount - 1), trackOf(source, axis))];
     if (loop.state != LoopStatus::State::Playing)
         return;
     // Step by step: 5 % below 100 %, 25 % above; across 100 % it stops there.
@@ -1192,26 +1229,26 @@ float Engine::shapeAmplitude(float v, float middle, float a) {
 
 // Changes a loop's amplitude on the active channel, waiting kStretchPauseMs at
 // 100 % when it gets there, like the stretch at 1x.
-void Engine::amplifyPausing(int source, int steps) {
-    const auto i = static_cast<std::size_t>(source);
+void Engine::amplifyPausing(int track, int steps) {
+    const auto i = static_cast<std::size_t>(track);
     if (now_ < amplitudePausedUntil_[i])
         return;
-    const Loop& loop = loops_[loopIndex(channel_, source)];
+    const Loop& loop = loops_[loopIndex(channel_, track)];
     const int before = loop.amplitude;
-    amplifyLoop(channel_, source, steps);
+    amplifyLoop(channel_, sourceOfTrack(track), axisOfTrack(track), steps);
     if (before != 100 && loop.amplitude == 100)
         amplitudePausedUntil_[i] = now_ + static_cast<std::uint64_t>(kStretchPauseMs) * 1'000'000u;
 }
 
 // Stretches a loop of the active channel, waiting kStretchPauseMs at 1x when it
 // gets there, so a stick held over makes it easy to stop on.
-void Engine::stretchPausing(int source, int steps) {
-    const auto i = static_cast<std::size_t>(source);
+void Engine::stretchPausing(int track, int steps) {
+    const auto i = static_cast<std::size_t>(track);
     if (now_ < stretchPausedUntil_[i])
         return;
-    const Loop& loop = loops_[loopIndex(channel_, source)];
+    const Loop& loop = loops_[loopIndex(channel_, track)];
     const int before = loop.stretch;
-    stretchLoop(channel_, source, steps);
+    stretchLoop(channel_, sourceOfTrack(track), axisOfTrack(track), steps);
     if (before != 0 && loop.stretch == 0)
         stretchPausedUntil_[i] = now_ + static_cast<std::uint64_t>(kStretchPauseMs) * 1'000'000u;
 }
@@ -1237,25 +1274,18 @@ void Engine::stretchFromControls() {
             rest = ampRest = 0;
             continue;
         }
+        // Along X its X loop, along Y its Y loop: their lengths, or their amplitudes.
+        const int track = trackOf(source, alongX ? 0 : 1);
+        auto& turned = alongX ? rest : ampRest;
+        (alongX ? ampRest : rest) = 0;
         const double t = static_cast<double>((out - kStretchDeadZone) / (1.0f - kStretchDeadZone));
-        if (alongX) {
-            ampRest = 0;
-            const double rate = kStretchMinRate + (kStretchMaxRate - kStretchMinRate) * t * t;
-            rest += (d > 0 ? rate : -rate) * dt;
-            const int steps = static_cast<int>(rest);
-            if (steps != 0) {
-                rest -= steps;
-                stretchPausing(source, steps);
-            }
-        } else {
-            rest = 0;
-            const double rate = kStretchMinRate + (kAmplitudeMaxRate - kStretchMinRate) * t * t;
-            ampRest += (d > 0 ? rate : -rate) * dt;
-            const int steps = static_cast<int>(ampRest);
-            if (steps != 0) {
-                ampRest -= steps;
-                amplifyPausing(source, steps);
-            }
+        const bool amplitudes = stickAmplitudes_[i];
+        const double rate = kStretchMinRate + ((amplitudes ? kAmplitudeMaxRate : kStretchMaxRate) - kStretchMinRate) * t * t;
+        turned += (d > 0 ? rate : -rate) * dt;
+        const int steps = static_cast<int>(turned);
+        if (steps != 0) {
+            turned -= steps;
+            amplitudes ? amplifyPausing(track, steps) : stretchPausing(track, steps);
         }
     }
 }
@@ -1289,10 +1319,7 @@ void Engine::playMovementLoop(std::size_t index, LoopPlayback playback, const do
     const float target = static_cast<float>(loop.amplitude) / 100.0f;
     const float ease = 0.1f * std::max(1.0f, std::max(target, loop.amplitudeNow) / 2.0f);
     loop.amplitudeNow += std::clamp(target - loop.amplitudeNow, -ease, ease);
-    auto send = [&](float x, float y) {
-        const float a = loop.amplitudeNow;
-        sendLoopValue(index, shapeAmplitude(x, loop.middleX, a), shapeAmplitude(y, loop.middleY, a));
-    };
+    auto send = [&](float v) { sendLoopValue(index, stepped(index, shapeAmplitude(v, loop.middleX, loop.amplitudeNow))); };
     double step = 1.0 / stretchFactor(loop.stretch);
     if (syncedPhase) {
         // Synced: the clock gives the point; the step is how far it moved since.
@@ -1305,39 +1332,42 @@ void Engine::playMovementLoop(std::size_t index, LoopPlayback playback, const do
     auto at = [&](const std::vector<std::uint16_t>& v, int k) { return v[static_cast<std::size_t>(loopSampleIndex(k, length, playback))]; };
     auto value = [](std::uint16_t v) { return static_cast<float>(v) / 65534.0f; };
 
-    const int i = static_cast<int>(std::floor(loop.phase));
-    if (step <= 1.0) {
+    int i = static_cast<int>(std::floor(loop.phase));
+    // In steps: each holds the value where it starts on the loop's beat grid.
+    if (const int stepSamples = stepLength(index); stepSamples > 0) {
+        const int k = i / stepSamples * stepSamples;
+        if (at(loop.x, k) != kLifted)
+            send(value(at(loop.x, k)));
+    } else if (step <= 1.0) {
         // Between samples i and i + 1 in the loop's own order.
         const float f = static_cast<float>(loop.phase - i);
         if (at(loop.x, i) != kLifted) {  // nothing while a recorded finger was lifted
-            const bool nextOn = at(loop.x, i + 1) != kLifted;
-            auto interpolate = [&](const std::vector<std::uint16_t>& v) {
-                const float p1 = value(at(v, i));
-                if (!nextOn)
-                    return p1;  // hold up to the lift
+            const auto& v = loop.x;
+            const float p1 = value(at(v, i));
+            if (at(v, i + 1) == kLifted) {
+                send(p1);  // hold up to the lift
+            } else {
                 const float p2 = value(at(v, i + 1));
                 const float p0 = at(v, i - 1) == kLifted ? p1 : value(at(v, i - 1));
                 const float p3 = at(v, i + 2) == kLifted ? p2 : value(at(v, i + 2));
-                return std::clamp(monotoneCubic(p0, p1, p2, p3, f), 0.0f, 1.0f);
-            };
-            send(interpolate(loop.x), interpolate(loop.y));
+                send(std::clamp(monotoneCubic(p0, p1, p2, p3, f), 0.0f, 1.0f));
+            }
         }
     } else {
         // The samples this step passes over, in the playing direction.
         const int count = static_cast<int>(std::ceil(step));
         const int dir = playback == LoopPlayback::Reverse ? -1 : (playback == LoopPlayback::Forward ? 1 : loop.direction);
-        float sx = 0, sy = 0;
+        float sum = 0;
         int on = 0;
         for (int j = 0; j < count; ++j) {
             const int k = i + dir * j;
             if (at(loop.x, k) == kLifted)
                 continue;
-            sx += value(at(loop.x, k));
-            sy += value(at(loop.y, k));
+            sum += value(at(loop.x, k));
             ++on;
         }
         if (on > 0)
-            send(sx / static_cast<float>(on), sy / static_cast<float>(on));
+            send(sum / static_cast<float>(on));
     }
 
     // Move on (a synced loop is moved by the clock).
@@ -1371,50 +1401,75 @@ void Engine::playMovementLoop(std::size_t index, LoopPlayback playback, const do
     loop.position = std::clamp(static_cast<int>(loop.phase), 0, std::max(0, length - 1));
 }
 
-// Sends a movement loop's X, Y in [0, 1] on its CCs and channel, scaled like
-// the axes it was recorded from.
-void Engine::sendLoopValue(std::size_t index, float px, float py) {
+// Sends one axis of a movement loop, in [0, 1], on its CC and channel, scaled
+// like the axis it was recorded from.
+void Engine::sendLoopValue(std::size_t index, float p) {
     Loop& loop = loops_[index];
     const auto channel = channelOfLoop(index);
-    const auto source = sourceOfLoop(index);
+    const int track = trackOfLoop(index), source = sourceOfTrack(track), axis = axisOfTrack(track);
     const Mapping& m = preset_->forChannel(channel);
     const LoopBinding& binding = m.loops[static_cast<std::size_t>(source)];
-    auto value = [](const AxisBinding& a, float position) {
-        if (a.invert)
-            position = 1.0f - position;
-        const int lo = a.enabled ? a.min : 0, hi = a.enabled ? a.max : 127;
-        return lo + static_cast<int>(std::lround(position * static_cast<float>(hi - lo)));
-    };
-    const AxisBinding *bx = nullptr, *by = nullptr;
+    const AxisBinding* a = nullptr;
     if (source < 2) {
-        bx = &m.axes[static_cast<std::size_t>(source == 0 ? Axis::LeftX : Axis::RightX)];
-        by = &m.axes[static_cast<std::size_t>(source == 0 ? Axis::LeftY : Axis::RightY)];
+        a = &m.axes[static_cast<std::size_t>(source * 2 + axis)];
     } else if (source == static_cast<int>(LoopSource::Triggers)) {
-        bx = &m.axes[static_cast<std::size_t>(Axis::LeftTrigger)];
-        by = &m.axes[static_cast<std::size_t>(Axis::RightTrigger)];
+        a = &m.axes[static_cast<std::size_t>(axis == 0 ? Axis::LeftTrigger : Axis::RightTrigger)];
     } else {
         const FingerBinding& f = m.fingers[static_cast<std::size_t>(source - 2)];
-        bx = &f.x;
-        by = &f.y;
-        py = 1.0f - py;  // the touchpad's Y grows downwards, its CC upwards
+        a = axis == 0 ? &f.x : &f.y;
+        if (axis == 1)
+            p = 1.0f - p;  // the touchpad's Y grows downwards, its CC upwards
     }
     // An axis set to Velocity or Transpose plays its loop as that, not as a CC.
-    auto shapes = [](const AxisBinding& a) { return a.enabled && (a.mode == AxisMode::Velocity || a.mode == AxisMode::Transpose); };
-    loopShaping_[index] = {shapes(*bx) ? px : -1.0f, shapes(*by) ? py : -1.0f};
-    const int vx = value(*bx, px), vy = value(*by, py);
-    if (!shapes(*bx) && vx != loop.sentX) {
-        sendCc(channel, binding.ccX, vx);
-        loop.sentX = vx;
+    const bool shapes = a->enabled && (a->mode == AxisMode::Velocity || a->mode == AxisMode::Transpose);
+    loopShaping_[index] = shapes ? p : -1.0f;
+    if (shapes)
+        return;
+    const float position = a->invert ? 1.0f - p : p;
+    const int lo = a->enabled ? a->min : 0, hi = a->enabled ? a->max : 127;
+    const int v = lo + static_cast<int>(std::lround(position * static_cast<float>(hi - lo)));
+    if (v != loop.sentX) {
+        sendCc(channel, axis == 0 ? binding.ccX : binding.ccY, v);
+        loop.sentX = v;
     }
-    if (!shapes(*by) && vy != loop.sentY) {
-        sendCc(channel, binding.ccY, vy);
-        loop.sentY = vy;
-    }
+}
+
+// The samples of a step of a loop in steps (0: not in steps): its beats on
+// the loop's own beats when synced, else on the clock's tempo.
+int Engine::stepLength(std::size_t index) const {
+    const Loop& loop = loops_[index];
+    const int track = trackOfLoop(index);
+    if (track == kNoteTrack || loop.length <= 0)
+        return 0;
+    const LoopBinding& lb = preset_->forChannel(channelOfLoop(index)).loops[static_cast<std::size_t>(sourceOfTrack(track))];
+    const StepGrid& grid = lb.steps[static_cast<std::size_t>(axisOfTrack(track))];
+    if (!grid.on)
+        return 0;
+    const double beats = kStepBeats[static_cast<std::size_t>(std::clamp(grid.step, 0, kStepChoices - 1))];
+    const double stepBeats = beats > 0 ? beats : static_cast<double>(beatsPerBar_);
+    const double perBeat = loop.syncBeats > 0 ? loop.length / loop.syncBeats : kLoopRateHz * 60.0 / std::max(clock_.tempo, 1.0);
+    return std::max(1, static_cast<int>(std::lround(stepBeats * perBeat)));
+}
+
+int Engine::loopStepSamples(int channel, int source, int axis) const {
+    channel = std::clamp(channel, 0, kChannelCount - 1);
+    source = std::clamp(source, 0, kLoopSourceCount - 1);
+    return stepLength(loopIndex(channel, trackOf(source, axis)));
+}
+
+// A value of a loop in steps, on the nearest of its grid's levels.
+float Engine::stepped(std::size_t index, float v) const {
+    const LoopBinding& lb = preset_->forChannel(channelOfLoop(index)).loops[static_cast<std::size_t>(sourceOfTrack(trackOfLoop(index)))];
+    const StepGrid& grid = lb.steps[static_cast<std::size_t>(axisOfTrack(trackOfLoop(index)))];
+    if (!grid.on)
+        return v;
+    const float n = static_cast<float>(std::clamp(grid.levels, 2, 128) - 1);
+    return std::round(v * n) / n;
 }
 
 // Stops what a note loop has on.
 void Engine::silenceLoop(std::size_t index) {
-    if (sourceOfLoop(index) == static_cast<int>(LoopSource::Notes)) {
+    if (trackOfLoop(index) == kNoteTrack) {
         const auto channel = channelOfLoop(index);
         auto& on = noteLoopOn_[static_cast<std::size_t>(channel)];
         const auto& shift = loopShift_[static_cast<std::size_t>(channel)];
@@ -1428,13 +1483,13 @@ void Engine::silenceLoop(std::size_t index) {
 // Records a note played on `channel` at `at` (velocity 0: its release) into
 // the channel's note loop, starting it if Record is held and waits for notes.
 void Engine::recordNote(int channel, int note, int velocity, std::uint64_t at, std::uint32_t press, std::uint64_t leadAt) {
-    constexpr auto kNotes = static_cast<std::size_t>(LoopSource::Notes);
+    constexpr auto kNotes = static_cast<std::size_t>(kNoteTrack);
     const bool starts = velocity > 0 && waiting_[kNotes] && channel == holdChannel_;
-    if (starts && loops_[slotIndex(channel, recordSlot_[static_cast<std::size_t>(channel)], static_cast<int>(kNotes))].locked)
+    if (starts && loops_[slotIndex(channel, recordSlot_[static_cast<std::size_t>(channel)], kNoteTrack)].locked)
         waiting_[kNotes] = false;  // locked during the hold
     else if (starts)
         enterRecordSlot(channel);  // a new clip: there, the current one stops
-    const std::size_t index = loopIndex(channel, static_cast<int>(kNotes));
+    const std::size_t index = loopIndex(channel, kNoteTrack);
     Loop& loop = loops_[index];
     if (velocity > 0 && waiting_[kNotes] && channel == holdChannel_) {
         waiting_[kNotes] = false;
@@ -1481,7 +1536,7 @@ double Engine::quantizeStep(const Loop& loop) const {
 // other notes and releases moved alike, so the lengths and a humanized chord's
 // spread stay as played.
 void Engine::quantizeNoteLoop(int channel) {
-    const Loop& loop = loops_[loopIndex(channel, static_cast<int>(LoopSource::Notes))];
+    const Loop& loop = loops_[loopIndex(channel, kNoteTrack)];
     const double step = quantizeStep(loop);
     if (step <= 0)
         return;
@@ -1512,7 +1567,7 @@ void Engine::quantizeNoteLoop(int channel) {
 // Adds a note played over a channel's note loop where the loop plays it,
 // kept in the loop's order: played backwards, its release is where it starts.
 void Engine::overdubNote(int channel, int note, int velocity, std::uint64_t at, std::uint32_t press, std::uint64_t leadAt) {
-    const Loop& loop = loops_[loopIndex(channel, static_cast<int>(LoopSource::Notes))];
+    const Loop& loop = loops_[loopIndex(channel, kNoteTrack)];
     auto& events = eventsOf(channel);
     if (events.size() >= kMaxNoteEvents || loop.length < 2)
         return;
@@ -1543,7 +1598,7 @@ void Engine::overdubNote(int channel, int note, int velocity, std::uint64_t at, 
 }
 
 void Engine::tidyNoteLoop(int channel) {
-    const Loop& loop = loops_[loopIndex(channel, static_cast<int>(LoopSource::Notes))];
+    const Loop& loop = loops_[loopIndex(channel, kNoteTrack)];
     auto& events = eventsOf(channel);
     if (loop.length < 2)
         return;
@@ -1620,7 +1675,7 @@ void Engine::tidyNoteLoop(int channel) {
 void Engine::playLoopNotes(std::size_t index) {
     const Loop& loop = loops_[index];
     const auto channel = channelOfLoop(index);
-    const auto& events = noteEvents_[index / kLoopSourceCount];
+    const auto& events = noteEvents_[index / kTrackCount];
     auto& on = noteLoopOn_[static_cast<std::size_t>(channel)];
     const auto lo = std::lower_bound(events.begin(), events.end(), loop.position,
                                      [](const NoteEvent& e, int at) { return e.at < at; });
@@ -1683,7 +1738,7 @@ void Engine::silenceLoopNote(int channel, int note) {
 
 bool Engine::moveLoopNotes(int channel, const std::vector<LoopNoteRef>& notes, int samples, int semitones, bool byDegrees) {
     channel = std::clamp(channel, 0, kChannelCount - 1);
-    const Loop& loop = loops_[loopIndex(channel, static_cast<int>(LoopSource::Notes))];
+    const Loop& loop = loops_[loopIndex(channel, kNoteTrack)];
     if (loop.state != LoopStatus::State::Playing || loop.length < 2)
         return false;
     auto& events = eventsOf(channel);
@@ -1731,7 +1786,7 @@ bool Engine::moveLoopNotes(int channel, const std::vector<LoopNoteRef>& notes, i
 
 bool Engine::resizeLoopNotes(int channel, const std::vector<LoopNoteRef>& notes, int samples) {
     channel = std::clamp(channel, 0, kChannelCount - 1);
-    const Loop& loop = loops_[loopIndex(channel, static_cast<int>(LoopSource::Notes))];
+    const Loop& loop = loops_[loopIndex(channel, kNoteTrack)];
     if (loop.state != LoopStatus::State::Playing || loop.length < 2)
         return false;
     auto& events = eventsOf(channel);
@@ -1752,7 +1807,7 @@ bool Engine::resizeLoopNotes(int channel, const std::vector<LoopNoteRef>& notes,
 
 bool Engine::setNoteLoopLength(int channel, int length) {
     channel = std::clamp(channel, 0, kChannelCount - 1);
-    const std::size_t index = loopIndex(channel, static_cast<int>(LoopSource::Notes));
+    const std::size_t index = loopIndex(channel, kNoteTrack);
     Loop& loop = loops_[index];
     if (loop.state != LoopStatus::State::Playing || loop.length < 2)
         return false;
@@ -1794,6 +1849,47 @@ bool Engine::setNoteLoopLength(int channel, int length) {
     return true;
 }
 
+bool Engine::setAxisLoopLength(int channel, int source, int axis, int length) {
+    channel = std::clamp(channel, 0, kChannelCount - 1);
+    if (source < 0 || source >= kLoopSourceCount || source == static_cast<int>(LoopSource::Notes))
+        return false;
+    const std::size_t index = loopIndex(channel, trackOf(source, axis));
+    Loop& loop = loops_[index];
+    if (loop.state != LoopStatus::State::Playing || loop.length < 2)
+        return false;
+    if (loop.syncBeats > 0) {  // whole beats, at the beat's length as recorded
+        const double perBeat = static_cast<double>(loop.length) / loop.syncBeats;
+        const double most = std::max(1.0, std::floor(kMaxLoopSamples / perBeat));
+        const double beats = std::clamp(std::round(length / perBeat), 1.0, most);
+        length = static_cast<int>(std::lround(beats * perBeat));
+        loop.syncBeats = beats;
+    }
+    length = std::clamp(length, 2, kMaxLoopSamples);
+    if (length == loop.length)
+        return true;
+    if (length > loop.length) {
+        // The time added: a straight line from its last value back to its first
+        // (a finger lifted at either end: lifted there).
+        const std::uint16_t from = loop.x[static_cast<std::size_t>(loop.length - 1)], to = loop.x[0];
+        const int added = length - loop.length;
+        for (int k = 0; k < added; ++k) {
+            const float t = static_cast<float>(k + 1) / static_cast<float>(added + 1);
+            loop.x[static_cast<std::size_t>(loop.length + k)] =
+                from == kLifted || to == kLifted ? kLifted
+                                                 : static_cast<std::uint16_t>(std::lround(from + (static_cast<float>(to) - from) * t));
+        }
+    }
+    loop.length = length;
+    if (loop.position >= length) {
+        loop.position = loop.direction < 0 ? length - 1 : 0;
+        loop.phase = loop.position;
+    }
+    if (loop.phase >= length)
+        loop.phase = std::fmod(loop.phase, static_cast<double>(length));
+    findMiddle(loop);
+    return true;
+}
+
 bool Engine::removeLoopNotes(int channel, const std::vector<LoopNoteRef>& notes) {
     channel = std::clamp(channel, 0, kChannelCount - 1);
     auto& events = eventsOf(channel);
@@ -1820,14 +1916,14 @@ int Engine::noteLoopIntervals(int channel, NoteInterval* out, int max) const {
 int Engine::clipNoteIntervals(int channel, int slot, NoteInterval* out, int max) const {
     channel = std::clamp(channel, 0, kChannelCount - 1);
     slot = std::clamp(slot, 0, kClipSlots - 1);
-    const std::size_t index = slotIndex(channel, slot, static_cast<int>(LoopSource::Notes));
+    const std::size_t index = slotIndex(channel, slot, kNoteTrack);
     const Loop& loop = loops_[index];
     if (loop.state == LoopStatus::State::Empty)
         return 0;
     std::array<int, 128> open;
     open.fill(-1);
     int count = 0;
-    for (const NoteEvent& e : noteEvents_[index / kLoopSourceCount]) {
+    for (const NoteEvent& e : noteEvents_[index / kTrackCount]) {
         if (e.on) {
             if (count == max)
                 break;
@@ -1846,12 +1942,13 @@ int Engine::clipNoteIntervals(int channel, int slot, NoteInterval* out, int max)
     return count;
 }
 
-LoopStatus Engine::loopStatus(int channel, int source) const {
+LoopStatus Engine::loopStatus(int channel, int source, int axis) const {
     channel = std::clamp(channel, 0, kChannelCount - 1);
     source = std::clamp(source, 0, kLoopSourceCount - 1);
-    const Loop& loop = loops_[loopIndex(channel, source)];
-    const bool waiting = waiting_[static_cast<std::size_t>(source)] && holdChannel_ == channel;
-    const bool overdub = source == static_cast<int>(LoopSource::Notes) && overdubChannel_ == channel;
+    const int track = trackOf(source, axis);
+    const Loop& loop = loops_[loopIndex(channel, track)];
+    const bool waiting = waiting_[static_cast<std::size_t>(track)] && holdChannel_ == channel;
+    const bool overdub = track == kNoteTrack && overdubChannel_ == channel;
     return {loop.state, waiting, overdub, loop.length, loop.position, loop.direction, channel, loop.stretch, loop.amplitude,
             loop.syncBeats > 0 ? loop.syncBeats * stretchFactor(loop.stretch) : 0.0, loop.locked};
 }
@@ -1859,27 +1956,33 @@ LoopStatus Engine::loopStatus(int channel, int source) const {
 bool Engine::loopLocked(int channel, int source) const {
     channel = std::clamp(channel, 0, kChannelCount - 1);
     source = std::clamp(source, 0, kLoopSourceCount - 1);
-    return loops_[loopIndex(channel, source)].locked;
+    return loops_[loopIndex(channel, trackOf(source, 0))].locked || loops_[loopIndex(channel, trackOf(source, 1))].locked;
 }
 
 bool Engine::toggleLoopLock(int channel, int source) {
     channel = std::clamp(channel, 0, kChannelCount - 1);
     source = std::clamp(source, 0, kLoopSourceCount - 1);
-    const bool finger = source == 2 || source == 3;
-    Loop& loop = loops_[loopIndex(channel, source)];
-    Loop* partner = finger ? &loops_[loopIndex(channel, 5 - source)] : nullptr;  // the other finger
-    if (loop.locked || (partner && partner->locked)) {
-        loop.locked = false;
-        if (partner)
-            partner->locked = false;
+    if (source == static_cast<int>(LoopSource::Notes))
+        return toggleLoopLock(channel, source, 0);
+    Loop& x = loops_[loopIndex(channel, trackOf(source, 0))];
+    Loop& y = loops_[loopIndex(channel, trackOf(source, 1))];
+    if (x.locked || y.locked) {
+        x.locked = y.locked = false;
         return true;
     }
-    if (loop.state != LoopStatus::State::Playing && (!partner || partner->state != LoopStatus::State::Playing))
+    x.locked = x.state == LoopStatus::State::Playing;  // an axis without a loop stays free to record
+    y.locked = y.state == LoopStatus::State::Playing;
+    return x.locked || y.locked;
+}
+
+bool Engine::toggleLoopLock(int channel, int source, int axis) {
+    channel = std::clamp(channel, 0, kChannelCount - 1);
+    source = std::clamp(source, 0, kLoopSourceCount - 1);
+    Loop& loop = loops_[loopIndex(channel, trackOf(source, axis))];
+    if (!loop.locked && loop.state != LoopStatus::State::Playing)
         return false;
-    loop.locked = true;
-    if (partner)
-        partner->locked = true;
-    if (source == static_cast<int>(LoopSource::Notes) && overdubChannel_ == channel)
+    loop.locked = !loop.locked;
+    if (loop.locked && source == static_cast<int>(LoopSource::Notes) && overdubChannel_ == channel)
         overdubChannel_ = -1;
     return true;
 }
@@ -1890,17 +1993,27 @@ float Engine::loopSample(int channel, int source, int axis, int index) const {
 }
 
 float Engine::clipSample(int channel, int slot, int source, int axis, int index) const {
-    const Loop& loop = loops_[slotIndex(std::clamp(channel, 0, kChannelCount - 1), std::clamp(slot, 0, kClipSlots - 1),
-                                        std::clamp(source, 0, kLoopSourceCount - 1))];
-    if (loop.x.empty())
+    source = std::clamp(source, 0, kLoopSourceCount - 1);
+    if (source == static_cast<int>(LoopSource::Notes))
         return -1.0f;
+    const Loop& loop = loops_[slotIndex(std::clamp(channel, 0, kChannelCount - 1), std::clamp(slot, 0, kClipSlots - 1), trackOf(source, axis))];
     const auto i = static_cast<std::size_t>(std::clamp(index, 0, kMaxLoopSamples - 1));
-    const std::uint16_t v = axis == 0 ? loop.x[i] : loop.y[i];
+    const std::uint16_t v = loop.x[i];
     return v == kLifted ? -1.0f : static_cast<float>(v) / 65534.0f;
 }
 
 void Engine::clearLoop(int channel, int source) {
-    const std::size_t index = loopIndex(std::clamp(channel, 0, kChannelCount - 1), std::clamp(source, 0, kLoopSourceCount - 1));
+    channel = std::clamp(channel, 0, kChannelCount - 1);
+    source = std::clamp(source, 0, kLoopSourceCount - 1);
+    if (source == static_cast<int>(LoopSource::Notes)) {
+        clearTrack(loopIndex(channel, kNoteTrack));
+        return;
+    }
+    clearTrack(loopIndex(channel, trackOf(source, 0)));
+    clearTrack(loopIndex(channel, trackOf(source, 1)));
+}
+
+void Engine::clearTrack(std::size_t index) {
     silenceLoop(index);
     Loop& loop = loops_[index];
     loop.state = LoopStatus::State::Empty;
@@ -1908,23 +2021,18 @@ void Engine::clearLoop(int channel, int source) {
     loop.stretch = 0;
     loop.amplitude = 100;
     loop.amplitudeNow = 1;
-    loopShaping_[index] = {-1.0f, -1.0f};
+    loopShaping_[index] = -1.0f;
     loop.locked = false;
-    const std::size_t which = index % kLoopSourceCount;
-    if (which == 2 || which == 3) {  // the other finger's lock goes with it when it has no loop
-        Loop& partner = loops_[index - which + (5 - which)];
-        if (partner.state == LoopStatus::State::Empty)
-            partner.locked = false;
-    }
-    if (sourceOfLoop(index) == static_cast<int>(LoopSource::Notes) && overdubChannel_ == channelOfLoop(index))
+    const int track = trackOfLoop(index);
+    if (track == kNoteTrack && overdubChannel_ == channelOfLoop(index))
         overdubChannel_ = -1;
 }
 
 void Engine::stopLoops(int channel) {
-    for (int source = 0; source < kLoopSourceCount; ++source) {
-        const Loop& loop = loops_[loopIndex(channel, source)];
+    for (int track = 0; track < kTrackCount; ++track) {
+        const Loop& loop = loops_[loopIndex(channel, track)];
         if (loop.state == LoopStatus::State::Playing && !loop.locked)
-            clearLoop(channel, source);
+            clearTrack(loopIndex(channel, track));
     }
     if (!currentHasLoops(channel))
         clipPlaying_[static_cast<std::size_t>(channel)] = false;
@@ -1934,8 +2042,7 @@ void Engine::pauseLoops() {
     if (loopsPaused_)
         return;
     loopsPaused_ = true;
-    for (auto& v : loopShaping_)
-        v = {-1.0f, -1.0f};
+    loopShaping_.fill(-1.0f);
     fromLoop_ = true;
     for (std::size_t i = 0; i < loops_.size(); ++i)
         silenceLoop(i);  // the notes the note loops have on
@@ -1955,8 +2062,9 @@ void Engine::playLoops() {
 }
 
 void Engine::startClipLoops(int channel) {
-    for (int source = 0; source < kLoopSourceCount; ++source) {
-        const std::size_t index = loopIndex(channel, source);
+    for (int track = 0; track < kTrackCount; ++track) {
+        const int source = sourceOfTrack(track);
+        const std::size_t index = loopIndex(channel, track);
         Loop& loop = loops_[index];
         if (loop.state != LoopStatus::State::Playing)
             continue;
@@ -1968,7 +2076,7 @@ void Engine::startClipLoops(int channel) {
         loop.phase = loop.position;
         loop.direction = reverse ? -1 : 1;
         loop.nextAt = now_;
-        loop.sentX = loop.sentY = -1;
+        loop.sentX = -1;
         loop.turns = 0;
     }
 }
@@ -1976,17 +2084,17 @@ void Engine::startClipLoops(int channel) {
 bool Engine::clipHasLoops(int channel, int slot) const {
     channel = std::clamp(channel, 0, kChannelCount - 1);
     slot = std::clamp(slot, 0, kClipSlots - 1);
-    for (int source = 0; source < kLoopSourceCount; ++source)
-        if (loops_[slotIndex(channel, slot, source)].state != LoopStatus::State::Empty)
+    for (int track = 0; track < kTrackCount; ++track)
+        if (loops_[slotIndex(channel, slot, track)].state != LoopStatus::State::Empty)
             return true;
     return false;
 }
 
-LoopStatus Engine::clipLoopStatus(int channel, int slot, int source) const {
+LoopStatus Engine::clipLoopStatus(int channel, int slot, int source, int axis) const {
     channel = std::clamp(channel, 0, kChannelCount - 1);
     slot = std::clamp(slot, 0, kClipSlots - 1);
     source = std::clamp(source, 0, kLoopSourceCount - 1);
-    const Loop& loop = loops_[slotIndex(channel, slot, source)];
+    const Loop& loop = loops_[slotIndex(channel, slot, trackOf(source, axis))];
     return {loop.state, false, false, loop.length, loop.position, loop.direction, channel, loop.stretch, loop.amplitude,
             loop.syncBeats > 0 ? loop.syncBeats * stretchFactor(loop.stretch) : 0.0, loop.locked};
 }
@@ -1994,16 +2102,14 @@ LoopStatus Engine::clipLoopStatus(int channel, int slot, int source) const {
 bool Engine::clipTurns(int channel, double& turns) const {
     const Loop* lead = nullptr;
     double leadLength = 0, leadBeats = 0;
-    const Loop& notes = loops_[loopIndex(channel, static_cast<int>(LoopSource::Notes))];
+    const Loop& notes = loops_[loopIndex(channel, kNoteTrack)];
     if (notes.state == LoopStatus::State::Playing && notes.length > 1) {
         lead = &notes;
         leadLength = notes.length;
         leadBeats = notes.syncBeats;
     } else {
-        for (int source = 0; source < kLoopSourceCount; ++source) {
-            if (source == static_cast<int>(LoopSource::Notes))
-                continue;
-            const Loop& loop = loops_[loopIndex(channel, source)];
+        for (int track = 0; track < kNoteTrack; ++track) {
+            const Loop& loop = loops_[loopIndex(channel, track)];
             const double length = loop.length * stretchFactor(loop.stretch);
             if (loop.state == LoopStatus::State::Playing && loop.length > 1 && length > leadLength) {
                 lead = &loop;
@@ -2125,9 +2231,9 @@ void Engine::setRecordSlot(int channel, int slot) {
 void Engine::switchClip(int channel, int slot) {
     const auto c = static_cast<std::size_t>(channel);
     fromLoop_ = true;
-    for (int source = 0; source < kLoopSourceCount; ++source) {
-        silenceLoop(loopIndex(channel, source));
-        loopShaping_[loopIndex(channel, source)] = {-1.0f, -1.0f};
+    for (int track = 0; track < kTrackCount; ++track) {
+        silenceLoop(loopIndex(channel, track));
+        loopShaping_[loopIndex(channel, track)] = -1.0f;
     }
     fromLoop_ = false;
     if (overdubChannel_ == channel)
@@ -2139,8 +2245,8 @@ void Engine::switchClip(int channel, int slot) {
     }
     currentSlot_[c] = recordSlot_[c] = slot;
     if (clock_.on)  // synced loops start on the beat, from their start
-        for (int source = 0; source < kLoopSourceCount; ++source) {
-            Loop& loop = loops_[loopIndex(channel, source)];
+        for (int track = 0; track < kTrackCount; ++track) {
+            Loop& loop = loops_[loopIndex(channel, track)];
             if (loop.state == LoopStatus::State::Playing && loop.syncBeats > 0)
                 loop.anchorBeat = std::round(beatAt(now_));
         }
@@ -2156,18 +2262,15 @@ void Engine::enterRecordSlot(int channel) {
 
 // Its middle, where the amplitude closes in or widens.
 void Engine::findMiddle(Loop& loop) {
-    std::uint16_t lx = 0xFFFE, hx = 0, ly = 0xFFFE, hy = 0;
+    std::uint16_t lx = 0xFFFE, hx = 0;
     for (int k = 0; k < loop.length; ++k) {
         const auto at = static_cast<std::size_t>(k);
         if (loop.x[at] == kLifted)
             continue;
         lx = std::min(lx, loop.x[at]), hx = std::max(hx, loop.x[at]);
-        ly = std::min(ly, loop.y[at]), hy = std::max(hy, loop.y[at]);
     }
-    if (lx <= hx) {
+    if (lx <= hx)
         loop.middleX = (static_cast<float>(lx) + static_cast<float>(hx)) * 0.5f / 65534.0f;
-        loop.middleY = (static_cast<float>(ly) + static_cast<float>(hy)) * 0.5f / 65534.0f;
-    }
 }
 
 std::vector<SessionLoop> Engine::sessionLoops() const {
@@ -2175,8 +2278,8 @@ std::vector<SessionLoop> Engine::sessionLoops() const {
     for (int channel = 0; channel < kChannelCount; ++channel) {
         const auto c = static_cast<std::size_t>(channel);
         for (int slot = 0; slot < kClipSlots; ++slot) {
-            for (int source = 0; source < kLoopSourceCount; ++source) {
-                const std::size_t index = slotIndex(channel, slot, source);
+            for (int track = 0; track < kTrackCount; ++track) {
+                const std::size_t index = slotIndex(channel, slot, track);
                 const Loop& loop = loops_[index];
                 if (loop.state != LoopStatus::State::Playing || loop.length < 2)
                     continue;
@@ -2185,19 +2288,19 @@ std::vector<SessionLoop> Engine::sessionLoops() const {
                 l.clip = slot;
                 l.current = slot == currentSlot_[c];
                 l.playing = l.current && clipPlaying_[c];
-                l.source = static_cast<LoopSource>(source);
+                l.source = static_cast<LoopSource>(sourceOfTrack(track));
                 l.length = loop.length;
                 l.syncBeats = loop.syncBeats;
                 l.anchorBeat = loop.anchorBeat;
                 l.locked = loop.locked;
-                if (l.source == LoopSource::Notes) {
-                    for (const NoteEvent& e : noteEvents_[index / kLoopSourceCount])
+                if (track == kNoteTrack) {
+                    for (const NoteEvent& e : noteEvents_[index / kTrackCount])
                         l.notes.push_back({e.at, e.note, e.velocity, e.on, e.press});
                 } else {
+                    l.axis = axisOfTrack(track);
                     l.stretch = loop.stretch;
                     l.amplitude = loop.amplitude;
                     l.x.assign(loop.x.begin(), loop.x.begin() + loop.length);
-                    l.y.assign(loop.y.begin(), loop.y.begin() + loop.length);
                 }
                 out.push_back(std::move(l));
             }
@@ -2216,9 +2319,8 @@ void Engine::loadSessionLoops(const std::vector<SessionLoop>& loops) {
     fromLoop_ = true;
     for (int channel = 0; channel < kChannelCount; ++channel)  // every clip of every channel goes
         for (int slot = 0; slot < kClipSlots; ++slot) {
-            currentSlot_[static_cast<std::size_t>(channel)] = slot;
-            for (int source = 0; source < kLoopSourceCount; ++source)
-                clearLoop(channel, source);
+            for (int track = 0; track < kTrackCount; ++track)
+                clearTrack(slotIndex(channel, slot, track));
             noteEvents_[static_cast<std::size_t>(channel * kClipSlots + slot)].clear();
         }
     fromLoop_ = false;
@@ -2234,32 +2336,41 @@ void Engine::loadSessionLoops(const std::vector<SessionLoop>& loops) {
             currentSlot_[c] = l.clip;
         playing[c] = playing[c] || l.playing;
         const int source = static_cast<int>(l.source);
-        const std::size_t index = slotIndex(l.channel, l.clip, source);
-        Loop& loop = loops_[index];
+        auto fill = [&](int track, const std::vector<std::uint16_t>* samples) {
+            const std::size_t index = slotIndex(l.channel, l.clip, track);
+            Loop& loop = loops_[index];
+            if (track == kNoteTrack) {
+                auto& events = noteEvents_[index / kTrackCount];
+                events.clear();
+                for (const SessionLoop::Note& n : l.notes)
+                    if (events.size() < kMaxNoteEvents)
+                        events.push_back({std::clamp(n.at, 0, l.length - 1), static_cast<std::uint8_t>(n.note & 0x7F), n.velocity, n.on, n.press});
+                for (const SessionLoop::Note& n : l.notes)  // new presses never take a number of these
+                    pressCount_ = std::max(pressCount_, n.press);
+            } else {
+                if (static_cast<int>(samples->size()) < l.length)
+                    return;
+                std::copy(samples->begin(), samples->begin() + l.length, loop.x.begin());
+                loop.stretch = std::clamp(l.stretch, kMinStretch, kMaxStretch);
+                loop.amplitude = std::clamp(l.amplitude, 0, kMaxAmplitude);
+                loop.amplitudeNow = static_cast<float>(loop.amplitude) / 100.0f;
+            }
+            loop.length = l.length;
+            loop.syncBeats = l.syncBeats;
+            loop.anchorBeat = l.anchorBeat;
+            loop.locked = l.locked;
+            loop.state = LoopStatus::State::Playing;
+            if (track != kNoteTrack)
+                findMiddle(loop);
+        };
         if (l.source == LoopSource::Notes) {
-            auto& events = noteEvents_[index / kLoopSourceCount];
-            events.clear();
-            for (const SessionLoop::Note& n : l.notes)
-                if (events.size() < kMaxNoteEvents)
-                    events.push_back({std::clamp(n.at, 0, l.length - 1), static_cast<std::uint8_t>(n.note & 0x7F), n.velocity, n.on, n.press});
-            for (const SessionLoop::Note& n : l.notes)  // new presses never take a number of these
-                pressCount_ = std::max(pressCount_, n.press);
-        } else {
-            if (static_cast<int>(l.x.size()) < l.length || static_cast<int>(l.y.size()) < l.length)
-                continue;
-            std::copy(l.x.begin(), l.x.begin() + l.length, loop.x.begin());
-            std::copy(l.y.begin(), l.y.begin() + l.length, loop.y.begin());
-            loop.stretch = std::clamp(l.stretch, kMinStretch, kMaxStretch);
-            loop.amplitude = std::clamp(l.amplitude, 0, kMaxAmplitude);
-            loop.amplitudeNow = static_cast<float>(loop.amplitude) / 100.0f;
+            fill(kNoteTrack, nullptr);
+        } else if (l.axis >= 0) {
+            fill(trackOf(source, l.axis), &l.x);
+        } else {  // from before X and Y were apart: both, alike
+            fill(trackOf(source, 0), &l.x);
+            fill(trackOf(source, 1), &l.y);
         }
-        loop.length = l.length;
-        loop.syncBeats = l.syncBeats;
-        loop.anchorBeat = l.anchorBeat;
-        loop.locked = l.locked;
-        loop.state = LoopStatus::State::Playing;
-        if (l.source != LoopSource::Notes)
-            findMiddle(loop);
     }
     for (int channel = 0; channel < kChannelCount; ++channel) {
         const auto c = static_cast<std::size_t>(channel);
@@ -2273,8 +2384,8 @@ std::uint16_t Engine::channelsWithLoops() const {
     std::uint16_t bits = 0;
     for (int channel = 0; channel < kChannelCount; ++channel) {
         bool recording = false;
-        for (int source = 0; source < kLoopSourceCount; ++source)
-            recording = recording || loops_[loopIndex(channel, source)].state == LoopStatus::State::Recording;
+        for (int track = 0; track < kTrackCount; ++track)
+            recording = recording || loops_[loopIndex(channel, track)].state == LoopStatus::State::Recording;
         if ((clipPlaying_[static_cast<std::size_t>(channel)] && currentHasLoops(channel)) || recording)
             bits = static_cast<std::uint16_t>(bits | (1u << channel));
     }
@@ -2285,9 +2396,9 @@ void Engine::stopLoops() {
     pendingStopChannel_ = -1;
     queued_.fill(-1);
     for (int channel = 0; channel < kChannelCount; ++channel) {  // the current clips; the other clips stay
-        for (int source = 0; source < kLoopSourceCount; ++source)
-            if (loops_[loopIndex(channel, source)].state == LoopStatus::State::Playing)
-                clearLoop(channel, source);
+        for (int track = 0; track < kTrackCount; ++track)
+            if (loops_[loopIndex(channel, track)].state == LoopStatus::State::Playing)
+                clearTrack(loopIndex(channel, track));
         clipPlaying_[static_cast<std::size_t>(channel)] = false;
     }
 }

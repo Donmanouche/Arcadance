@@ -473,6 +473,26 @@ Mapping mappingFromJson(const Json& j, const std::string& where) {
                 fail(at + ".playback", "expected \"forward\", \"reverse\" or \"back_and_forth\"");
             loop.ccX = readU7(value, "cc_x", loop.ccX, at);
             loop.ccY = readU7(value, "cc_y", loop.ccY, at);
+            // Steps, per axis: {"levels": 8, "step": "1/16"}.
+            for (int axis = 0; axis < 2; ++axis) {
+                const char* stepsKey = axis == 0 ? "steps_x" : "steps_y";
+                if (!value.contains(stepsKey))
+                    continue;
+                const std::string here = at + "." + stepsKey;
+                const Json& g = requireObject(value[stepsKey], here);
+                StepGrid& grid = loop.steps[static_cast<std::size_t>(axis)];
+                grid.on = true;
+                if (g.contains("levels")) {
+                    if (!g["levels"].is_number_integer() || g["levels"].get<int>() < 2 || g["levels"].get<int>() > 128)
+                        fail(here + ".levels", "expected 2 to 128");
+                    grid.levels = g["levels"].get<int>();
+                }
+                const std::string step = readString(g, "step", "1/16", here);
+                const auto name = std::find(kStepNames.begin(), kStepNames.end(), step);
+                if (name == kStepNames.end())
+                    fail(here + ".step", "expected 1/32, 1/16, 1/8, 1/4, 1/2 or 1 bar");
+                grid.step = static_cast<int>(name - kStepNames.begin());
+            }
         }
     }
     return m;
@@ -565,6 +585,11 @@ Json mappingToJson(const Mapping& m) {
                                                                   : "back_and_forth";
         lj["cc_x"] = loop.ccX;
         lj["cc_y"] = loop.ccY;
+        for (int axis = 0; axis < 2; ++axis) {
+            const StepGrid& grid = loop.steps[static_cast<std::size_t>(axis)];
+            if (grid.on)
+                lj[axis == 0 ? "steps_x" : "steps_y"] = Json{{"levels", grid.levels}, {"step", kStepNames[static_cast<std::size_t>(std::clamp(grid.step, 0, kStepChoices - 1))]}};
+        }
         static constexpr const char* kKeys[] = {"left", "right", "finger1", "finger2", "triggers", "notes"};
         loops[kKeys[s]] = lj;
     }

@@ -53,16 +53,31 @@ struct LiveState {
     std::array<Finger, midipad::kFingerCount> fingers{};
     int channel = 0;
     std::uint8_t frozenAxes = 0;  // on the active channel
-    // The active channel's loops (by LoopSource), for display: their curves
-    // reduced to kPoints.
-    struct Loop {
+    // The active channel's loops (by LoopSource), for display. A movement
+    // loop has a lane per axis (X, Y; L2, R2), each its own loop: its status,
+    // its curve reduced to kPoints over its whole length, the samples of a
+    // step when it plays in steps (0: not).
+    struct Lane {
         static constexpr int kPoints = 160;
         midipad::LoopStatus status;
-        int points = 0;  // valid entries of x, y and on, spread over the whole loop
-        std::array<std::uint8_t, kPoints> x{}, y{};  // 0-255
-        std::array<bool, kPoints> on{};              // false while a finger was lifted
+        int points = 0;                      // valid entries of v and on
+        std::array<std::uint8_t, kPoints> v{};  // 0-255
+        std::array<bool, kPoints> on{};         // false while a finger was lifted
+        int stepSamples = 0;
+    };
+    struct Loop {
+        static constexpr int kPoints = Lane::kPoints;
+        // The note loop's; a movement loop's two lanes together: recording if
+        // either records, else playing if either plays; waiting, locked if
+        // either is; the longer length; X's position, stretch and amplitude.
+        midipad::LoopStatus status;
+        std::array<Lane, 2> lanes{};
     };
     std::array<Loop, midipad::kLoopSourceCount> loops{};
+    // Shift + L3 / R3, Shift + the touchpad's click: the stick, the fingers
+    // change amplitudes instead of lengths (Engine::stickAmplitudes).
+    std::array<bool, 2> stickAmplitudes{};
+    bool fingerAmplitudes = false;
     // The active channel's note loop, as notes (in loop samples).
     static constexpr int kMaxNoteLoopNotes = 128;
     std::array<midipad::NoteInterval, kMaxNoteLoopNotes> noteLoop{};
@@ -139,7 +154,7 @@ public:
     void setChannel(int channel);
     void panic();  // also stops the loops, on every channel
     void clearLoop(int source);  // a LoopSource, on the active channel
-    void toggleLoopLock(int source);  // see Engine::toggleLoopLock, on the active channel
+    void toggleLoopLock(int source, int axis = -1);  // see Engine::toggleLoopLock, on the active channel; -1: both axes
     // Clips (Engine::launchClip, stopClip, setRecordSlot), on any channel.
     void launchClip(int channel, int slot);
     void stopClip(int channel) { launchClip(channel, midipad::Engine::kClipSlots); }
@@ -159,8 +174,11 @@ public:
     // instead of all of them, after any preset given before.
     std::optional<std::vector<midipad::SessionLoop>> sessionLoops();
     void loadSessionLoops(std::vector<midipad::SessionLoop> loops);
-    void stretchLoop(int source, int steps);  // see Engine::stretchLoop, on the active channel
-    void amplifyLoop(int source, int steps);  // see Engine::amplifyLoop, on the active channel
+    // See Engine::stretchLoop, amplifyLoop and setAxisLoopLength, on the
+    // active channel; axis -1: both.
+    void stretchLoop(int source, int axis, int steps);
+    void amplifyLoop(int source, int axis, int steps);
+    void setAxisLoopLength(int source, int axis, int length);
     void pauseLoops();  // every channel's
     void playLoops();
     void setReportMidi(bool on) { reportMidi_.store(on, std::memory_order_relaxed); }
@@ -205,11 +223,12 @@ private:
     class Tap;
     struct Command {
         enum class Kind : std::uint8_t {
-            SetChannel, Panic, ClearLoop, ToggleLock, LaunchClip, RecordSlot, StretchLoop, AmplifyLoop, PauseLoops, PlayLoops, SaveLoops, LoadLoops,
-            EditNotes
+            SetChannel, Panic, ClearLoop, ToggleLock, LaunchClip, RecordSlot, StretchLoop, AmplifyLoop, AxisLength, PauseLoops, PlayLoops,
+            SaveLoops, LoadLoops, EditNotes
         } kind;
         int channel = 0;
         int value = 0;
+        int axis = -1;
     };
 
     void run(std::stop_token stop, Options options, std::shared_ptr<const midipad::Preset> preset);
@@ -261,6 +280,7 @@ private:
     std::atomic<std::uint16_t> loopChannels_{0};
     std::atomic<bool> loopsPaused_{false};
     std::atomic<bool> stretchHeld_{false};
+    std::atomic<std::uint8_t> amplitudes_{0};  // bits: left stick, right stick, fingers
     std::atomic<int> key_{-1};  // root * 256 + scale, -1: none
     struct LinkSession;  // ableton::Link, kept out of this header
     std::unique_ptr<LinkSession> link_;

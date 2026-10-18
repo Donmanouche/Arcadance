@@ -86,9 +86,23 @@ struct AxisBinding {
 // beside the stick, on CCs of its own.
 enum class LoopPlayback : std::uint8_t { Forward, Reverse, BackAndForth };
 
+// A movement loop played in steps: each step holds one value, on one of
+// `levels` levels of the CC range. `step` indexes kStepBeats.
+struct StepGrid {
+    bool on = false;
+    int levels = 8;  // 2 to 128
+    int step = 1;    // 1/32, 1/16, 1/8, 1/4, 1/2, 1 bar
+    friend bool operator==(const StepGrid&, const StepGrid&) = default;
+};
+inline constexpr int kStepChoices = 6;
+inline constexpr std::array<const char*, kStepChoices> kStepNames{"1/32", "1/16", "1/8", "1/4", "1/2", "1 bar"};
+// A step's length in beats; a bar is 0 here (its beats come from the clock's bar).
+inline constexpr std::array<double, kStepChoices> kStepBeats{0.125, 0.25, 0.5, 1.0, 2.0, 0.0};
+
 struct LoopBinding {
     LoopPlayback playback = LoopPlayback::Forward;
     std::uint8_t ccX = 70, ccY = 71;
+    std::array<StepGrid, 2> steps{};  // X (L2), Y (R2)
     friend bool operator==(const LoopBinding&, const LoopBinding&) = default;
 };
 
@@ -100,12 +114,12 @@ inline constexpr int kLoopSourceCount = 6;
 
 // By default on CC 70/71, 72/73 (sticks), 74/75, 76/77 (fingers) and 78/79
 // (triggers); a note loop sends the notes it recorded, its CCs are unused.
-inline constexpr std::array<LoopBinding, kLoopSourceCount> kDefaultLoops{{{LoopPlayback::Forward, 70, 71},
-                                                                          {LoopPlayback::Forward, 72, 73},
-                                                                          {LoopPlayback::Forward, 74, 75},
-                                                                          {LoopPlayback::Forward, 76, 77},
-                                                                          {LoopPlayback::Forward, 78, 79},
-                                                                          {LoopPlayback::Forward, 0, 0}}};
+inline constexpr std::array<LoopBinding, kLoopSourceCount> kDefaultLoops{{{LoopPlayback::Forward, 70, 71, {}},
+                                                                          {LoopPlayback::Forward, 72, 73, {}},
+                                                                          {LoopPlayback::Forward, 74, 75, {}},
+                                                                          {LoopPlayback::Forward, 76, 77, {}},
+                                                                          {LoopPlayback::Forward, 78, 79, {}},
+                                                                          {LoopPlayback::Forward, 0, 0, {}}}};
 
 enum class TouchMode : std::uint8_t { Off, Axis, Zones };
 

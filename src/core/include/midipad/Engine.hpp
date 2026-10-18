@@ -164,7 +164,11 @@ public:
     static constexpr float kLoopMoveThreshold = 0.06f;  // of the [0, 1] travel
     static constexpr int kLoopTapMs = 500;
     static constexpr int kDoubleTapMs = 350;
-    LoopStatus loopStatus(int channel, int source) const;
+    // Movement loops keep their two axes apart: a stick's left-right (X) and
+    // up-down (Y), a finger's, L2 (X) and R2 (Y). Each axis records when it
+    // moves (an axis not enabled never does) and has its own length, stretch,
+    // amplitude and sync; `axis` is 0 for X, 1 for Y. The note loop has one.
+    LoopStatus loopStatus(int channel, int source, int axis = 0) const;
     // Clips: each channel keeps kClipSlots clips, each a full set of loops
     // (notes, sticks, triggers, fingers). A channel plays one clip at a time,
     // independently of the others; the loops above are those of its current
@@ -177,11 +181,18 @@ public:
     // into this slot, a new clip when it is empty; the current clip stops
     // when that recording starts.
     static constexpr int kClipSlots = 8;
+    // A clip's tracks: each movement source's X and Y (source * 2 + axis), then the note loop.
+    static constexpr int kTrackCount = 11, kNoteTrack = 10;
+    static constexpr int trackOf(int source, int axis) {
+        return source == static_cast<int>(LoopSource::Notes) ? kNoteTrack : source * 2 + (axis & 1);
+    }
+    static constexpr int sourceOfTrack(int track) { return track == kNoteTrack ? static_cast<int>(LoopSource::Notes) : track / 2; }
+    static constexpr int axisOfTrack(int track) { return track == kNoteTrack ? 0 : track % 2; }
     int currentClip(int channel) const { return currentSlot_[static_cast<std::size_t>(std::clamp(channel, 0, kChannelCount - 1))]; }
     bool clipPlaying(int channel) const { return clipPlaying_[static_cast<std::size_t>(std::clamp(channel, 0, kChannelCount - 1))]; }
     int queuedClip(int channel) const { return queued_[static_cast<std::size_t>(std::clamp(channel, 0, kChannelCount - 1))]; }  // -1 none, kClipSlots a stop
     bool clipHasLoops(int channel, int slot) const;
-    LoopStatus clipLoopStatus(int channel, int slot, int source) const;
+    LoopStatus clipLoopStatus(int channel, int slot, int source, int axis = 0) const;
     float clipSample(int channel, int slot, int source, int axis, int index) const;  // as loopSample
     int clipNoteIntervals(int channel, int slot, NoteInterval* out, int max) const;  // as noteLoopIntervals
     float clipProgress(int channel) const;  // how far the playing clip is in its turn, 0-1; -1: none plays
@@ -206,13 +217,16 @@ public:
     // [0, 1]; axis 0: X, 1: Y (a finger's Y grows downwards). Negative while a
     // finger was lifted.
     float loopSample(int channel, int source, int axis, int index) const;
-    void clearLoop(int channel, int source);  // also unlocks it
+    void clearLoop(int channel, int source);  // both axes; also unlocks it
     // A locked loop stays: Record neither replaces it nor stops it, nor
     // overdubs a locked note loop. Clearing it (clearLoop, PANIC) unlocks it.
-    // The touchpad fingers' loops lock together. Only a loop that plays can be
-    // locked; false when there is none.
-    bool loopLocked(int channel, int source) const;
+    // Each axis loop locks on its own: toggleLoopLock with an axis locks or
+    // unlocks that one; without, the source's (both axes: unlocked if either
+    // is locked, else those that play). Only a loop that plays can be locked;
+    // false when there is none.
+    bool loopLocked(int channel, int source) const;  // either axis
     bool toggleLoopLock(int channel, int source);
+    bool toggleLoopLock(int channel, int source, int axis);
     // A movement loop (not the note loop) played slower or faster, in steps
     // of a half: stretch > 0 lasts 1 + stretch / 2 times as long (up to 100),
     // stretch < 0 1 + |stretch| / 2 times less (down to 20). It plays on from
@@ -221,7 +235,11 @@ public:
     // puts it back to 0. Moving across 0 stops there, so 1x is easy to reach.
     static constexpr int kMaxStretch = 198, kMinStretch = -38;
     static double stretchFactor(int stretch);  // how many times longer it lasts
-    void stretchLoop(int channel, int source, int steps);
+    void stretchLoop(int channel, int source, int axis, int steps);
+    void stretchLoop(int channel, int source, int steps) {  // both axes
+        stretchLoop(channel, source, 0, steps);
+        stretchLoop(channel, source, 1, steps);
+    }
     // A movement loop's swing narrowed or widened around its middle (halfway
     // between its lowest and highest values): from 0 % (still) through 100 % (as
     // recorded) up to kMaxAmplitude, by kAmplitudeStep percent a step below 100 %
@@ -230,15 +248,31 @@ public:
     // (see shapeAmplitude). Eased in, so it never jumps. Moving across 100 %
     // stops there. Recording the loop again puts it back to 100 %.
     static constexpr int kAmplitudeStep = 5, kAmplitudeStepAbove = 25, kMaxAmplitude = 800;
-    void amplifyLoop(int channel, int source, int steps);
+    void amplifyLoop(int channel, int source, int axis, int steps);
+    void amplifyLoop(int channel, int source, int steps) {  // both axes
+        amplifyLoop(channel, source, 0, steps);
+        amplifyLoop(channel, source, 1, steps);
+    }
+    // One axis of a movement loop shortened or lengthened to `length` samples
+    // (2 up to kMaxLoopSamples): longer, the time added goes in a straight line
+    // from its last value back to its first, so it closes without a jump. A
+    // synced one keeps whole beats. False without that loop playing.
+    bool setAxisLoopLength(int channel, int source, int axis, int length);
+    // An axis playing in steps (LoopBinding::steps): the samples of a step; 0 when not.
+    int loopStepSamples(int channel, int source, int axis) const;
+    // Shift + a stick's click (L3, R3) or the touchpad's: the stick, or the
+    // fingers, change the loops' amplitudes instead of their lengths (again: back).
+    bool stickAmplitudes(int stick) const { return stickAmplitudes_[static_cast<std::size_t>(stick & 1)]; }
+    bool fingerAmplitudes() const { return fingerAmplitudes_; }
     // One recorded value `v` in [0, 1] with the amplitude `a` (1 = as recorded)
     // around `middle`, softly clipped to [0, 1] when widened. Shared with the
     // view, which draws what plays.
     static float shapeAmplitude(float v, float middle, float a);
-    // While a LoopStretch binding is held, a stick or a finger on the touchpad
-    // (in axis mode) changes its loops on the active channel: along X their
-    // stretch, as Shift + wheel does; along Y their amplitude, as Ctrl + wheel
-    // does (up widens). Only the way it mostly moves counts. A stick works as a
+    // While Shift is on, a stick or a finger on the touchpad (in axis mode)
+    // changes its loops on the active channel: along X its X loop, along Y its
+    // Y loop; their stretch, as Shift + wheel does, or (after a click of the
+    // stick, or of the touchpad) their amplitude, as Ctrl + wheel does (up
+    // widens). Only the way it mostly moves counts. A stick works as a
     // wheel kept turning, faster the further it is pushed (kStretchMinRate to
     // kStretchMaxRate stretch steps, kAmplitudeMaxRate amplitude steps a second
     // beyond kStretchDeadZone); a finger counts a step every kStretchTouchStep
@@ -366,7 +400,7 @@ private:
     TapTempo tapTempo_;
     std::optional<double> tappedTempo_;
     int snapBeats_ = 1, beatsPerBar_ = 4, quantize_ = 0;
-    void sendLoopValue(std::size_t loop, float x, float y);
+    void sendLoopValue(std::size_t loop, float v);
     void playLoopNotes(std::size_t loop);
     // `press`: the press the note comes from (0: none); `leadAt`: when the
     // press's first note sounds, which the quantizer puts on the grid.
@@ -394,10 +428,9 @@ private:
     // Where each finger last was, kept once lifted (Velocity / Transpose axes); 0.5: untouched.
     std::array<std::array<float, 2>, kFingerCount> fingerHeld_{{{0.5f, 0.5f}, {0.5f, 0.5f}}};
     // The X, Y a movement loop last played for Velocity / Transpose axes; < 0: none.
-    std::array<std::array<float, 2>, kChannelCount * kClipSlots * kLoopSourceCount> loopShaping_ = [] {
-        std::array<std::array<float, 2>, kChannelCount * kClipSlots * kLoopSourceCount> none{};
-        for (auto& v : none)
-            v = {-1.0f, -1.0f};
+    std::array<float, kChannelCount * kClipSlots * kTrackCount> loopShaping_ = [] {
+        std::array<float, kChannelCount * kClipSlots * kTrackCount> none{};
+        none.fill(-1.0f);
         return none;
     }();
     // Per channel and note of the note loop: how far the note on was transposed.
@@ -427,18 +460,18 @@ private:
 
     struct Loop {
         LoopStatus::State state = LoopStatus::State::Empty;
-        // kMaxLoopSamples each, allocated once; [0, 1] as 0-65534, kLifted
+        // One axis: kMaxLoopSamples, allocated once; [0, 1] as 0-65534, kLifted
         // when the finger was off the touchpad.
-        std::vector<std::uint16_t> x, y;
+        std::vector<std::uint16_t> x;
         int length = 0, position = 0, direction = 1;
         double phase = 0;  // movement loops: the position, between samples
         int stretch = 0;
         int amplitude = 100;
         double syncBeats = 0, anchorBeat = 0, startBeat = 0;  // synced: length, where it starts on the clock
         float amplitudeNow = 1;            // eased towards amplitude / 100
-        float middleX = 0.5f, middleY = 0.5f;  // halfway between the lowest and highest samples
+        float middleX = 0.5f;  // halfway between its lowest and highest samples
         std::uint64_t nextAt = 0;
-        int sentX = -1, sentY = -1;
+        int sentX = -1;
         bool locked = false;
         double turns = 0;  // free: how many times round since it started
     };
@@ -446,17 +479,27 @@ private:
     static void findMiddle(Loop& loop);  // a movement loop's middle, from its samples
     // A synced loop's place now, from the beat clock: its phase in samples and the way it goes.
     void syncedPhase(const Loop& loop, LoopPlayback playback, double beat, double& phase, int& direction) const;
-    // Every clip's loops: slotIndex(channel, slot, source); loopIndex, the current clip's.
-    static constexpr int kChannelLoops = kClipSlots * kLoopSourceCount;
-    static constexpr std::size_t slotIndex(int channel, int slot, int source) {
-        return static_cast<std::size_t>((channel * kClipSlots + slot) * kLoopSourceCount + source);
+    // A clip's tracks: each movement source's X and Y (track source * 2 +
+    // axis), then the note loop. Every clip's: slotIndex(channel, slot,
+    // track); loopIndex, the current clip's.
+    static constexpr int kChannelLoops = kClipSlots * kTrackCount;
+    static constexpr std::size_t slotIndex(int channel, int slot, int track) {
+        return static_cast<std::size_t>((channel * kClipSlots + slot) * kTrackCount + track);
     }
     static constexpr int channelOfLoop(std::size_t index) { return static_cast<int>(index / kChannelLoops); }
-    static constexpr int sourceOfLoop(std::size_t index) { return static_cast<int>(index % kLoopSourceCount); }
-    static constexpr int slotOfLoop(std::size_t index) { return static_cast<int>(index / kLoopSourceCount % kClipSlots); }
-    std::size_t loopIndex(int channel, int source) const {
-        return slotIndex(channel, currentSlot_[static_cast<std::size_t>(channel)], source);
+    static constexpr int trackOfLoop(std::size_t index) { return static_cast<int>(index % kTrackCount); }
+    static constexpr int slotOfLoop(std::size_t index) { return static_cast<int>(index / kTrackCount % kClipSlots); }
+    std::size_t loopIndex(int channel, int track) const {
+        return slotIndex(channel, currentSlot_[static_cast<std::size_t>(channel)], track);
     }
+    void clearTrack(std::size_t index);
+    // Where a track's control is now, [0, 1]; false for a lifted finger (or the notes).
+    bool trackPosition(int track, float& v) const;
+    // Is that axis enabled in the mapping of `channel` (and a finger in axis mode)?
+    bool trackEnabled(int channel, int track) const;
+    int stepLength(std::size_t index) const;  // see loopStepSamples
+    // Its playing value: held on the step grid's levels when it plays in steps.
+    float stepped(std::size_t index, float v) const;
     std::array<Loop, kChannelCount * kChannelLoops> loops_;
     std::array<int, kChannelCount> currentSlot_{}, recordSlot_{};
     std::array<bool, kChannelCount> clipPlaying_{};
@@ -473,9 +516,9 @@ private:
     // The hold of a LoopRecord binding: on which channel, which sources may
     // still start recording, and where they were when it began.
     int holdChannel_ = 0;
-    std::array<bool, kLoopSourceCount> waiting_{};
-    std::array<std::array<float, 2>, kLoopSourceCount> holdStart_{};
-    std::array<bool, kLoopSourceCount> holdStartOn_{};
+    std::array<bool, kTrackCount> waiting_{};
+    std::array<float, kTrackCount> holdStart_{};
+    std::array<bool, kTrackCount> holdStartOn_{};
     // Note loops: the notes recorded per channel, sorted by `at` once recorded,
     // and the notes each loop has on.
     struct NoteEvent {
@@ -541,12 +584,14 @@ private:
     std::array<double, 2> stickStretchRest_{}, stickAmplitudeRest_{};
     int stretchFinger_ = -1;
     float stretchFingerX_ = 0, stretchFingerY_ = 0;
-    std::array<std::uint64_t, kLoopSourceCount> stretchPausedUntil_{};
+    std::array<std::uint64_t, kTrackCount> stretchPausedUntil_{};
+    std::array<bool, 2> stickAmplitudes_{};
+    bool fingerAmplitudes_ = false;
     std::uint64_t lastStretchTick_ = 0;
     void stretchFromControls();
     void stretchPausing(int source, int steps);
     void amplifyPausing(int source, int steps);
-    std::array<std::uint64_t, kLoopSourceCount> amplitudePausedUntil_{};
+    std::array<std::uint64_t, kTrackCount> amplitudePausedUntil_{};
     bool recordedThisHold_ = false;
     // The session screen: its button, whether it shows, the events asked, and
     // the stick's and the D-pad's pushes held, with when they repeat.
@@ -564,7 +609,7 @@ private:
     // Shift + Record: which sources toggled their lock this hold (a finger
     // counts for both), and whether one did.
     void lockFromControls();
-    std::array<bool, kLoopSourceCount> lockToggled_{};
+    std::array<bool, kTrackCount> lockToggled_{};
     bool lockedThisHold_ = false;
     // Shift + two taps on Record: when the first tap ended (0: none), on which
     // channel, the overdub before it, and the stop it asked for, held back.

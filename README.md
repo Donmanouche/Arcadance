@@ -23,8 +23,14 @@ Written in C++20, Linux first; Windows and macOS packages are planned.
   hand-drawn LFOs. Every MIDI channel has its own loops, all playing together:
   layer chords on channel 1, a bass line on channel 2, a filter sweep on top.
   Overdub, forward / reverse / back-and-forth playback, Play and Stop for every
-  loop at once. Lock a loop (right-click its panel, or Shift + Record from the
+  loop at once. Lock a loop (right-click its lane, or Shift + Record from the
   controller) and Record keeps it.
+- **Each axis loops on its own.** A stick's X and Y, L2 and R2, a finger's two
+  axes are separate loops, each with its own length, stretch, amplitude and
+  lock: record X now and Y later, at another length. Shorten or lengthen an
+  axis loop by dragging its end, and play it in steps, held on a beat grid
+  (1/32 to 1 bar) and a number of levels, like a step sequencer, the
+  recording kept as it was.
 - **Clips and a session screen.** Each channel keeps up to eight clips, each a
   full set of its loops. The session screen shows them all, a column per
   channel: move with the sticks or the D-pad, press L3 or R3 to launch a clip

@@ -20,6 +20,7 @@ struct SessionLoop {
     int clip = 0;     // its clip's slot, 0 to Engine::kClipSlots - 1
     bool current = true, playing = true;  // its clip is the channel's current one, and plays
     LoopSource source = LoopSource::LeftStick;
+    int axis = -1;  // a movement loop's: 0 X, 1 Y, its samples in x; -1 (older files): both, in x and y
     int length = 0;  // samples, at Engine::kLoopRateHz
     int stretch = 0, amplitude = 100;  // movement loops
     double syncBeats = 0, anchorBeat = 0;  // synced to the beat clock: its beats and where it starts; 0: free

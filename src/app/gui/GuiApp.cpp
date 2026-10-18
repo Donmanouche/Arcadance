@@ -275,26 +275,31 @@ LiveState demoLive(double t) {
 
     // Movement loops, recorded at Engine::kLoopRateHz, playing.
     const double samples = t * Engine::kLoopRateHz;
-    auto curve = [&](LoopSource source, int length, double fx, double fy, double phase, bool backAndForth) {
+    auto curve = [&](LoopSource source, int lengthX, int lengthY, double fx, double fy, double phase, bool backAndForth) {
         auto& l = s.loops[static_cast<std::size_t>(source)];
-        l.status.state = LoopStatus::State::Playing;
-        l.status.length = length;
-        const int lap = static_cast<int>(samples) / length;
-        const int at = static_cast<int>(samples) % length;
-        l.status.direction = backAndForth && lap % 2 ? -1 : 1;
-        l.status.position = l.status.direction > 0 ? at : length - 1 - at;
-        l.points = LiveState::Loop::kPoints;
-        for (int i = 0; i < l.points; ++i) {
-            const double u = 2 * 3.14159265358979 * i / l.points;
-            const auto k = static_cast<std::size_t>(i);
-            l.x[k] = static_cast<std::uint8_t>(128 + 100 * std::sin(fx * u + phase));
-            l.y[k] = static_cast<std::uint8_t>(128 + 90 * std::sin(fy * u));
-            l.on[k] = source != LoopSource::Finger1 || i % 53 < 40;  // a lifted finger now and then
+        for (int k = 0; k < 2; ++k) {
+            auto& lane = l.lanes[static_cast<std::size_t>(k)];
+            const int length = k == 0 ? lengthX : lengthY;
+            lane.status.state = LoopStatus::State::Playing;
+            lane.status.length = length;
+            const int lap = static_cast<int>(samples) / length;
+            const int at = static_cast<int>(samples) % length;
+            lane.status.direction = backAndForth && lap % 2 ? -1 : 1;
+            lane.status.position = lane.status.direction > 0 ? at : length - 1 - at;
+            lane.points = LiveState::Lane::kPoints;
+            for (int i = 0; i < lane.points; ++i) {
+                const double u = 2 * 3.14159265358979 * i / lane.points;
+                const auto p = static_cast<std::size_t>(i);
+                lane.v[p] = static_cast<std::uint8_t>(k == 0 ? 128 + 100 * std::sin(fx * u + phase) : 128 + 90 * std::sin(fy * u));
+                lane.on[p] = source != LoopSource::Finger1 || i % 53 < 40;  // a lifted finger now and then
+            }
         }
+        l.status = l.lanes[0].status;
+        l.status.length = std::max(lengthX, lengthY);
     };
-    curve(LoopSource::LeftStick, 800, 1, 2, 0, true);
-    curve(LoopSource::Finger1, 800, 2, 3, 0.5, false);
-    curve(LoopSource::Triggers, 400, 1, 1, 1.2, false);
+    curve(LoopSource::LeftStick, 800, 600, 1, 2, 0, true);
+    curve(LoopSource::Finger1, 800, 800, 2, 3, 0.5, false);
+    curve(LoopSource::Triggers, 400, 1000, 1, 1, 1.2, false);
 
     // A note loop: Fm9, Bbm9, Dbmaj9, Ebadd9 over eight seconds, a melody on top.
     auto& n = s.loops[static_cast<std::size_t>(LoopSource::Notes)];
@@ -777,6 +782,8 @@ void GuiApp::update() {
     runtime_->setKey(settings_.key);
     if (const auto source = editor_.takeClearLoopRequest())
         runtime_->clearLoop(*source);
+    if (const auto length = editor_.takeAxisLengthRequest())  // an axis loop's end dragged in a control's window
+        runtime_->setAxisLoopLength(length->source, length->axis, length->length);
     while (runtime_->popReport()) {
     }
     // The notes sent, for the piano roll, at the time they were sent.
@@ -1207,8 +1214,9 @@ void GuiApp::sessionEvent(Engine::SessionEvent e, const LiveState& live) {
     switch (e) {
     case E::Up: moveSessionCursor(sessionChannel_, sessionSlot_ - 1, live); break;
     case E::Down: moveSessionCursor(sessionChannel_, sessionSlot_ + 1, live); break;
-    case E::Left: moveSessionCursor(sessionChannel_ - 1, sessionSlot_, live); break;
-    case E::Right: moveSessionCursor(sessionChannel_ + 1, sessionSlot_, live); break;
+    // Left of channel 1 is channel 16, right of 16 is 1.
+    case E::Left: moveSessionCursor((sessionChannel_ + kChannelCount - 1) % kChannelCount, sessionSlot_, live); break;
+    case E::Right: moveSessionCursor((sessionChannel_ + 1) % kChannelCount, sessionSlot_, live); break;
     case E::Press: pressClip(sessionChannel_, sessionSlot_, live); break;
     case E::Toggle: break;
     }
@@ -1677,15 +1685,15 @@ void GuiApp::drawPerformance(const LiveState& live) {
         else
             runtime_->moveLoopNotes(std::move(edit->notes), edit->samples, edit->semitones, edit->byDegrees);
     }
-    if (const auto source = performance_.takeLockRequest())  // a right-click on a LOOP panel or the piano roll
-        runtime_->toggleLoopLock(*source);
+    if (const auto lock = performance_.takeLockRequest())  // a right-click on a LOOP panel, a lane or the piano roll
+        runtime_->toggleLoopLock(lock->source, lock->axis);
     if (const auto stretch = performance_.takeStretchRequest())  // Shift + wheel over a LOOP panel
-        for (int source = 0; source < kLoopSourceCount; ++source)
-            if (stretch->sources & (1u << source)) {
+        for (int track = 0; track < Engine::kNoteTrack; ++track)
+            if (stretch->tracks & (1u << track)) {
                 if (stretch->amplitude)
-                    runtime_->amplifyLoop(source, stretch->steps);
+                    runtime_->amplifyLoop(Engine::sourceOfTrack(track), Engine::axisOfTrack(track), stretch->steps);
                 else
-                    runtime_->stretchLoop(source, stretch->steps);
+                    runtime_->stretchLoop(Engine::sourceOfTrack(track), Engine::axisOfTrack(track), stretch->steps);
             }
     ImGui::EndChild();
     ImGui::PopStyleColor();
@@ -2477,7 +2485,8 @@ void GuiApp::drawMappingOverlay(const LiveState& live) {
         ImGui::EndDisabled();
         ImGui::SameLine();
         if (ImGui::Button("Close") || (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) &&
-                                       ImGui::IsKeyPressed(ImGuiKey_Escape) && !(spec == "notes" && performance_.tookEscape())))
+                                       ImGui::IsKeyPressed(ImGuiKey_Escape) && !(spec == "notes" && performance_.tookEscape()) &&
+                                       !editor_.tookEscape()))
             open = false;
         ImGui::PopFont();
     }

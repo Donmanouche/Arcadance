@@ -164,13 +164,17 @@ void Runtime::setLinkStartStopSync(bool on) {
 void Runtime::panic() { commands_.push({Command::Kind::Panic}); }
 
 void Runtime::clearLoop(int source) { commands_.push({Command::Kind::ClearLoop, source}); }
-void Runtime::toggleLoopLock(int source) { commands_.push({Command::Kind::ToggleLock, source}); }
+void Runtime::toggleLoopLock(int source, int axis) { commands_.push({Command::Kind::ToggleLock, source, 0, axis}); }
 void Runtime::launchClip(int channel, int slot) { commands_.push({Command::Kind::LaunchClip, channel, slot}); }
 void Runtime::setRecordSlot(int channel, int slot) { commands_.push({Command::Kind::RecordSlot, channel, slot}); }
 
-void Runtime::stretchLoop(int source, int steps) { commands_.push({Command::Kind::StretchLoop, source, steps}); }
+void Runtime::stretchLoop(int source, int axis, int steps) { commands_.push({Command::Kind::StretchLoop, source, steps, axis}); }
 
-void Runtime::amplifyLoop(int source, int steps) { commands_.push({Command::Kind::AmplifyLoop, source, steps}); }
+void Runtime::amplifyLoop(int source, int axis, int steps) { commands_.push({Command::Kind::AmplifyLoop, source, steps, axis}); }
+
+void Runtime::setAxisLoopLength(int source, int axis, int length) {
+    commands_.push({Command::Kind::AxisLength, source, length, axis});
+}
 
 std::optional<std::vector<midipad::SessionLoop>> Runtime::sessionLoops() {
     std::future<std::vector<midipad::SessionLoop>> answer;
@@ -250,6 +254,9 @@ LiveState Runtime::live() const {
     s.loopChannels = loopChannels_.load(std::memory_order_relaxed);
     s.loopsPaused = loopsPaused_.load(std::memory_order_relaxed);
     s.stretchHeld = stretchHeld_.load(std::memory_order_relaxed);
+    const std::uint8_t amplitudes = amplitudes_.load(std::memory_order_relaxed);
+    s.stickAmplitudes = {(amplitudes & 1u) != 0, (amplitudes & 2u) != 0};
+    s.fingerAmplitudes = (amplitudes & 4u) != 0;
     s.velocityShaping = velocityShaping_.load(std::memory_order_relaxed);
     s.transposeNotes = transposeNotes_.load(std::memory_order_relaxed);
     s.transposeLoop = transposeLoop_.load(std::memory_order_relaxed);
@@ -333,6 +340,9 @@ void Runtime::publish(const GamepadInput& gamepad, const Engine& engine) {
     loopChannels_.store(engine.channelsWithLoops(), std::memory_order_relaxed);
     loopsPaused_.store(engine.loopsPaused(), std::memory_order_relaxed);
     stretchHeld_.store(engine.stretchHeld(), std::memory_order_relaxed);
+    amplitudes_.store(static_cast<std::uint8_t>((engine.stickAmplitudes(0) ? 1u : 0u) | (engine.stickAmplitudes(1) ? 2u : 0u) |
+                                                (engine.fingerAmplitudes() ? 4u : 0u)),
+                      std::memory_order_relaxed);
     const auto shaping = engine.shaping(engine.channel());
     velocityShaping_.store(shaping.velocity, std::memory_order_relaxed);
     transposeNotes_.store(shaping.transposeNotes, std::memory_order_relaxed);
@@ -346,16 +356,31 @@ void Runtime::publish(const GamepadInput& gamepad, const Engine& engine) {
     for (int s = 0; s < kLoopSourceCount; ++s) {
         LiveState::Loop& loop = loops_[static_cast<std::size_t>(s)];
         loop.status = engine.loopStatus(channel, s);
-        const int length = loop.status.length;
-        loop.points = s == static_cast<int>(LoopSource::Notes) ? 0 : std::min(length, LiveState::Loop::kPoints);
-        for (int i = 0; i < loop.points; ++i) {
-            const int at = loop.points > 1 ? static_cast<int>(static_cast<long long>(i) * (length - 1) / (loop.points - 1)) : 0;
-            const float x = engine.loopSample(channel, s, 0, at), y = engine.loopSample(channel, s, 1, at);
-            constexpr float scale = 255.0f;
-            loop.on[static_cast<std::size_t>(i)] = x >= 0;
-            loop.x[static_cast<std::size_t>(i)] = static_cast<std::uint8_t>(std::lround(std::max(x, 0.0f) * scale));
-            loop.y[static_cast<std::size_t>(i)] = static_cast<std::uint8_t>(std::lround(std::max(y, 0.0f) * scale));
+        if (s == static_cast<int>(LoopSource::Notes))
+            continue;
+        for (int axis = 0; axis < 2; ++axis) {
+            LiveState::Lane& lane = loop.lanes[static_cast<std::size_t>(axis)];
+            lane.status = engine.loopStatus(channel, s, axis);
+            lane.stepSamples = engine.loopStepSamples(channel, s, axis);
+            const int length = lane.status.length;
+            lane.points = std::min(length, LiveState::Lane::kPoints);
+            for (int i = 0; i < lane.points; ++i) {
+                const int at = lane.points > 1 ? static_cast<int>(static_cast<long long>(i) * (length - 1) / (lane.points - 1)) : 0;
+                const float v = engine.loopSample(channel, s, axis, at);
+                lane.on[static_cast<std::size_t>(i)] = v >= 0;
+                lane.v[static_cast<std::size_t>(i)] = static_cast<std::uint8_t>(std::lround(std::max(v, 0.0f) * 255.0f));
+            }
         }
+        // Both lanes together.
+        const LoopStatus& x = loop.lanes[0].status;
+        const LoopStatus& y = loop.lanes[1].status;
+        using State = LoopStatus::State;
+        loop.status.state = x.state == State::Recording || y.state == State::Recording ? State::Recording
+                            : x.state == State::Playing || y.state == State::Playing   ? State::Playing
+                                                                                       : State::Empty;
+        loop.status.waiting = x.waiting || y.waiting;
+        loop.status.locked = x.locked || y.locked;
+        loop.status.length = std::max(x.length, y.length);
     }
     noteLoopCount_ = engine.noteLoopIntervals(channel, noteLoop_.data(), LiveState::kMaxNoteLoopNotes);
 
@@ -377,40 +402,48 @@ void Runtime::publish(const GamepadInput& gamepad, const Engine& engine) {
         for (int k = 0; k < Engine::kClipSlots; ++k) {
             LiveState::Clip& clip = clips_[static_cast<std::size_t>(c * Engine::kClipSlots + k)];
             clip = {};
-            for (int src = 0; src < kLoopSourceCount; ++src) {
-                const LoopStatus st = engine.clipLoopStatus(c, k, src);
-                if (st.state == LoopStatus::State::Empty)
-                    continue;
-                clip.sources = static_cast<std::uint8_t>(clip.sources | (1u << src));
-                clip.recording = clip.recording || st.state == LoopStatus::State::Recording;
-            }
+            for (int src = 0; src < kLoopSourceCount; ++src)
+                for (int axis = 0; axis < (src == static_cast<int>(LoopSource::Notes) ? 1 : 2); ++axis) {
+                    const LoopStatus st = engine.clipLoopStatus(c, k, src, axis);
+                    if (st.state == LoopStatus::State::Empty)
+                        continue;
+                    clip.sources = static_cast<std::uint8_t>(clip.sources | (1u << src));
+                    clip.recording = clip.recording || st.state == LoopStatus::State::Recording;
+                }
             if (!clip.sources)
                 continue;
             // A curve per module: the axis of its loop (a finger: finger 1's, else 2's) that moves most.
             static constexpr int kCurveSource[4][2] = {{0, 0}, {1, 1}, {4, 4}, {2, 3}};
             for (int m = 0; m < 4; ++m) {
-                int src = -1;
-                for (int option : kCurveSource[m])
-                    if (src < 0 && (clip.sources & (1u << option)) && engine.clipLoopStatus(c, k, option).state == LoopStatus::State::Playing)
-                        src = option;
-                if (src < 0)
-                    continue;
-                const int length = engine.clipLoopStatus(c, k, src).length;
-                std::array<std::array<float, LiveState::Clip::kCurvePoints>, 2> v{};
-                float lo[2] = {1, 1}, hi[2] = {0, 0};
-                for (int i = 0; i < LiveState::Clip::kCurvePoints; ++i) {
-                    const int at = static_cast<int>(static_cast<long long>(i) * (length - 1) / (LiveState::Clip::kCurvePoints - 1));
+                // Each axis over its own length; the one with the widest swing.
+                std::array<float, LiveState::Clip::kCurvePoints> best{}, v{};
+                float bestSwing = -1;
+                for (int src : kCurveSource[m]) {
+                    if (bestSwing >= 0 || !(clip.sources & (1u << src)))
+                        continue;  // finger 2 only without finger 1
                     for (int axis = 0; axis < 2; ++axis) {
-                        const float x = std::max(engine.clipSample(c, k, src, axis, at), 0.0f);
-                        v[static_cast<std::size_t>(axis)][static_cast<std::size_t>(i)] = x;
-                        lo[axis] = std::min(lo[axis], x);
-                        hi[axis] = std::max(hi[axis], x);
+                        const LoopStatus st = engine.clipLoopStatus(c, k, src, axis);
+                        if (st.state != LoopStatus::State::Playing)
+                            continue;
+                        float lo = 1, hi = 0;
+                        for (int i = 0; i < LiveState::Clip::kCurvePoints; ++i) {
+                            const int at = static_cast<int>(static_cast<long long>(i) * (st.length - 1) / (LiveState::Clip::kCurvePoints - 1));
+                            const float x = std::max(engine.clipSample(c, k, src, axis, at), 0.0f);
+                            v[static_cast<std::size_t>(i)] = x;
+                            lo = std::min(lo, x);
+                            hi = std::max(hi, x);
+                        }
+                        if (hi - lo > bestSwing) {
+                            bestSwing = hi - lo;
+                            best = v;
+                        }
                     }
                 }
-                const int axis = hi[1] - lo[1] > hi[0] - lo[0] ? 1 : 0;
+                if (bestSwing < 0)
+                    continue;
                 for (int i = 0; i < LiveState::Clip::kCurvePoints; ++i)
                     clip.curves[static_cast<std::size_t>(m)][static_cast<std::size_t>(i)] =
-                        static_cast<std::uint8_t>(std::lround(v[static_cast<std::size_t>(axis)][static_cast<std::size_t>(i)] * 255.0f));
+                        static_cast<std::uint8_t>(std::lround(best[static_cast<std::size_t>(i)] * 255.0f));
             }
             if (clip.sources & (1u << static_cast<int>(LoopSource::Notes))) {
                 std::array<NoteInterval, LiveState::Clip::kNotes> notes{};
@@ -487,15 +520,26 @@ void Runtime::run(std::stop_token stop, Options options, std::shared_ptr<const P
             } else if (command->kind == Command::Kind::ClearLoop) {
                 engine.clearLoop(engine.channel(), command->channel);  // `channel` holds the source
             } else if (command->kind == Command::Kind::ToggleLock) {
-                engine.toggleLoopLock(engine.channel(), command->channel);  // `channel` holds the source
+                if (command->axis < 0)  // `channel` holds the source
+                    engine.toggleLoopLock(engine.channel(), command->channel);
+                else
+                    engine.toggleLoopLock(engine.channel(), command->channel, command->axis);
             } else if (command->kind == Command::Kind::LaunchClip) {
                 engine.launchClip(command->channel, command->value);
             } else if (command->kind == Command::Kind::RecordSlot) {
                 engine.setRecordSlot(command->channel, command->value);
-            } else if (command->kind == Command::Kind::StretchLoop) {
-                engine.stretchLoop(engine.channel(), command->channel, command->value);  // `channel` holds the source
+            } else if (command->kind == Command::Kind::StretchLoop) {  // `channel` holds the source
+                if (command->axis < 0)
+                    engine.stretchLoop(engine.channel(), command->channel, command->value);
+                else
+                    engine.stretchLoop(engine.channel(), command->channel, command->axis, command->value);
             } else if (command->kind == Command::Kind::AmplifyLoop) {
-                engine.amplifyLoop(engine.channel(), command->channel, command->value);  // `channel` holds the source
+                if (command->axis < 0)
+                    engine.amplifyLoop(engine.channel(), command->channel, command->value);
+                else
+                    engine.amplifyLoop(engine.channel(), command->channel, command->axis, command->value);
+            } else if (command->kind == Command::Kind::AxisLength) {
+                engine.setAxisLoopLength(engine.channel(), command->channel, std::max(command->axis, 0), command->value);
             } else if (command->kind == Command::Kind::EditNotes) {
                 std::lock_guard lock(sessionMutex_);
                 if (!noteEdits_.empty()) {
@@ -607,7 +651,7 @@ void Runtime::run(std::stop_token stop, Options options, std::shared_ptr<const P
                 clockPulse = -1;
             }
         } else {
-            engine.setBeatClock({});
+            engine.setBeatClock({false, internalTempo_.load(std::memory_order_relaxed), 0});  // (loops in steps follow its tempo)
             linkPlayingKnown = false;
         }
         internalAt = start;
