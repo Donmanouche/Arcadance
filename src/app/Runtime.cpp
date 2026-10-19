@@ -164,11 +164,11 @@ void Runtime::setLinkStartStopSync(bool on) {
 void Runtime::panic() { commands_.push({Command::Kind::Panic}); }
 
 void Runtime::clearLoop(int source, int axis) { commands_.push({Command::Kind::ClearLoop, source, 0, axis}); }
-void Runtime::setChainStep(int channel, int step, int clip, int repeats) {
-    commands_.push({Command::Kind::ChainStep, channel, step, clip, repeats});
+void Runtime::setChainStep(int channel, int chain, int step, int clip, int repeats) {
+    commands_.push({Command::Kind::ChainStep, channel, step, clip, repeats, chain});
 }
-void Runtime::setChainLoop(int channel, bool on) { commands_.push({Command::Kind::ChainLoop, channel, on ? 1 : 0}); }
-void Runtime::chainGoTo(int channel, int step) { commands_.push({Command::Kind::ChainGo, channel, step}); }
+void Runtime::setChainThen(int channel, int chain, int then) { commands_.push({Command::Kind::ChainThen, channel, then, -1, 0, chain}); }
+void Runtime::chainGoTo(int channel, int chain, int step) { commands_.push({Command::Kind::ChainGo, channel, step, -1, 0, chain}); }
 void Runtime::stopChain(int channel) { commands_.push({Command::Kind::ChainStop, channel}); }
 void Runtime::clearClip(int channel, int slot) { commands_.push({Command::Kind::ClearClip, channel, slot}); }
 void Runtime::copyClip(int channel, int from, int to) { commands_.push({Command::Kind::CopyClip, channel, from, to}); }
@@ -207,6 +207,14 @@ void Runtime::loadSessionLoops(std::vector<midipad::SessionLoop> loops) {
         loopsToLoad_ = std::move(loops);
     }
     commands_.push({Command::Kind::LoadLoops});
+}
+
+void Runtime::loadSessionChains(std::vector<midipad::SessionChain> chains) {
+    {
+        std::lock_guard lock(sessionMutex_);
+        chainsToLoad_ = std::move(chains);
+    }
+    commands_.push({Command::Kind::LoadChains});
 }
 
 void Runtime::moveLoopNotes(std::vector<midipad::LoopNoteRef> notes, int samples, int semitones, bool byDegrees) {
@@ -404,17 +412,22 @@ void Runtime::publish(const GamepadInput& gamepad, const Engine& engine) {
         queuedClip_[ci] = static_cast<std::int8_t>(engine.queuedClip(c));
         recordSlot_[ci] = static_cast<std::int8_t>(engine.recordSlot(c));
         clipProgress_[ci] = engine.clipProgress(c);
-        LiveState::Chain& chain = chains_[ci];
-        for (int k = 0; k < Engine::kChainSteps; ++k) {
-            const Engine::ChainStep st = engine.chainStep(c, k);
-            chain.clip[static_cast<std::size_t>(k)] = static_cast<std::int8_t>(st.clip);
-            chain.repeats[static_cast<std::size_t>(k)] = static_cast<std::uint8_t>(st.repeats);
+        LiveState::Chains& chains = chains_[ci];
+        for (int n = 0; n < Engine::kChains; ++n) {
+            LiveState::Chain& chain = chains.list[static_cast<std::size_t>(n)];
+            for (int k = 0; k < Engine::kChainSteps; ++k) {
+                const Engine::ChainStep st = engine.chainStep(c, n, k);
+                chain.clip[static_cast<std::size_t>(k)] = static_cast<std::int8_t>(st.clip);
+                chain.repeats[static_cast<std::size_t>(k)] = static_cast<std::uint8_t>(st.repeats);
+            }
+            chain.then = static_cast<std::int8_t>(engine.chainThen(c, n));
         }
-        chain.loop = engine.chainLoop(c);
-        chain.at = static_cast<std::int8_t>(engine.chainAt(c));
-        chain.next = static_cast<std::int8_t>(engine.chainNext(c));
-        chain.turns = engine.chainTurns(c);
-        chain.clipNow = static_cast<std::int8_t>(engine.chainClip(c));
+        chains.playing = static_cast<std::int8_t>(engine.chainPlaying(c));
+        chains.at = static_cast<std::int8_t>(engine.chainAt(c));
+        chains.next = static_cast<std::int8_t>(engine.chainNext(c));
+        chains.nextChain = static_cast<std::int8_t>(engine.chainNextChain(c));
+        chains.turns = engine.chainTurns(c);
+        chains.clipNow = static_cast<std::int8_t>(engine.chainClip(c));
         if (engine.clipPlaying(c))
             clipsPlaying_ = static_cast<std::uint16_t>(clipsPlaying_ | (1u << c));
     }
@@ -546,11 +559,11 @@ void Runtime::run(std::stop_token stop, Options options, std::shared_ptr<const P
                 else
                     engine.clearLoop(engine.channel(), command->channel, command->axis);
             } else if (command->kind == Command::Kind::ChainStep) {
-                engine.setChainStep(command->channel, command->value, {command->axis, command->extra});
-            } else if (command->kind == Command::Kind::ChainLoop) {
-                engine.setChainLoop(command->channel, command->value != 0);
+                engine.setChainStep(command->channel, command->chain, command->value, {command->axis, command->extra});
+            } else if (command->kind == Command::Kind::ChainThen) {
+                engine.setChainThen(command->channel, command->chain, command->value);
             } else if (command->kind == Command::Kind::ChainGo) {
-                engine.chainGoTo(command->channel, command->value);
+                engine.chainGoTo(command->channel, command->chain, command->value);
             } else if (command->kind == Command::Kind::ChainStop) {
                 engine.stopChain(command->channel);
             } else if (command->kind == Command::Kind::ClearClip) {
@@ -604,6 +617,10 @@ void Runtime::run(std::stop_token stop, Options options, std::shared_ptr<const P
                 std::lock_guard lock(sessionMutex_);
                 engine.loadSessionLoops(loopsToLoad_);
                 loopsToLoad_.clear();
+            } else if (command->kind == Command::Kind::LoadChains) {
+                std::lock_guard lock(sessionMutex_);
+                engine.loadSessionChains(chainsToLoad_);
+                chainsToLoad_.clear();
             } else if (command->kind == Command::Kind::PauseLoops || command->kind == Command::Kind::PlayLoops) {
                 const bool play = command->kind == Command::Kind::PlayLoops;
                 // The loops at once, whatever the session does: they play even

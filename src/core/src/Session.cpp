@@ -117,8 +117,13 @@ Json sessionToJson(const Session& session) {
                                                : Json::array({st.clip + 1, st.repeats}));
             Json o;
             o["channel"] = c.channel + 1;
-            if (!c.loop)
-                o["loop"] = false;
+            o["chain"] = std::string(1, static_cast<char>('A' + c.index));
+            if (c.then != -1)
+                o["then"] = c.then == -2 ? std::string("stop") : std::string(1, static_cast<char>('A' + c.then));
+            if (!c.name.empty())
+                o["name"] = c.name;
+            if (c.shown)
+                o["shown"] = true;
             o["steps"] = std::move(steps);
             chains.push_back(std::move(o));
         }
@@ -220,10 +225,35 @@ Session sessionFromJson(const Json& j) {
                 fail(where, "expected an object");
             SessionChain c;
             c.channel = readInt(o, "channel", 1, 16, 1, where) - 1;
-            if (o.contains("loop")) {
+            // A chain letter, "loop", "stop" or another chain's letter.
+            auto letter = [&](const Json& v, const std::string& at, bool words) {
+                const std::string text = v.is_string() ? v.get<std::string>() : std::string();
+                if (words && text == "loop")
+                    return -1;
+                if (words && text == "stop")
+                    return -2;
+                if (text.size() != 1 || text[0] < 'A' || text[0] > 'H')
+                    fail(at, words ? "expected \"loop\", \"stop\" or a chain from \"A\" to \"H\"" : "expected a chain from \"A\" to \"H\"");
+                return text[0] - 'A';
+            };
+            if (o.contains("chain"))
+                c.index = letter(o["chain"], where + ".chain", false);
+            if (o.contains("loop")) {  // from before there were several chains
                 if (!o["loop"].is_boolean())
                     fail(where + ".loop", "expected true or false");
-                c.loop = o["loop"].get<bool>();
+                c.then = o["loop"].get<bool>() ? -1 : -2;
+            }
+            if (o.contains("then"))
+                c.then = letter(o["then"], where + ".then", true);
+            if (o.contains("name")) {
+                if (!o["name"].is_string())
+                    fail(where + ".name", "expected a name");
+                c.name = o["name"].get<std::string>().substr(0, 24);
+            }
+            if (o.contains("shown")) {
+                if (!o["shown"].is_boolean())
+                    fail(where + ".shown", "expected true or false");
+                c.shown = o["shown"].get<bool>();
             }
             if (o.contains("steps")) {
                 const Json& steps = o["steps"];

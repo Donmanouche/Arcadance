@@ -444,6 +444,7 @@ private:
     std::optional<ContextMenu> menu_;
     // Renaming a channel (its block's menu).
     int renameChannel_ = -1;
+    int renameChain_ = -1;  // a chain of that channel; -1: the channel itself
     std::string renameInput_;
     bool openRename_ = false;
     void drawRenameDialog();
@@ -469,10 +470,17 @@ private:
     }
     std::string bindingName(ActionType type, const char* fallback) const;
     int sessionSlot_ = 0, sessionChannel_ = 0;  // sessionSlot_ kClipSlots: the cursor is in the chain
-    int chainCursor_ = 0;  // its step there (kChainSteps: the end)
+    int chainCursor_ = 0;  // its step there (kChainSteps: the CHAIN cell)
+    std::array<int, kChannelCount> shownChain_{};  // the chain the session screen shows, per channel
+    PerformanceView::ChainNames chainNames_;  // kept in the session
     // The cursor in the chain: L3 (`press`), R3 (`clear`), the right stick (`clipSteps` up / down, `repeatSteps` left / right).
     void chainEvent(Engine::SessionEvent e, const LiveState& live);
-    void setChainStep(int channel, int step, int clip, int repeats) { runtime_->setChainStep(channel, step, clip, repeats); }
+    // On the chain the session screen shows for the channel.
+    int shownChain(int channel) const { return shownChain_[static_cast<std::size_t>(std::clamp(channel, 0, kChannelCount - 1))]; }
+    void setChainStep(int channel, int step, int clip, int repeats) { runtime_->setChainStep(channel, shownChain(channel), step, clip, repeats); }
+    void showChain(int channel, int chain) {
+        shownChain_[static_cast<std::size_t>(std::clamp(channel, 0, kChannelCount - 1))] = (chain % Engine::kChains + Engine::kChains) % Engine::kChains;
+    }
     int sessionChannelAsked_ = -1;  // a channel asked of the runtime, not shown by it yet
     void sessionEvent(midipad::Engine::SessionEvent e, const LiveState& live);
     void moveSessionCursor(int channel, int slot, const LiveState& live);
@@ -1362,7 +1370,7 @@ void GuiApp::sessionEvent(Engine::SessionEvent e, const LiveState& live) {
         else if (chainCursor_ < Engine::kChainSteps)
             openMenu({K::Step, sessionChannel_, chainCursor_}, live, true, {});
         else
-            openMenu({K::Channel, sessionChannel_}, live, true, {});
+            openMenu({K::Chain, sessionChannel_, shownChain(sessionChannel_)}, live, true, {});
         return;
     }
     if (e == E::Back)
@@ -1375,9 +1383,9 @@ void GuiApp::sessionEvent(Engine::SessionEvent e, const LiveState& live) {
     case E::Up: moveSessionCursor(sessionChannel_, sessionSlot_ - 1, live); break;
     case E::Down:
         if (sessionSlot_ == Engine::kClipSlots - 1) {  // past the last clip: into the chain
-            const int at = live.chains[static_cast<std::size_t>(sessionChannel_)].at;
+            const LiveState::Chains& chains = live.chains[static_cast<std::size_t>(sessionChannel_)];
             sessionSlot_ = Engine::kClipSlots;
-            chainCursor_ = at >= 0 ? at : 0;
+            chainCursor_ = chains.at >= 0 && chains.playing == shownChain(sessionChannel_) ? chains.at : 0;
         } else {
             moveSessionCursor(sessionChannel_, sessionSlot_ + 1, live);
         }
@@ -1398,37 +1406,54 @@ void GuiApp::sessionEvent(Engine::SessionEvent e, const LiveState& live) {
 void GuiApp::chainEvent(Engine::SessionEvent e, const LiveState& live) {
     using E = Engine::SessionEvent;
     const int ch = sessionChannel_;
-    const LiveState::Chain& chain = live.chains[static_cast<std::size_t>(ch)];
-    const bool onEnd = chainCursor_ == Engine::kChainSteps;
+    const LiveState::Chains& chains = live.chains[static_cast<std::size_t>(ch)];
+    const int shown = shownChain(ch);
+    const LiveState::Chain& chain = chains.list[static_cast<std::size_t>(shown)];
+    const bool runs = chains.at >= 0 && chains.playing == shown;
+    const bool onCell = chainCursor_ == Engine::kChainSteps;  // the CHAIN cell
     const auto k = static_cast<std::size_t>(std::min(chainCursor_, Engine::kChainSteps - 1));
     const int clip = chain.clip[k], repeats = chain.repeats[k];
     switch (e) {
     case E::Up: moveSessionCursor(ch, Engine::kClipSlots - 1, live); break;  // back to the clips
     case E::Left: chainCursor_ = std::max(chainCursor_ - 1, 0); break;
     case E::Right: chainCursor_ = std::min(chainCursor_ + 1, Engine::kChainSteps); break;
-    case E::Press:  // L3: start there; on the step playing, go on; on the end, loop or stop
-        if (onEnd)
-            runtime_->setChainLoop(ch, !chain.loop);
-        else if (chain.at >= 0 && chain.at == chainCursor_)
-            runtime_->chainGoTo(ch, (chain.at + 1) % Engine::kChainSteps);
-        else
-            runtime_->chainGoTo(ch, chainCursor_);
+    case E::Press:  // Select: start there; on the step playing, go on; on the CHAIN cell, play or stop the chain
+        if (onCell) {
+            if (runs)
+                runtime_->stopChain(ch);
+            else
+                runtime_->chainGoTo(ch, shown, 0);
+        } else if (runs && chains.at == chainCursor_) {
+            runtime_->chainGoTo(ch, shown, (chains.at + 1) % Engine::kChainSteps);
+        } else {
+            runtime_->chainGoTo(ch, shown, chainCursor_);
+        }
         break;
     case E::PressRight:  // R3: empty the step
-        if (!onEnd && clip >= 0)
+        if (!onCell && clip >= 0)
             setChainStep(ch, chainCursor_, -1, repeats);
         break;
     case E::ValueUp:
     case E::ValueDown:
-        if (onEnd)
-            runtime_->setChainLoop(ch, !chain.loop);
+        if (onCell)  // another chain: up the previous, down the next
+            showChain(ch, shown + (e == E::ValueUp ? -1 : 1));
         else
             setChainStep(ch, chainCursor_, std::clamp(clip + (e == E::ValueUp ? 1 : -1), -1, Engine::kChainRandom), clip >= 0 ? repeats : 1);
         break;
     case E::ValueLeft:
     case E::ValueRight:
-        if (!onEnd && clip >= 0)
+        if (onCell) {  // what comes after its last step: back to step 1, stop, chain A, B...
+            std::vector<int> choices{Engine::kThenLoop, Engine::kThenStop};
+            for (int n = 0; n < Engine::kChains; ++n)
+                if (n != shown)
+                    choices.push_back(n);
+            const auto it = std::find(choices.begin(), choices.end(), static_cast<int>(chain.then));
+            const int at = it == choices.end() ? 0 : static_cast<int>(it - choices.begin());
+            const int count = static_cast<int>(choices.size());
+            runtime_->setChainThen(ch, shown, choices[static_cast<std::size_t>((at + (e == E::ValueRight ? 1 : count - 1)) % count)]);
+        } else if (clip >= 0) {
             setChainStep(ch, chainCursor_, clip, PerformanceView::nextRepeats(repeats, e == E::ValueRight ? 1 : -1));
+        }
         break;
     default: break;
     }
@@ -1523,7 +1548,7 @@ namespace {
 enum MenuId : int {
     kLaunch, kStop, kRecordHere, kDuplicate, kAddToChain, kClearClip,
     kStartHere, kRandom, kInsertStep, kDeleteStep, kEmptyStep,
-    kChannelStop, kChainOn, kChainOff, kEndLoop, kEndStop, kClearChain,
+    kChannelStop, kChainOn, kChainOff, kThenLoop, kThenStop, kThenNext, kPrevChain, kNextChain, kDuplicateChain, kRenameChain, kClearChain,
     kLock, kUnlock, kClearLoop, kResetShape, kSettings, kEditNotes, kPrevChannel, kNextChannel, kRename
 };
 
@@ -1537,7 +1562,12 @@ void GuiApp::openMenu(const PerformanceView::MenuTarget& t, const LiveState& liv
     menu.at = at;
     auto add = [&](std::string label, int id, bool enabled = true) { menu.items.push_back({std::move(label), id, enabled}); };
     const auto c = static_cast<std::size_t>(std::clamp(t.channel, 0, kChannelCount - 1));
-    const LiveState::Chain& chain = live.chains[c];
+    const LiveState::Chains& chains = live.chains[c];
+    const int shown = t.kind == K::Chain ? std::clamp(t.slot, 0, Engine::kChains - 1) : shownChain(t.channel);
+    const LiveState::Chain& chain = chains.list[static_cast<std::size_t>(shown)];
+    const bool runs = chains.at >= 0 && chains.playing == shown;
+    const std::string chainName = "CHAIN " + PerformanceView::chainLetter(shown) +
+                                  (chainNames_[c][static_cast<std::size_t>(shown)].empty() ? "" : "  " + chainNames_[c][static_cast<std::size_t>(shown)]);
     static constexpr const char* kSourceNames[] = {"LEFT STICK", "RIGHT STICK", "FINGER 1", "FINGER 2", "TRIGGERS", "NOTES"};
     const int source = std::clamp(t.source, 0, kLoopSourceCount - 1);
     switch (t.kind) {
@@ -1562,7 +1592,7 @@ void GuiApp::openMenu(const PerformanceView::MenuTarget& t, const LiveState& liv
     }
     case K::Step: {
         const bool has = chain.clip[static_cast<std::size_t>(t.slot)] >= 0;
-        menu.title = "STEP " + std::to_string(t.slot + 1) + "\nchain " + std::to_string(t.channel + 1);
+        menu.title = "STEP " + std::to_string(t.slot + 1) + "\nchain " + PerformanceView::chainLetter(shown);
         add("Start from here", kStartHere, has);
         add("Random (R)", kRandom);
         add("Insert a step", kInsertStep);
@@ -1570,21 +1600,35 @@ void GuiApp::openMenu(const PerformanceView::MenuTarget& t, const LiveState& liv
         add("Empty it", kEmptyStep, has);
         break;
     }
-    case K::Channel: {
-        bool any = false;
-        for (int k = 0; k < Engine::kChainSteps; ++k)
-            any = any || chain.clip[static_cast<std::size_t>(k)] >= 0;
+    case K::Channel:
         menu.title = "CHANNEL " + std::to_string(t.channel + 1);
         add("Stop", kChannelStop, ((live.clipsPlaying >> t.channel) & 1u) != 0);
-        if (chain.at >= 0)
+        if (chains.at >= 0)
             add("Chain off", kChainOff);
         else
-            add("Chain on", kChainOn, any);
-        if (chain.loop)
-            add("End: stop", kEndStop);
+            add("Chain " + PerformanceView::chainLetter(shown) + " on", kChainOn, !chain.empty());
+        break;
+    case K::Chain: {
+        menu.title = chainName + "\nchannel " + std::to_string(t.channel + 1);
+        if (runs)
+            add("Stop the chain", kChainOff);
         else
-            add("End: back to step 1", kEndLoop);
-        add("Clear the chain", kClearChain, any);
+            add("Play", kChainOn, !chain.empty());
+        // Then another chain: the one after the chain it goes to now (after this one at first), never itself.
+        int next = chain.then >= 0 ? (chain.then + 1) % Engine::kChains : (shown + 1) % Engine::kChains;
+        if (next == shown)
+            next = (next + 1) % Engine::kChains;
+        add("Then: back to step 1", kThenLoop, chain.then != Engine::kThenLoop);
+        add("Then: stop", kThenStop, chain.then != Engine::kThenStop);
+        add("Then: chain " + PerformanceView::chainLetter(next), kThenNext);
+        add("Previous chain", kPrevChain);
+        add("Next chain", kNextChain);
+        bool free = false;
+        for (const LiveState::Chain& other : chains.list)
+            free = free || (&other != &chain && other.empty());
+        add("Duplicate", kDuplicateChain, !chain.empty() && free);
+        add("Rename\xE2\x80\xA6", kRenameChain);
+        add("Clear", kClearChain, !chain.empty() || chain.then != Engine::kThenLoop);
         break;
     }
     case K::Lane:
@@ -1637,16 +1681,18 @@ void GuiApp::runMenu(const PerformanceView::MenuTarget& t, int id, const LiveSta
     using K = PerformanceView::MenuTarget::Kind;
     const int ch = std::clamp(t.channel, 0, kChannelCount - 1);
     const auto c = static_cast<std::size_t>(ch);
-    const LiveState::Chain& chain = live.chains[c];
+    const int shown = t.kind == K::Chain ? std::clamp(t.slot, 0, Engine::kChains - 1) : shownChain(ch);
+    const LiveState::Chains& chains = live.chains[c];
+    const LiveState::Chain& chain = chains.list[static_cast<std::size_t>(shown)];
     auto openWindow = [&](const std::string& spec) {
         overlayAppearing_ = overlaySpec_ != spec;
         overlaySpec_ = spec;
         optionsOpen_ = false;
     };
-    // The chain's steps, rewritten from `steps` (clip, repeats).
-    auto writeChain = [&](const std::vector<std::pair<int, int>>& steps) {
+    // A chain's steps, rewritten from `steps` (clip, repeats).
+    auto writeChain = [&](const std::vector<std::pair<int, int>>& steps, int into) {
         for (int k = 0; k < Engine::kChainSteps; ++k)
-            setChainStep(ch, k, steps[static_cast<std::size_t>(k)].first, steps[static_cast<std::size_t>(k)].second);
+            runtime_->setChainStep(ch, into, k, steps[static_cast<std::size_t>(k)].first, steps[static_cast<std::size_t>(k)].second);
     };
     std::vector<std::pair<int, int>> steps;
     for (int k = 0; k < Engine::kChainSteps; ++k)
@@ -1672,29 +1718,59 @@ void GuiApp::runMenu(const PerformanceView::MenuTarget& t, int id, const LiveSta
             }
         break;
     case kClearClip: runtime_->clearClip(ch, t.slot); break;
-    case kStartHere: runtime_->chainGoTo(ch, t.slot); break;
+    case kStartHere: runtime_->chainGoTo(ch, shown, t.slot); break;
     case kRandom:
         setChainStep(ch, t.slot, Engine::kChainRandom, std::max<int>(chain.repeats[static_cast<std::size_t>(t.slot)], 0));
         break;
     case kInsertStep:
         steps.insert(steps.begin() + t.slot, {-1, 1});
         steps.pop_back();
-        writeChain(steps);
+        writeChain(steps, shown);
         break;
     case kDeleteStep:
         steps.erase(steps.begin() + t.slot);
         steps.push_back({-1, 1});
-        writeChain(steps);
+        writeChain(steps, shown);
         break;
     case kEmptyStep: setChainStep(ch, t.slot, -1, 1); break;
     case kChannelStop: runtime_->stopClip(ch); break;
-    case kChainOn: runtime_->chainGoTo(ch, 0); break;
+    case kChainOn: runtime_->chainGoTo(ch, shown, 0); break;
     case kChainOff: runtime_->stopChain(ch); break;
-    case kEndLoop: runtime_->setChainLoop(ch, true); break;
-    case kEndStop: runtime_->setChainLoop(ch, false); break;
+    case kThenLoop: runtime_->setChainThen(ch, shown, Engine::kThenLoop); break;
+    case kThenStop: runtime_->setChainThen(ch, shown, Engine::kThenStop); break;
+    case kThenNext: {  // the chain after the one it goes to now (after this one, at first), never itself
+        int next = chain.then >= 0 ? (chain.then + 1) % Engine::kChains : (shown + 1) % Engine::kChains;
+        if (next == shown)
+            next = (next + 1) % Engine::kChains;
+        runtime_->setChainThen(ch, shown, next);
+        break;
+    }
+    case kPrevChain: showChain(ch, shown - 1); break;
+    case kNextChain: showChain(ch, shown + 1); break;
+    case kDuplicateChain:
+        for (int n = 1; n < Engine::kChains; ++n) {  // into the first empty chain after it, shown then
+            const int into = (shown + n) % Engine::kChains;
+            if (!chains.list[static_cast<std::size_t>(into)].empty())
+                continue;
+            writeChain(steps, into);
+            runtime_->setChainThen(ch, into, chain.then == into ? Engine::kThenLoop : chain.then);
+            chainNames_[c][static_cast<std::size_t>(into)] = chainNames_[c][static_cast<std::size_t>(shown)];
+            showChain(ch, into);
+            break;
+        }
+        break;
+    case kRenameChain:
+        renameChannel_ = ch;
+        renameChain_ = shown;
+        renameInput_ = chainNames_[c][static_cast<std::size_t>(shown)];
+        openRename_ = true;
+        break;
     case kClearChain:
-        runtime_->stopChain(ch);
-        writeChain(std::vector<std::pair<int, int>>(Engine::kChainSteps, {-1, 1}));
+        if (chains.playing == shown)
+            runtime_->stopChain(ch);
+        writeChain(std::vector<std::pair<int, int>>(Engine::kChainSteps, {-1, 1}), shown);
+        runtime_->setChainThen(ch, shown, Engine::kThenLoop);
+        chainNames_[c][static_cast<std::size_t>(shown)].clear();
         break;
     case kLock:
     case kUnlock:
@@ -1715,6 +1791,7 @@ void GuiApp::runMenu(const PerformanceView::MenuTarget& t, int id, const LiveSta
     case kPrevChannel: runtime_->setChannel((ch + kChannelCount - 1) % kChannelCount); break;
     case kRename:
         renameChannel_ = ch;
+        renameChain_ = -1;
         renameInput_ = preset_.channelNames[c];
         openRename_ = true;
         break;
@@ -1821,9 +1898,9 @@ void GuiApp::drawHelpOverlay() {
     const std::string closeHint = "let go of " + mode + " to close";
     if (sessionView_) {
         rows = {{{"Left stick", "D-pad"}, "move the cursor (down past the clips: the chain)"},
-                {select, "launch or stop the clip; in the chain: start there, or go on"},
+                {select, "launch or stop the clip; in the chain: start there, or go on; on CHAIN: play or stop it"},
                 {{menu.empty() ? "Menu" : menu}, menu.empty() ? "the menu " + unset : "the menu: duplicate, clear, add to the chain\xE2\x80\xA6"},
-                {{"Right stick"}, "left / right: the channel; in the chain: the clip (up, down), its repeats"},
+                {{"Right stick"}, "left / right: the channel; in the chain: the clip (up, down), its repeats; on CHAIN: another chain (up, down), what comes after it"},
                 {{rec}, "record into the slot under the cursor"},
                 {{back.empty() ? "Back" : back}, back.empty() ? "close a menu " + unset : "close a menu"},
                 {{mode}, "back to the main screen;  " + shift + " + " + mode + ": edit mode"}};
@@ -2293,6 +2370,7 @@ void GuiApp::drawPerformance(const LiveState& live) {
     // In the session screen and edit mode, the left stick moves and the right one sets values.
     runtime_->setSessionValues(sessionView_ || editView_);
     performance_.setChannelNames(preset_.channelNames);
+    performance_.setChains(shownChain_, chainNames_);
     performance_.setEditMode(editView_ && !overlaySpec_ && !optionsOpen_);
     if (sessionView_) {
         // A clip clicked: the cursor goes there, its channel becomes the active
@@ -2305,11 +2383,11 @@ void GuiApp::drawPerformance(const LiveState& live) {
                 sessionSlot_ = Engine::kClipSlots;
                 chainCursor_ = act->slot;
             } else if (act->kind == Kind::ChainGo) {
-                runtime_->chainGoTo(act->channel, act->slot);
+                runtime_->chainGoTo(act->channel, shownChain(act->channel), act->slot);
             } else if (act->kind == Kind::ChainStop) {
                 runtime_->stopChain(act->channel);
-            } else if (act->kind == Kind::ChainLoop) {
-                runtime_->setChainLoop(act->channel, act->on);
+            } else if (act->kind == Kind::ChainShow) {
+                showChain(act->channel, act->slot);
             } else if (act->kind == Kind::Stop) {
                 runtime_->stopClip(act->channel);
             } else if (act->kind == Kind::Launch) {
@@ -3352,19 +3430,18 @@ void GuiApp::openSession(const std::string& name) {
     pushToEngine();
     runtime_->setChannel(session.channel);
     runtime_->loadSessionLoops(std::move(session.loops));
-    // Its chains; a channel without one gets an empty chain.
-    for (int ch = 0; ch < kChannelCount; ++ch) {
-        const SessionChain* chain = nullptr;
-        for (const SessionChain& c : session.chains)
-            if (c.channel == ch)
-                chain = &c;
-        for (int k = 0; k < Engine::kChainSteps; ++k) {
-            const bool has = chain && k < static_cast<int>(chain->steps.size());
-            runtime_->setChainStep(ch, k, has ? chain->steps[static_cast<std::size_t>(k)].clip : -1,
-                                   has ? chain->steps[static_cast<std::size_t>(k)].repeats : 1);
-        }
-        runtime_->setChainLoop(ch, !chain || chain->loop);
+    // Its chains (the others emptied), their names, the one shown on each channel.
+    shownChain_.fill(0);
+    for (auto& names : chainNames_)
+        names.fill({});
+    for (const SessionChain& c : session.chains) {
+        if (c.channel < 0 || c.channel >= kChannelCount || c.index < 0 || c.index >= Engine::kChains)
+            continue;
+        chainNames_[static_cast<std::size_t>(c.channel)][static_cast<std::size_t>(c.index)] = c.name;
+        if (c.shown)
+            shownChain_[static_cast<std::size_t>(c.channel)] = c.index;
     }
+    runtime_->loadSessionChains(std::move(session.chains));
     sessionName_ = name;
     log("Session \"" + name + "\" opened.");
 }
@@ -3393,18 +3470,21 @@ bool GuiApp::saveSessionAs(const std::string& name) {
     session.channel = now.channel;
     session.tempo = now.clock != ClockMode::Free ? now.tempo : settings_.tempo;
     session.loops = std::move(*loops);
-    for (int ch = 0; ch < kChannelCount; ++ch) {  // the chains that hold something
-        const LiveState::Chain& live = now.chains[static_cast<std::size_t>(ch)];
-        SessionChain chain;
-        chain.channel = ch;
-        chain.loop = live.loop;
-        bool any = !live.loop;
-        for (int k = 0; k < Engine::kChainSteps; ++k) {
-            chain.steps.push_back({live.clip[static_cast<std::size_t>(k)], live.repeats[static_cast<std::size_t>(k)]});
-            any = any || live.clip[static_cast<std::size_t>(k)] >= 0;
+    for (int ch = 0; ch < kChannelCount; ++ch) {  // the chains that hold something, or are shown
+        const auto c = static_cast<std::size_t>(ch);
+        for (int n = 0; n < Engine::kChains; ++n) {
+            const LiveState::Chain& live = now.chains[c].list[static_cast<std::size_t>(n)];
+            SessionChain chain;
+            chain.channel = ch;
+            chain.index = n;
+            chain.then = live.then;
+            chain.name = chainNames_[c][static_cast<std::size_t>(n)];
+            chain.shown = n == shownChain_[c] && n != 0;
+            for (int k = 0; k < Engine::kChainSteps; ++k)
+                chain.steps.push_back({live.clip[static_cast<std::size_t>(k)], live.repeats[static_cast<std::size_t>(k)]});
+            if (!live.empty() || live.then != Engine::kThenLoop || !chain.name.empty() || chain.shown)
+                session.chains.push_back(std::move(chain));
         }
-        if (any)
-            session.chains.push_back(std::move(chain));
     }
     try {
         midipad::saveSession(session, sessionPath(name));
@@ -3559,28 +3639,38 @@ void GuiApp::drawDialogs() {
     drawAboutDialog();
 }
 
+// Renames a channel (kept in the preset) or one of its chains (kept in the session).
 void GuiApp::drawRenameDialog() {
-    constexpr const char* kTitle = "Rename the channel";
+    constexpr const char* kTitle = "Rename";
     if (openRename_) {
         ImGui::OpenPopup(kTitle);
         openRename_ = false;
     }
     if (!beginDialog(kTitle))
         return;
-    ImGui::Text("Channel %d", renameChannel_ + 1);
+    const bool chain = renameChain_ >= 0 && renameChain_ < Engine::kChains;
+    if (chain)
+        ImGui::Text("Chain %s  \xC2\xB7  channel %d", PerformanceView::chainLetter(renameChain_).c_str(), renameChannel_ + 1);
+    else
+        ImGui::Text("Channel %d", renameChannel_ + 1);
     if (ImGui::IsWindowAppearing())
         ImGui::SetKeyboardFocusHere();
     ImGui::SetNextItemWidth(ImGui::GetFontSize() * 16);
-    const bool enter = ImGui::InputTextWithHint("##channelname", "BASS, PADS, DRUMS\xE2\x80\xA6", &renameInput_, ImGuiInputTextFlags_EnterReturnsTrue);
-    ImGui::TextDisabled("Kept in the preset. Empty: no name.");
+    const bool enter = ImGui::InputTextWithHint("##channelname", chain ? "VERSE, CHORUS, BREAK\xE2\x80\xA6" : "BASS, PADS, DRUMS\xE2\x80\xA6",
+                                                &renameInput_, ImGuiInputTextFlags_EnterReturnsTrue);
+    ImGui::TextDisabled(chain ? "Kept in the session. Empty: no name." : "Kept in the preset. Empty: no name.");
     const int button = dialogButtons({"OK", "Cancel"});
     if (button == 0 || enter) {
         if (renameChannel_ >= 0 && renameChannel_ < kChannelCount) {
             std::string name = renameInput_.substr(0, 24);
             while (!name.empty() && name.back() == ' ')
                 name.pop_back();
-            preset_.channelNames[static_cast<std::size_t>(renameChannel_)] = name;
-            edited();
+            if (chain) {
+                chainNames_[static_cast<std::size_t>(renameChannel_)][static_cast<std::size_t>(renameChain_)] = name;
+            } else {
+                preset_.channelNames[static_cast<std::size_t>(renameChannel_)] = name;
+                edited();
+            }
         }
         ImGui::CloseCurrentPopup();
     } else if (button == 1) {

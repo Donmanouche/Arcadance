@@ -86,14 +86,15 @@ public:
     // is in it when `cursorSlot` is kClipSlots, on step `chainCursor` (the end
     // cell after the last step: kChainSteps). A click on a step puts the
     // cursor there; the wheel over its number changes the clip, over its chip
-    // the repeats; a right-click empties it; a clip dragged from the grid
-    // onto it sets it. The CHAIN button starts or stops the chain; a click on
-    // the end cell switches between looping and stopping at the end.
+    // the repeats; a right-click opens its menu; a clip dragged from the grid
+    // onto it sets it. The strip shows one of the channel's chains (the one
+    // setChains gives); the CHAIN cell after the last step shows its letter:
+    // its arrows or the wheel show another chain (ChainShow), a click plays
+    // or stops it. The CHAIN button starts or stops it too.
     struct SessionAction {
-        enum class Kind : std::uint8_t { Launch, Stop, Channel, ChainSet, ChainCursor, ChainGo, ChainStop, ChainLoop } kind = Kind::Launch;
-        int channel = 0, slot = 0;  // ChainSet / ChainCursor / ChainGo: slot is the step
+        enum class Kind : std::uint8_t { Launch, Stop, Channel, ChainSet, ChainCursor, ChainGo, ChainStop, ChainShow } kind = Kind::Launch;
+        int channel = 0, slot = 0;  // ChainSet / ChainCursor / ChainGo: slot is the step; ChainShow: the chain
         int clip = -1, repeats = 1;  // ChainSet
-        bool on = true;  // ChainLoop
     };
     std::optional<SessionAction> drawSession(const LiveState& live, int cursorSlot, int chainCursor);
     std::optional<SessionAction> drawChainStrip(ImDrawList* dl, const LiveState& live, ImVec2 at, float w, float h, int cursor);
@@ -106,9 +107,10 @@ public:
     };
     // What a context menu is for: a lane (an axis loop), a LOOP panel (its
     // axes), the note loop, a control (its window, `spec`), a clip, a chain
-    // step (`slot` is the step), a channel's column.
+    // step (`slot` is the step), a channel's column, the CHANNEL block, a
+    // chain (the CHAIN cell; `slot` is the chain).
     struct MenuTarget {
-        enum class Kind : std::uint8_t { Lane, Panel, NoteLoop, Control, Clip, Step, Channel, ChannelBlock } kind = Kind::Control;
+        enum class Kind : std::uint8_t { Lane, Panel, NoteLoop, Control, Clip, Step, Channel, ChannelBlock, Chain } kind = Kind::Control;
         int channel = 0, slot = 0, source = 0, axis = -1;
         std::string spec;
         MenuTarget() = default;
@@ -126,6 +128,13 @@ public:
     std::optional<int> takeChannelRequest() { return std::exchange(channelRequest_, std::nullopt); }
     // The channels' names (Preset::channelNames), shown with their numbers.
     void setChannelNames(const std::array<std::string, midipad::kChannelCount>& names) { channelNames_ = names; }
+    // The chain the session screen shows for each channel, and the chains' names.
+    using ChainNames = std::array<std::array<std::string, midipad::Engine::kChains>, midipad::kChannelCount>;
+    void setChains(const std::array<int, midipad::kChannelCount>& shown, const ChainNames& names) {
+        shownChains_ = shown;
+        chainNames_ = names;
+    }
+    static std::string chainLetter(int chain) { return std::string(1, static_cast<char>('A' + chain)); }
     // Edit mode: a cursor on the controls, the lanes and the piano roll of the
     // main view, drawn by the next draw(). moveFocus goes to the nearest one
     // that way; activateFocus clicks it at the next draw (opens its window,
@@ -234,6 +243,8 @@ private:
     std::optional<MenuRequest> menuRequest_;
     std::optional<int> channelRequest_;
     std::array<std::string, midipad::kChannelCount> channelNames_;
+    std::array<int, midipad::kChannelCount> shownChains_{};
+    ChainNames chainNames_;
     // "CHANNEL 3", or "3  PADS" when it has a name.
     std::string channelTitle(int channel) const;
     bool editMode_ = false, focusClick_ = false;

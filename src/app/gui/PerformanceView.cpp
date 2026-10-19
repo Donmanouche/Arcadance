@@ -1556,18 +1556,22 @@ std::optional<PerformanceView::SessionAction> PerformanceView::drawSession(const
         const bool active = ch == live.channel;
         text(dl, gBold, px(11), x + px(12), origin.y + px(17), active ? T::kText : T::kDim, fit(gBold, px(11), channelTitle(ch), colW - px(64)), H::Left, V::Middle);
         dl->AddCircleFilled(ImVec2(x + colW - px(15), origin.y + px(17)), px(5), playing ? T::kGreen : IM_COL32(0x3C, 0x40, 0x46, 255));
-        {  // a chain sign when it has one: green with its step while it runs
-            const LiveState::Chain& chain = live.chains[c];
+        {  // a chain sign when it has one: green with its chain and step while one runs
+            const LiveState::Chains& chains = live.chains[c];
+            const bool runs = chains.at >= 0 && chains.playing >= 0;
+            const LiveState::Chain& chain = chains.list[static_cast<std::size_t>(runs ? chains.playing : 0)];
             int used = 0, index = 0;
             for (int k = 0; k < Engine::kChainSteps; ++k)
                 if (chain.clip[static_cast<std::size_t>(k)] >= 0) {
                     ++used;
-                    if (k <= chain.at)
+                    if (k <= chains.at)
                         index = used;
                 }
-            if (used > 0) {
-                const bool runs = chain.at >= 0;
-                const std::string label = runs ? std::to_string(index) + "/" + std::to_string(used) : "";
+            bool any = runs;
+            for (const LiveState::Chain& other : chains.list)
+                any = any || !other.empty();
+            if (any) {
+                const std::string label = runs ? chainLetter(chains.playing) + " " + std::to_string(index) + "/" + std::to_string(used) : "";
                 const float right = x + colW - px(26);
                 const float w = px(24) + (label.empty() ? 0.0f : textWidth(gBold, px(8), label) + px(3));
                 const ImU32 cc = runs ? T::kGreen : T::kDim;
@@ -1804,15 +1808,25 @@ std::optional<PerformanceView::SessionAction> PerformanceView::drawChainStrip(Im
     std::optional<SessionAction> action;
     const int ch = live.channel;
     const auto c = static_cast<std::size_t>(ch);
-    const LiveState::Chain& chain = live.chains[c];
+    const LiveState::Chains& chains = live.chains[c];
+    const int shownChain = std::clamp(shownChains_[c], 0, Engine::kChains - 1);
+    const LiveState::Chain& chain = chains.list[static_cast<std::size_t>(shownChain)];
     const ImU32 chColor = kChannelColors[ch % 8];
-    const bool runs = chain.at >= 0;
+    const bool anyRuns = chains.at >= 0 && chains.playing >= 0;
+    const bool runs = anyRuns && chains.playing == shownChain;  // the chain shown plays
+    const bool nextHere = chains.next >= 0 && (chains.nextChain >= 0 ? chains.nextChain == shownChain : runs);
     const bool blink = std::fmod(time_, 0.8) < 0.45;
     dl->AddRectFilled(at, ImVec2(at.x + w, at.y + h), T::kPanel, px(8));
     dl->AddRect(at, ImVec2(at.x + w, at.y + h), T::kBorder, px(8), px(1));
     const float hy = at.y + px(15);
     text(dl, gBold, px(11), at.x + px(12), hy, T::kText, "CHAIN", H::Left, V::Middle);
-    text(dl, gBold, px(11), at.x + px(16) + textWidth(gBold, px(11), "CHAIN"), hy, chColor, channelTitle(ch), H::Left, V::Middle);
+    const float titleX = at.x + px(16) + textWidth(gBold, px(11), "CHAIN");
+    text(dl, gBold, px(11), titleX, hy, chColor, channelTitle(ch), H::Left, V::Middle);
+    {  // the chain shown: its letter and name
+        const std::string& name = chainNames_[c][static_cast<std::size_t>(shownChain)];
+        const std::string which = "\xC2\xB7  " + chainLetter(shownChain) + (name.empty() ? "" : "  " + name);
+        text(dl, gBold, px(11), titleX + textWidth(gBold, px(11), channelTitle(ch)) + px(8), hy, T::kCyan, which, H::Left, V::Middle);
+    }
     // CHAIN ON / OFF, and what plays.
     const float bw = px(84), bx = at.x + w - px(150) - bw;
     const ImVec2 ba(bx, at.y + px(5)), bb(bx + bw, at.y + px(25));
@@ -1821,7 +1835,9 @@ std::optional<PerformanceView::SessionAction> PerformanceView::drawChainStrip(Im
     if (ImGui::InvisibleButton("##onoff", ImVec2(bw, bb.y - ba.y)))
         action = runs ? SessionAction{SessionAction::Kind::ChainStop, ch} : SessionAction{SessionAction::Kind::ChainGo, ch, cursor >= 0 && cursor < Engine::kChainSteps ? cursor : 0};
     const bool onHovered = ImGui::IsItemHovered();
-    ImGui::SetItemTooltip(runs ? "Stops the chain (the clip plays on)" : "Plays the chain from its first step (or the step under the cursor)");
+    ImGui::SetItemTooltip(runs      ? "Stops the chain (the clip plays on)"
+                          : anyRuns ? "Plays this chain instead, at the end of the turn"
+                                    : "Plays the chain from its first step (or the step under the cursor)");
     dl->AddRectFilled(ba, bb, runs ? alpha(T::kGreen, 0.22f) : T::kControl, px(5));
     dl->AddRect(ba, bb, runs ? T::kGreen : onHovered ? T::kControlBorder : T::kBorder, px(5), px(1));
     if (runs)
@@ -1829,17 +1845,20 @@ std::optional<PerformanceView::SessionAction> PerformanceView::drawChainStrip(Im
     else
         dl->AddTriangleFilled(ImVec2(ba.x + px(9), at.y + px(10)), ImVec2(ba.x + px(9), at.y + px(20)), ImVec2(ba.x + px(17), at.y + px(15)), T::kGreen);
     text(dl, gBold, px(9.5f), ba.x + px(23), hy, T::kText, runs ? "CHAIN ON" : "CHAIN OFF", H::Left, V::Middle);
-    if (runs) {
-        const int repeats = chain.repeats[static_cast<std::size_t>(chain.at)];
-        std::string state = "step " + std::to_string(chain.at + 1) + "  \xC2\xB7  turn " + std::to_string(chain.turns + 1);
+    if (anyRuns) {  // what plays: this chain's step, or another chain's
+        const int repeats = chains.list[static_cast<std::size_t>(chains.playing)].repeats[static_cast<std::size_t>(chains.at)];
+        std::string state = (runs ? "" : "chain " + chainLetter(chains.playing) + "  \xC2\xB7  ") + "step " + std::to_string(chains.at + 1) +
+                            "  \xC2\xB7  turn " + std::to_string(chains.turns + 1);
         if (repeats > 0)
             state += " of " + std::to_string(repeats);
-        if (chain.next >= 0)
-            state += "  \xC2\xB7  next: step " + std::to_string(chain.next + 1);
+        if (chains.next >= 0)
+            state += "  \xC2\xB7  next: " +
+                     (chains.nextChain >= 0 && chains.nextChain != chains.playing ? "chain " + chainLetter(chains.nextChain) + " " : std::string()) +
+                     "step " + std::to_string(chains.next + 1);
         text(dl, gMedium, px(10.5f), bx - px(10), hy, T::kGreen, state, H::Right, V::Middle);
     }
     // The steps, an arrow between them, then the end.
-    const float gap = px(22), endW = px(46);
+    const float gap = px(22), endW = px(84);
     const float stepW = (w - px(24) - gap * static_cast<float>(Engine::kChainSteps) - endW) / static_cast<float>(Engine::kChainSteps);
     const float y0 = at.y + px(30), y1 = at.y + h - px(8);
     const ImGuiIO& io = ImGui::GetIO();
@@ -1877,8 +1896,8 @@ std::optional<PerformanceView::SessionAction> PerformanceView::drawChainStrip(Im
         else if (hovered)
             ImGui::SetItemTooltip("Drag a clip here, or turn the wheel");
         ImGui::PopID();
-        const bool playsNow = runs && chain.at == k;
-        const bool isNext = runs && chain.next == k;
+        const bool playsNow = runs && chains.at == k;
+        const bool isNext = nextHere && chains.next == k;
         if (clipSlot < 0) {
             // Empty: skipped. A dashed outline and a +.
             const ImU32 dash = hovered ? T::kControlBorder : IM_COL32(0x4A, 0x4F, 0x57, 255);
@@ -1894,7 +1913,7 @@ std::optional<PerformanceView::SessionAction> PerformanceView::drawChainStrip(Im
         } else {
             // A random step: R, and while it plays the clip it picked.
             const bool random = clipSlot == Engine::kChainRandom;
-            const int shown = random ? (playsNow ? chain.clipNow : -1) : clipSlot;
+            const int shown = random ? (playsNow ? chains.clipNow : -1) : clipSlot;
             static const LiveState::Clip kNone{};
             const LiveState::Clip& clip = shown >= 0 ? live.clips[c * Engine::kClipSlots + static_cast<std::size_t>(shown)] : kNone;
             const ImU32 outline = playsNow ? T::kGreen : isNext ? alpha(T::kGreen, blink ? 0.9f : 0.3f) : hovered ? T::kControlBorder
@@ -1960,7 +1979,7 @@ std::optional<PerformanceView::SessionAction> PerformanceView::drawChainStrip(Im
                 break;
             }
             // Its repeats (playing: the turn), top right.
-            const std::string label = playsNow && repeats > 0 ? std::to_string(chain.turns + 1) + "/" + std::to_string(repeats)
+            const std::string label = playsNow && repeats > 0 ? std::to_string(chains.turns + 1) + "/" + std::to_string(repeats)
                                       : repeats == 0          ? "\xE2\x88\x9E"
                                                               : "\xC3\x97" + std::to_string(repeats);
             const ImU32 chip = playsNow ? T::kGreen : chColor;
@@ -1985,28 +2004,62 @@ std::optional<PerformanceView::SessionAction> PerformanceView::drawChainStrip(Im
         dl->AddLine(ImVec2(ax0, ay), ImVec2(ax1 - px(3), ay), T::kLabel, px(1.6f));
         dl->AddTriangleFilled(ImVec2(ax1, ay), ImVec2(ax1 - px(6), ay - px(4)), ImVec2(ax1 - px(6), ay + px(4)), T::kLabel);
     }
-    // The end: back to step 1, or stop. A click switches.
+    // The CHAIN cell: the chain shown, its letter between two arrows (or the
+    // wheel) that show another; a dot per chain (green: playing, cyan: shown,
+    // grey: has steps); what comes after its last step. A click plays or
+    // stops it; a right-click opens its menu.
     const float ex0 = at.x + px(12) + static_cast<float>(Engine::kChainSteps) * (stepW + gap), ex1 = ex0 + endW;
+    const float cx = (ex0 + ex1) * 0.5f;
     ImGui::SetCursorScreenPos(ImVec2(ex0, y0));
-    if (ImGui::InvisibleButton("##end", ImVec2(endW, y1 - y0)))
-        action = SessionAction{SessionAction::Kind::ChainLoop, ch, 0, -1, 1, !chain.loop};
+    const bool cellClicked = ImGui::InvisibleButton("##chaincell", ImVec2(endW, y1 - y0));
     const bool endHovered = ImGui::IsItemHovered();
-    ImGui::SetItemTooltip(chain.loop ? "At the end: back to step 1. Click: stop there instead" : "At the end: the channel stops. Click: back to step 1 instead");
-    if (ImGui::IsItemHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Right))
-        menuRequest_ = MenuRequest{MenuTarget{MenuTarget::Kind::Channel, ch}, ImGui::GetIO().MousePos};
+    // The letter left, the arrows stacked right of it, the dots and the then under them.
+    const float letterX = ex0 + (endW - px(22)) * 0.5f, letterY = y0 + (y1 - y0) * 0.42f, arrowX = ex1 - px(14);
+    if (cellClicked) {
+        if (io.MousePos.x > arrowX - px(10))
+            action = SessionAction{SessionAction::Kind::ChainShow, ch,
+                                   (shownChain + (io.MousePos.y < letterY ? Engine::kChains - 1 : 1)) % Engine::kChains};
+        else
+            action = runs ? SessionAction{SessionAction::Kind::ChainStop, ch} : SessionAction{SessionAction::Kind::ChainGo, ch, 0};
+    }
+    if (endHovered && io.MouseWheel != 0.0f)
+        action = SessionAction{SessionAction::Kind::ChainShow, ch, (shownChain + (io.MouseWheel > 0 ? Engine::kChains - 1 : 1)) % Engine::kChains};
+    if (endHovered && ImGui::IsMouseClicked(ImGuiMouseButton_Right))
+        menuRequest_ = MenuRequest{MenuTarget{MenuTarget::Kind::Chain, ch, shownChain}, io.MousePos};
+    ImGui::SetItemTooltip("Arrows or wheel: another chain of the channel\nClick: play or stop it. Right-click: its menu (then, duplicate, rename)");
     ImGui::PopID();
     dl->AddRectFilled(ImVec2(ex0, y0), ImVec2(ex1, y1), IM_COL32(0x20, 0x22, 0x26, 255), px(6));
-    dl->AddRect(ImVec2(ex0, y0), ImVec2(ex1, y1), endHovered ? T::kControlBorder : IM_COL32(0x46, 0x4B, 0x53, 255), px(6), px(1));
-    const ImVec2 ec((ex0 + ex1) * 0.5f, (y0 + y1) * 0.5f - px(6));
-    if (chain.loop) {  // a round arrow
-        dl->PathArcTo(ec, px(10), 0.7f, 5.8f, 24);
-        dl->PathStroke(T::kLabel, px(2));
-        const ImVec2 tip(ec.x + px(10) * std::cos(0.7f), ec.y + px(10) * std::sin(0.7f));
-        dl->AddTriangleFilled(ImVec2(tip.x - px(5), tip.y - px(1)), ImVec2(tip.x + px(4), tip.y - px(3)), ImVec2(tip.x, tip.y + px(5)), T::kLabel);
-    } else {
-        dl->AddRectFilled(ImVec2(ec.x - px(7), ec.y - px(7)), ImVec2(ec.x + px(7), ec.y + px(7)), T::kLabel, px(1));
+    dl->AddRect(ImVec2(ex0, y0), ImVec2(ex1, y1), runs ? T::kGreen : endHovered ? T::kControlBorder : IM_COL32(0x46, 0x4B, 0x53, 255), px(6),
+                px(runs ? 2.0f : 1.0f));
+    text(dl, gBold, px(7.5f), letterX, y0 + px(8), T::kDim, "CHAIN", H::Center, V::Middle);
+    const ImU32 arrowColor = endHovered ? T::kCyan : alpha(T::kCyan, 0.6f);
+    dl->AddTriangleFilled(ImVec2(arrowX - px(5), letterY - px(4)), ImVec2(arrowX + px(5), letterY - px(4)), ImVec2(arrowX, letterY - px(10)), arrowColor);
+    dl->AddTriangleFilled(ImVec2(arrowX - px(5), letterY + px(4)), ImVec2(arrowX + px(5), letterY + px(4)), ImVec2(arrowX, letterY + px(10)), arrowColor);
+    text(dl, gBold, px(22), letterX, letterY, chain.empty() ? T::kDim : T::kText, chainLetter(shownChain), H::Center, V::Middle);
+    for (int n = 0; n < Engine::kChains; ++n) {
+        const float dx = cx + (static_cast<float>(n) - 3.5f) * px(8);
+        const bool plays = anyRuns && chains.playing == n;
+        const ImU32 dot = plays ? T::kGreen : n == shownChain ? T::kCyan : !chains.list[static_cast<std::size_t>(n)].empty() ? T::kLabel
+                                                                                                                         : IM_COL32(0x3C, 0x40, 0x46, 255);
+        dl->AddCircleFilled(ImVec2(dx, y1 - px(17)), px(2.5f), dot);
     }
-    text(dl, gMedium, px(8.5f), ec.x, y1 - px(10), T::kDim, chain.loop ? "to 1" : "stop", H::Center, V::Middle);
+    {  // then: a round arrow (back to step 1), a square (stop) or another chain's letter
+        const int then = chain.then;
+        const float ty = y1 - px(7);
+        const float tw = textWidth(gMedium, px(8.5f), "then"), tx = cx - (tw + px(13)) * 0.5f;  // the word and its icon, centred
+        const float ix = tx + tw + px(8);
+        text(dl, gMedium, px(8.5f), tx, ty, T::kDim, "then", H::Left, V::Middle);
+        if (then == Engine::kThenLoop) {
+            dl->PathArcTo(ImVec2(ix, ty), px(4.5f), 0.7f, 5.8f, 16);
+            dl->PathStroke(T::kLabel, px(1.5f));
+            const ImVec2 tip(ix + px(4.5f) * std::cos(0.7f), ty + px(4.5f) * std::sin(0.7f));
+            dl->AddTriangleFilled(ImVec2(tip.x - px(3), tip.y - px(1)), ImVec2(tip.x + px(2.5f), tip.y - px(2)), ImVec2(tip.x, tip.y + px(3)), T::kLabel);
+        } else if (then == Engine::kThenStop) {
+            dl->AddRectFilled(ImVec2(ix - px(3.5f), ty - px(3.5f)), ImVec2(ix + px(3.5f), ty + px(3.5f)), T::kLabel, px(1));
+        } else {
+            text(dl, gBold, px(9), ix, ty, T::kCyan, chainLetter(then), H::Center, V::Middle);
+        }
+    }
     if (cursor == Engine::kChainSteps)
         sessionCursorBox_ = {ImVec2(ex0, y0), ImVec2(ex1, y1)};
     if (cursor == Engine::kChainSteps)

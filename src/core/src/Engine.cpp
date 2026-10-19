@@ -2388,24 +2388,36 @@ void Engine::enterRecordSlot(int channel) {
     }
 }
 
-void Engine::setChainStep(int channel, int step, ChainStep s) {
-    if (step < 0 || step >= kChainSteps)
+void Engine::setChainStep(int channel, int chain, int step, ChainStep s) {
+    if (step < 0 || step >= kChainSteps || chain < 0 || chain >= kChains)
         return;
     s.clip = s.clip < 0 ? -1 : std::min(s.clip, kChainRandom);
     s.repeats = std::clamp(s.repeats, 0, kMaxRepeats);
-    chains_[static_cast<std::size_t>(std::clamp(channel, 0, kChannelCount - 1))][static_cast<std::size_t>(step)] = s;
+    chains_[static_cast<std::size_t>(std::clamp(channel, 0, kChannelCount - 1))][static_cast<std::size_t>(chain)][static_cast<std::size_t>(step)] = s;
 }
 
-Engine::ChainStep Engine::chainStep(int channel, int step) const {
-    if (step < 0 || step >= kChainSteps)
+Engine::ChainStep Engine::chainStep(int channel, int chain, int step) const {
+    if (step < 0 || step >= kChainSteps || chain < 0 || chain >= kChains)
         return {};
-    return chains_[static_cast<std::size_t>(std::clamp(channel, 0, kChannelCount - 1))][static_cast<std::size_t>(step)];
+    return chains_[static_cast<std::size_t>(std::clamp(channel, 0, kChannelCount - 1))][static_cast<std::size_t>(chain)][static_cast<std::size_t>(step)];
 }
 
-void Engine::setChainLoop(int channel, bool on) { chainLoop_[static_cast<std::size_t>(std::clamp(channel, 0, kChannelCount - 1))] = on; }
+void Engine::setChainThen(int channel, int chain, int then) {
+    if (chain < 0 || chain >= kChains)
+        return;
+    if (then == chain || then < kThenStop || then >= kChains)
+        then = kThenLoop;  // to itself: back to its first step
+    chainThen_[static_cast<std::size_t>(std::clamp(channel, 0, kChannelCount - 1))][static_cast<std::size_t>(chain)] = then;
+}
 
-bool Engine::chainStepPlays(int channel, int step) const {
-    const ChainStep& s = chains_[static_cast<std::size_t>(channel)][static_cast<std::size_t>(step)];
+int Engine::chainThen(int channel, int chain) const {
+    if (chain < 0 || chain >= kChains)
+        return kThenLoop;
+    return chainThen_[static_cast<std::size_t>(std::clamp(channel, 0, kChannelCount - 1))][static_cast<std::size_t>(chain)];
+}
+
+bool Engine::chainStepPlays(int channel, int chain, int step) const {
+    const ChainStep& s = chains_[static_cast<std::size_t>(channel)][static_cast<std::size_t>(chain)][static_cast<std::size_t>(step)];
     if (s.clip == kChainRandom) {
         for (int slot = 0; slot < kClipSlots; ++slot)
             if (clipHasLoops(channel, slot))
@@ -2415,8 +2427,8 @@ bool Engine::chainStepPlays(int channel, int step) const {
     return s.clip >= 0 && clipHasLoops(channel, s.clip);
 }
 
-int Engine::chainPick(int channel, int step) {
-    const ChainStep& s = chains_[static_cast<std::size_t>(channel)][static_cast<std::size_t>(step)];
+int Engine::chainPick(int channel, int chain, int step) {
+    const ChainStep& s = chains_[static_cast<std::size_t>(channel)][static_cast<std::size_t>(chain)][static_cast<std::size_t>(step)];
     int clip = s.clip;
     if (clip == kChainRandom) {
         std::array<int, kClipSlots> recorded{};
@@ -2430,43 +2442,68 @@ int Engine::chainPick(int channel, int step) {
     return clip;
 }
 
-int Engine::chainFind(int channel, int from) const {
+int Engine::chainFind(int channel, int chain, int from, bool wrap) const {
     for (int k = 0; k < kChainSteps; ++k) {
-        const int step = (from + k) % kChainSteps;
-        if (chainStepPlays(channel, step))
-            return step;
+        const int step = from + k;
+        if (step >= kChainSteps && !wrap)
+            break;
+        if (chainStepPlays(channel, chain, step % kChainSteps))
+            return step % kChainSteps;
     }
     return -1;
 }
 
-void Engine::chainGoTo(int channel, int step) {
+void Engine::chainGoTo(int channel, int chain, int step) {
     channel = std::clamp(channel, 0, kChannelCount - 1);
     const auto c = static_cast<std::size_t>(channel);
+    chain = std::clamp(chain, 0, kChains - 1);
     step = std::clamp(step, 0, kChainSteps - 1);
     if (chainAt_[c] >= 0 && !chainStarting_[c]) {  // running: there at the end of the turn
         chainJump_[c] = step;
+        chainJumpChain_[c] = chain;
         return;
     }
-    const int at = chainFind(channel, step);
+    const int at = chainFind(channel, chain, step);
     if (at < 0) {
         stopChain(channel);
         return;
     }
+    chainIndex_[c] = chain;
     chainAt_[c] = at;
-    chainJump_[c] = -1;
+    chainJump_[c] = chainJumpChain_[c] = -1;
     chainTurns_[c] = 0;
     chainStarting_[c] = true;  // counts once its clip plays
-    queueClip(channel, chainPick(channel, at));
+    queueClip(channel, chainPick(channel, chain, at));
 }
 
 void Engine::stopChain(int channel) {
     const auto c = static_cast<std::size_t>(std::clamp(channel, 0, kChannelCount - 1));
-    chainAt_[c] = chainJump_[c] = chainClip_[c] = -1;
+    chainAt_[c] = chainJump_[c] = chainJumpChain_[c] = chainClip_[c] = -1;
     chainStarting_[c] = false;
+}
+
+void Engine::loadSessionChains(const std::vector<SessionChain>& chains) {
+    for (int channel = 0; channel < kChannelCount; ++channel) {
+        stopChain(channel);
+        for (int n = 0; n < kChains; ++n) {
+            for (int k = 0; k < kChainSteps; ++k)
+                setChainStep(channel, n, k, {});
+            setChainThen(channel, n, kThenLoop);
+        }
+    }
+    for (const SessionChain& c : chains) {
+        if (c.channel < 0 || c.channel >= kChannelCount || c.index < 0 || c.index >= kChains)
+            continue;
+        for (int k = 0; k < std::min<int>(kChainSteps, static_cast<int>(c.steps.size())); ++k)
+            setChainStep(c.channel, c.index, k, {c.steps[static_cast<std::size_t>(k)].clip, c.steps[static_cast<std::size_t>(k)].repeats});
+        setChainThen(c.channel, c.index, c.then);
+    }
 }
 
 // Each running chain, at the end of each turn of its clip: one more turn of
 // the step; done (or asked to go on), the next step's clip starts there.
+// After the last step, its `then`: from its first step again, the channel
+// stops, or another chain starts.
 void Engine::runChains() {
     for (int channel = 0; channel < kChannelCount; ++channel) {
         const auto c = static_cast<std::size_t>(channel);
@@ -2488,34 +2525,36 @@ void Engine::runChains() {
             continue;
         chainMark_[c] = whole;
         ++chainTurns_[c];
-        const ChainStep& now = chains_[c][static_cast<std::size_t>(chainAt_[c])];
-        int next = -1;
+        const int chain = chainIndex_[c];
+        const ChainStep& now = chains_[c][static_cast<std::size_t>(chain)][static_cast<std::size_t>(chainAt_[c])];
+        int nextChain = chain, next = -1;
         if (chainJump_[c] >= 0) {
-            next = chainFind(channel, chainJump_[c]);
+            nextChain = chainJumpChain_[c] >= 0 ? chainJumpChain_[c] : chain;
+            next = chainFind(channel, nextChain, chainJump_[c]);
         } else if (now.repeats > 0 && chainTurns_[c] >= now.repeats) {
-            const int after = chainAt_[c] + 1;
-            if (after >= kChainSteps && !chainLoop_[c]) {
-                stopChain(channel);
-                switchClip(channel, kClipSlots);  // the end: the channel stops
-                continue;
-            }
-            next = chainFind(channel, after % kChainSteps);
-            if (!chainLoop_[c] && next >= 0 && next <= chainAt_[c]) {  // only empty steps after it
-                stopChain(channel);
-                switchClip(channel, kClipSlots);
-                continue;
+            next = chainFind(channel, chain, chainAt_[c] + 1, false);
+            if (next < 0) {  // past the last step
+                const int then = chainThen_[c][static_cast<std::size_t>(chain)];
+                if (then == kThenStop) {
+                    stopChain(channel);
+                    switchClip(channel, kClipSlots);  // the end: the channel stops
+                    continue;
+                }
+                nextChain = then == kThenLoop ? chain : then;
+                next = chainFind(channel, nextChain, 0);
             }
         } else {
             continue;
         }
-        chainJump_[c] = -1;
+        chainJump_[c] = chainJumpChain_[c] = -1;
         if (next < 0) {
             stopChain(channel);
             continue;
         }
+        chainIndex_[c] = nextChain;
         chainAt_[c] = next;
         chainTurns_[c] = 0;
-        switchClip(channel, chainPick(channel, next));
+        switchClip(channel, chainPick(channel, nextChain, next));
         if (clipTurns(channel, turns))
             chainMark_[c] = static_cast<long long>(std::floor(turns));
     }

@@ -197,33 +197,44 @@ public:
     float clipSample(int channel, int slot, int source, int axis, int index) const;  // as loopSample
     int clipNoteIntervals(int channel, int slot, NoteInterval* out, int max) const;  // as noteLoopIntervals
     float clipProgress(int channel) const;  // how far the playing clip is in its turn, 0-1; -1: none plays
-    // Chains: each channel can play its clips in a sequence of kChainSteps
-    // steps, each a clip played `repeats` turns (0: until asked to go on),
-    // then the next step; empty steps (no clip, or an empty one) are skipped.
-    // After the last step it goes back to the first, or with loop off stops
-    // the channel. chainGoTo starts the chain from a step (at the end of the
-    // playing clip's turn; at once with nothing playing) or, while it runs,
-    // goes to that step at the end of the turn. Launching or stopping a clip
-    // (launchClip, stopClip), recording into another clip, PANIC and
-    // stopChain turn the chain off; its steps stay.
+    // Chains: each channel has kChains chains (A to H) of its clips, each a
+    // sequence of kChainSteps steps, each a clip played `repeats` turns (0:
+    // until asked to go on), then the next step; empty steps (no clip, or an
+    // empty one) are skipped. One chain of a channel plays at a time. After
+    // its last step comes its `then`: back to its first step (kThenLoop),
+    // the channel stops (kThenStop), or another chain of the channel starts
+    // from its first step (0 to kChains - 1). chainGoTo starts a chain from a
+    // step (at the end of the playing clip's turn; at once with nothing
+    // playing) or, while one runs, goes there at the end of the turn.
+    // Launching or stopping a clip (launchClip, stopClip), recording into
+    // another clip, PANIC and stopChain turn the chains off; their steps stay.
     // A step's clip may be kChainRandom: each time the chain comes to that
     // step it picks one of the channel's clips that hold loops, at random,
     // and plays it its repeats.
-    static constexpr int kChainSteps = 8, kMaxRepeats = 64, kChainRandom = kClipSlots;
+    static constexpr int kChains = 8, kChainSteps = 8, kMaxRepeats = 64, kChainRandom = kClipSlots;
+    static constexpr int kThenLoop = -1, kThenStop = -2;
     struct ChainStep {
         int clip = -1;    // -1: empty; kChainRandom: any
         int repeats = 1;  // 1 to kMaxRepeats; 0: forever
         friend bool operator==(const ChainStep&, const ChainStep&) = default;
     };
-    void setChainStep(int channel, int step, ChainStep s);
-    ChainStep chainStep(int channel, int step) const;
-    void setChainLoop(int channel, bool on);
-    bool chainLoop(int channel) const { return chainLoop_[static_cast<std::size_t>(std::clamp(channel, 0, kChannelCount - 1))]; }
-    void chainGoTo(int channel, int step);
+    void setChainStep(int channel, int chain, int step, ChainStep s);
+    ChainStep chainStep(int channel, int chain, int step) const;
+    void setChainThen(int channel, int chain, int then);  // kThenLoop, kThenStop or a chain
+    int chainThen(int channel, int chain) const;
+    void chainGoTo(int channel, int chain, int step);
+    // Chain A's, as before there were several.
+    void setChainStep(int channel, int step, ChainStep s) { setChainStep(channel, 0, step, s); }
+    ChainStep chainStep(int channel, int step) const { return chainStep(channel, 0, step); }
+    void setChainLoop(int channel, bool on) { setChainThen(channel, 0, on ? kThenLoop : kThenStop); }
+    bool chainLoop(int channel) const { return chainThen(channel, 0) == kThenLoop; }
+    void chainGoTo(int channel, int step) { chainGoTo(channel, 0, step); }
     void stopChain(int channel);
-    int chainAt(int channel) const { return chainAt_[static_cast<std::size_t>(std::clamp(channel, 0, kChannelCount - 1))]; }  // -1: off
+    int chainPlaying(int channel) const { return chainAt(channel) < 0 ? -1 : chainIndex_[static_cast<std::size_t>(std::clamp(channel, 0, kChannelCount - 1))]; }  // the chain running, -1: none
+    int chainAt(int channel) const { return chainAt_[static_cast<std::size_t>(std::clamp(channel, 0, kChannelCount - 1))]; }  // its step, -1: off
     int chainTurns(int channel) const { return chainTurns_[static_cast<std::size_t>(std::clamp(channel, 0, kChannelCount - 1))]; }  // of the step, done
     int chainNext(int channel) const { return chainJump_[static_cast<std::size_t>(std::clamp(channel, 0, kChannelCount - 1))]; }  // asked for, -1 none
+    int chainNextChain(int channel) const { return chainJumpChain_[static_cast<std::size_t>(std::clamp(channel, 0, kChannelCount - 1))]; }  // its chain
     int chainClip(int channel) const { return chainClip_[static_cast<std::size_t>(std::clamp(channel, 0, kChannelCount - 1))]; }  // the step's clip (picked, for a random one)
     void launchClip(int channel, int slot);
     void stopClip(int channel) { launchClip(channel, kClipSlots); }
@@ -385,6 +396,8 @@ public:
     // Both allocate.
     std::vector<SessionLoop> sessionLoops() const;
     void loadSessionLoops(const std::vector<SessionLoop>& loops);
+    // Every chain of every channel as `chains` has them (the others emptied, back to step 1 at their end); none runs.
+    void loadSessionChains(const std::vector<SessionChain>& chains);
     void seedRandom(std::uint64_t seed) { random_ = seed ? seed : 0x9E3779B97F4A7C15ull; }
 
     void buttonChanged(Button button, bool pressed);
@@ -560,17 +573,24 @@ private:
     std::array<bool, kChannelCount> clipPlaying_{};
     std::array<int, kChannelCount> queued_ = [] { std::array<int, kChannelCount> a{}; a.fill(-1); return a; }();
     std::array<long long, kChannelCount> turnMark_{};
-    std::array<std::array<ChainStep, kChainSteps>, kChannelCount> chains_{};
-    std::array<bool, kChannelCount> chainLoop_ = [] { std::array<bool, kChannelCount> a{}; a.fill(true); return a; }();
+    std::array<std::array<std::array<ChainStep, kChainSteps>, kChains>, kChannelCount> chains_{};
+    std::array<std::array<int, kChains>, kChannelCount> chainThen_ = [] {
+        std::array<std::array<int, kChains>, kChannelCount> a{};
+        for (auto& c : a)
+            c.fill(kThenLoop);
+        return a;
+    }();
+    std::array<int, kChannelCount> chainIndex_{};  // the chain running (chainAt_ >= 0)
     std::array<int, kChannelCount> chainAt_ = [] { std::array<int, kChannelCount> a{}; a.fill(-1); return a; }();
     std::array<int, kChannelCount> chainJump_ = [] { std::array<int, kChannelCount> a{}; a.fill(-1); return a; }();
+    std::array<int, kChannelCount> chainJumpChain_ = [] { std::array<int, kChannelCount> a{}; a.fill(-1); return a; }();
     std::array<int, kChannelCount> chainTurns_{};
     std::array<long long, kChannelCount> chainMark_{};
     std::array<bool, kChannelCount> chainStarting_{};
     std::array<int, kChannelCount> chainClip_ = [] { std::array<int, kChannelCount> a{}; a.fill(-1); return a; }();
-    int chainPick(int channel, int step);  // the clip a step plays: its own, or one picked at random
-    bool chainStepPlays(int channel, int step) const;
-    int chainFind(int channel, int from) const;  // the first step from there that plays, -1 none
+    int chainPick(int channel, int chain, int step);  // the clip a step plays: its own, or one picked at random
+    bool chainStepPlays(int channel, int chain, int step) const;
+    int chainFind(int channel, int chain, int from, bool wrap = true) const;  // the first step from there that plays, -1 none
     void runChains();
     void queueClip(int channel, int slot);  // launchClip, the chain left as it is
     // The current clip's turns so far, from its leading loop (false: none plays).

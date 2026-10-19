@@ -38,12 +38,18 @@ struct SessionLoop {
     std::vector<Note> notes;
 };
 
-// A channel's chain of clips (Engine::setChainStep): its steps, each a clip
-// slot (-1: empty; 8, Engine::kChainRandom: any, at random) and its repeats
-// (0: forever), and whether it goes back to its first step at the end.
+// A chain of a channel's clips (Engine::setChainStep): which of its chains
+// (0 to 7, A to H), its steps, each a clip slot (-1: empty; 8,
+// Engine::kChainRandom: any, at random) and its repeats (0: forever), what
+// comes after its last step (Engine::setChainThen: -1 back to its first step,
+// -2 stop, or another chain), its name, and whether it is the one the session
+// screen shows for the channel.
 struct SessionChain {
     int channel = 0;
-    bool loop = true;
+    int index = 0;
+    int then = -1;
+    std::string name;
+    bool shown = false;
     struct Step {
         int clip = -1, repeats = 1;
     };
