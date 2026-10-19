@@ -184,6 +184,10 @@ void screen(ImDrawList* dl, ImVec2 a, ImVec2 b, ImU32 tint, Content&& content) {
     dl->AddRect(a, b, IM_COL32(0, 0, 0, 220), px(4), 1.5f);
 }
 
+// A screen off (an empty clip slot): dark grey glass.
+constexpr ImU32 kScreenOff = IM_COL32(0x60, 0x66, 0x6E, 255);
+constexpr ImU32 kSongScreen = IM_COL32(0x6E, 0x96, 0xC8, 255);  // the song's screens: a steel blue
+
 // An organic shape, like the blobs of hardware-synth displays.
 void blob(ImDrawList* dl, ImVec2 c, float r, ImU32 col, double t, float stretchX, float stretchY) {
     constexpr int kPoints = 64;
@@ -340,201 +344,336 @@ void drawLockedBorder(ImDrawList* dl, ImVec2 a, ImVec2 b, ImU32 col, float round
 }
 
 // --- Idle animations ------------------------------------------------------
-// When a LOOP box has nothing to show, a small 80s-90s style animation in
-// grey pixels, at half opacity: curves imitating the controls, arcade sprites,
-// or a mini-game. kIdleArtCount of them; PerformanceView picks one per box.
+// When a LOOP box has nothing to show, a screen in grey plays a little 80s
+// arcade game, drawn smooth and glowing rather than in big pixels.
+// kIdleArtCount of them; PerformanceView picks one per box.
 
 constexpr int kIdleArtCount = 12;
-constexpr ImU32 kArt = IM_COL32(215, 215, 215, 128);
-constexpr ImU32 kArtDim = IM_COL32(215, 215, 215, 64);
+constexpr ImU32 kIdleTint = IM_COL32(0x9A, 0xA0, 0xA8, 255), kIdleInk = IM_COL32(0xE6, 0xE8, 0xEC, 255);
 
-// A pixel sprite: 'X' is lit.
-void sprite(ImDrawList* dl, std::initializer_list<const char*> rows, float x, float y, float p, ImU32 col) {
+// A soft glow under a shape: the shape drawn wider and fainter.
+void glowLine(ImDrawList* dl, ImVec2 p1, ImVec2 p2, ImU32 col, float th) {
+    dl->AddLine(p1, p2, alpha(col, 0.18f), th * 3.5f);
+    dl->AddLine(p1, p2, col, th);
+}
+void glowCircle(ImDrawList* dl, ImVec2 c, float r, ImU32 col) {
+    dl->AddCircleFilled(c, r * 1.9f, alpha(col, 0.12f));
+    dl->AddCircleFilled(c, r, col);
+}
+void glowRect(ImDrawList* dl, ImVec2 a, ImVec2 b, ImU32 col, float round) {
+    const float g = std::max(std::min(b.x - a.x, b.y - a.y) * 0.45f, 1.5f);
+    dl->AddRectFilled(ImVec2(a.x - g, a.y - g), ImVec2(b.x + g, b.y + g), alpha(col, 0.12f), round + g);
+    dl->AddRectFilled(a, b, col, round);
+}
+// A sprite of soft dots, like a LED matrix: 'X' lit.
+void dots(ImDrawList* dl, std::initializer_list<const char*> rows, float x, float y, float q, ImU32 col) {
     float yy = y;
     for (const char* row : rows) {
         float xx = x;
-        for (const char* c = row; *c; ++c, xx += p)
+        for (const char* c = row; *c; ++c, xx += q)
             if (*c == 'X')
-                dl->AddRectFilled(ImVec2(xx, yy), ImVec2(xx + p, yy + p), col);
-        yy += p;
+                dl->AddRectFilled(ImVec2(xx + q * 0.08f, yy + q * 0.08f), ImVec2(xx + q * 0.92f, yy + q * 0.92f), col, q * 0.3f);
+        yy += q;
     }
 }
+float tri01(float v) { return std::abs(std::fmod(v, 2.0f) - 1.0f); }  // a triangle wave in [0, 1]
+float hash01(int k) { return static_cast<float>((k * 2654435761u) % 1000u) / 1000.0f; }
 
-void dot(ImDrawList* dl, float x, float y, float p, ImU32 col) {
-    dl->AddRectFilled(ImVec2(std::floor(x / p) * p, std::floor(y / p) * p), ImVec2(std::floor(x / p) * p + p, std::floor(y / p) * p + p), col);
-}
-
-// A curve snapped to the pixel grid, `f` giving its height in [0, 1].
-template <typename Fn>
-void pixelCurve(ImDrawList* dl, ImVec2 a, ImVec2 b, float p, ImU32 col, Fn f) {
-    float prev = -1;
-    for (float x = a.x; x < b.x - p; x += p) {
-        const float y = std::floor((a.y + (b.y - a.y) * std::clamp(f((x - a.x) / (b.x - a.x)), 0.0f, 1.0f)) / p) * p;
-        if (prev >= 0)
-            for (float yy = std::min(prev, y); yy <= std::max(prev, y); yy += p)
-                dl->AddRectFilled(ImVec2(x, yy), ImVec2(x + p, yy + p), col);
-        prev = y;
-    }
-}
-
-float wave01(float v) { return std::abs(std::fmod(v, 2.0f) - 1.0f); }  // a triangle wave in [0, 1]
-
-void idleArt(ImDrawList* dl, int art, ImVec2 a, ImVec2 b, double time) {
-    const float p = std::max(2.0f, std::floor(px(3)));
+// One game in the box a-b, its shapes in `col`.
+void arcade(ImDrawList* dl, int game, ImVec2 a, ImVec2 b, double time, ImU32 col) {
     const auto t = static_cast<float>(time);
-    const float w = b.x - a.x, h = b.y - a.y;
-    a = ImVec2(a.x + p * 2, a.y + p * 2);
-    b = ImVec2(b.x - p * 2, b.y - p * 2);
+    const float w = b.x - a.x, h = b.y - a.y, u = h / 40.0f;  // a unit: a fortieth of the height
+    const ImU32 dim = alpha(col, 0.35f), faint = alpha(col, 0.15f);
+    const ImVec2 c((a.x + b.x) * 0.5f, (a.y + b.y) * 0.5f);
     dl->PushClipRect(a, b, true);
-    switch (art) {
-    case 0:  // stick curves, X and Y, scrolling
-        pixelCurve(dl, a, b, p, kArt, [&](float u) { return 0.5f + 0.35f * std::sin(6.283f * (u * 1.4f + t * 0.25f)); });
-        pixelCurve(dl, a, b, p, kArtDim, [&](float u) { return 0.5f + 0.30f * std::cos(6.283f * (u * 0.9f + t * 0.18f + 0.3f)); });
-        break;
-    case 1: {  // a stick's trail, fading
-        for (int k = 60; k >= 0; --k) {
-            const float tau = t * 1.6f - static_cast<float>(k) * 0.05f;
-            const float u = 0.5f + 0.4f * std::sin(1.3f * tau) * std::cos(0.37f * tau), v = 0.5f + 0.4f * std::cos(1.1f * tau);
-            const auto alphaK = static_cast<int>(128.0f * (1.0f - static_cast<float>(k) / 61.0f));
-            dot(dl, a.x + (b.x - a.x) * u, a.y + (b.y - a.y) * v, k == 0 ? p * 2 : p, IM_COL32(215, 215, 215, alphaK));
+    switch (game) {
+    case 0: {  // Pac-Man: eating the pellets of a corridor, a ghost behind
+        const float y = c.y, span = w + u * 30;
+        const float x = a.x - u * 12 + std::fmod(t * u * 9.0f, span);
+        dl->AddLine(ImVec2(a.x, y - u * 7), ImVec2(b.x, y - u * 7), faint, u * 0.6f);
+        dl->AddLine(ImVec2(a.x, y + u * 7), ImVec2(b.x, y + u * 7), faint, u * 0.6f);
+        for (float px_ = a.x + u * 3; px_ < b.x; px_ += u * 5)
+            if (px_ > x + u * 2)
+                glowCircle(dl, ImVec2(px_, y), u * (std::fmod(px_ - a.x, u * 25) < u * 4 ? 1.3f : 0.6f), col);
+        const float open = 0.15f + 0.6f * tri01(t * 6.0f);
+        dl->PathLineTo(ImVec2(x, y));
+        dl->PathArcTo(ImVec2(x, y), u * 4.5f, open, 6.2832f - open, 24);
+        dl->PathFillConvex(col);
+        // The ghost: a dome, a waving hem, eyes looking ahead.
+        const float gx = x - u * 16;
+        dl->PathArcTo(ImVec2(gx, y - u * 0.5f), u * 4.2f, 3.1416f, 6.2832f, 16);
+        for (int k = 0; k <= 6; ++k)
+            dl->PathLineTo(ImVec2(gx + u * 4.2f - static_cast<float>(k) * u * 1.4f, y + u * 4.2f - (k % 2 ? u * 1.2f : 0) + std::sin(t * 12) * u * 0.3f));
+        dl->PathFillConvex(dim);
+        for (int e = -1; e <= 1; e += 2) {
+            dl->AddCircleFilled(ImVec2(gx + static_cast<float>(e) * u * 1.6f, y - u * 0.8f), u * 1.1f, IM_COL32(255, 255, 255, 230));
+            dl->AddCircleFilled(ImVec2(gx + static_cast<float>(e) * u * 1.6f + u * 0.5f, y - u * 0.7f), u * 0.5f, IM_COL32(20, 20, 30, 255));
         }
         break;
     }
-    case 2:  // trigger presses, scrolling
-        pixelCurve(dl, a, b, p, kArt, [&](float u) { return 1.0f - std::pow(std::max(0.0f, std::sin(6.283f * (u * 2.0f + t * 0.3f))), 1.5f) * 0.85f; });
-        pixelCurve(dl, a, b, p, kArtDim, [&](float u) { return 1.0f - std::pow(std::max(0.0f, std::sin(6.283f * (u + t * 0.22f + 0.55f))), 3.0f) * 0.7f; });
-        break;
-    case 3: {  // a finger's spiral trail
-        const ImVec2 c((a.x + b.x) * 0.5f, (a.y + b.y) * 0.5f);
-        for (int k = 0; k < 60; ++k) {
-            const float ang = static_cast<float>(k) * 0.28f + t * 1.5f, r = p * 2 + static_cast<float>(k) * h / 140.0f;
-            dot(dl, c.x + std::cos(ang) * r, c.y + std::sin(ang) * r * 0.75f, p, IM_COL32(215, 215, 215, 30 + k * 2));
-        }
-        break;
-    }
-    case 4: {  // shoot'em up: stars, a ship, its shots
-        for (int k = 0; k < 40; ++k) {
-            const float speed = 20.0f + static_cast<float>(k % 3) * 25.0f;
-            const float sx = b.x - std::fmod(static_cast<float>(k * 53) + t * speed, w);
-            dot(dl, sx, a.y + std::fmod(static_cast<float>(k * 37), h - p * 4), p * 0.7f, k % 3 == 2 ? kArt : kArtDim);
-        }
-        const float shipY = a.y + h * 0.42f + std::sin(t * 1.3f) * h * 0.2f;
-        sprite(dl, {"XX..............", "XXXX............", ".XXXXXXXXXX.....", "XXXXXXXXXXXXXX..", ".XXXXXXXXXX.....",
-                    "XXXX............", "XX.............."},
-               a.x + p * 4, shipY, p, kArt);
-        for (int k = 0; k < 3; ++k)
-            dl->AddRectFilled(ImVec2(a.x + p * 18 + std::fmod(t * 120.0f + static_cast<float>(k) * w / 3, w), shipY + p * 3),
-                              ImVec2(a.x + p * 20 + std::fmod(t * 120.0f + static_cast<float>(k) * w / 3, w), shipY + p * 4), kArt);
-        break;
-    }
-    case 5: {  // invaders marching, the cannon below
+    case 1: {  // Space Invaders: a LED formation marching, shields, the cannon
         const bool frame = std::fmod(t, 1.0f) < 0.5f;
-        const float q = std::max(1.0f, std::floor(p * 0.7f));
-        const float formation = q * (14 * 4 + 11), room = std::max(0.0f, (b.x - a.x) - formation);
-        const float left = a.x + room * wave01(t * 0.15f);  // marching from side to side, inside the box
+        const float q = u * 0.62f, formation = q * (13 * 4 + 11), room = std::max(0.0f, w - formation - u * 2);
+        const float left = a.x + u + room * tri01(t * 0.12f), top = a.y + u * 3 + std::fmod(std::floor(t * 0.12f), 4.0f) * u;
         for (int row = 0; row < 3; ++row)
-            for (int col = 0; col < 5; ++col) {
-                const float ix = left + static_cast<float>(col) * q * 14, iy = a.y + q * 4 + static_cast<float>(row) * q * 12;
+            for (int k = 0; k < 5; ++k) {
+                const float ix = left + static_cast<float>(k) * q * 13, iy = top + static_cast<float>(row) * q * 11;
+                const ImU32 ic = row == 0 ? col : alpha(col, 0.75f);
                 if (frame)
-                    sprite(dl, {"..X.....X..", "...X...X...", "..XXXXXXX..", ".XX.XXX.XX.", "XXXXXXXXXXX", "X.XXXXXXX.X", "X.X.....X.X",
-                                "...XX.XX..."},
-                           ix, iy, q, kArt);
+                    dots(dl, {"..X.....X..", "...X...X...", "..XXXXXXX..", ".XX.XXX.XX.", "XXXXXXXXXXX", "X.XXXXXXX.X", "X.X.....X.X", "...XX.XX..."}, ix, iy, q, ic);
                 else
-                    sprite(dl, {"..X.....X..", "X..X...X..X", "X.XXXXXXX.X", "XXX.XXX.XXX", "XXXXXXXXXXX", ".XXXXXXXXX.", "..X.....X..",
-                                ".X.......X."},
-                           ix, iy, q, kArt);
+                    dots(dl, {"..X.....X..", "X..X...X..X", "X.XXXXXXX.X", "XXX.XXX.XXX", "XXXXXXXXXXX", ".XXXXXXXXX.", "..X.....X..", ".X.......X."}, ix, iy, q, ic);
             }
-        sprite(dl, {"....X....", "...XXX...", "XXXXXXXXX", "XXXXXXXXX"}, a.x + (b.x - a.x - q * 9) * wave01(t * 0.21f), b.y - q * 6, q, kArt);
-        break;
-    }
-    case 6: {  // pong
-        for (float y = a.y; y < b.y; y += p * 3)
-            dl->AddRectFilled(ImVec2((a.x + b.x) * 0.5f - p * 0.5f, y), ImVec2((a.x + b.x) * 0.5f + p * 0.5f, y + p * 1.5f), kArtDim);
-        const float bx = a.x + p * 4 + (w - p * 14) * wave01(t * 0.45f), by = a.y + (h - p * 6) * wave01(t * 0.62f + 0.3f);
-        dl->AddRectFilled(ImVec2(bx, by), ImVec2(bx + p * 2, by + p * 2), kArt);
-        const float padH = p * 10;
-        const float ly = std::clamp(by - padH * 0.5f, a.y, b.y - padH), ry = std::clamp(a.y + (h - padH) * wave01(t * 0.5f + 0.7f), a.y, b.y - padH);
-        dl->AddRectFilled(ImVec2(a.x + p, ly), ImVec2(a.x + p * 2, ly + padH), kArt);
-        dl->AddRectFilled(ImVec2(b.x - p * 2, ry), ImVec2(b.x - p, ry + padH), kArt);
-        break;
-    }
-    case 7: {  // a cat chasing a mouse
-        const float x = a.x - p * 30 + std::fmod(t * 35.0f, w + p * 50);
-        const float y = b.y - p * 12;
-        const bool step = std::fmod(t, 0.5f) < 0.25f;
-        sprite(dl, {"...........X.X", "X..........XXX", "X.........XXXX", ".XXXXXXXXXXXX.", "..XXXXXXXXXX..", "..XXXXXXXXXX..",
-                    step ? "..X.X....X.X.." : "...XX.....XX..", step ? "..X..X..X..X.." : "...X.X...X.X.."},
-               x, y - p * 8, p, kArt);
-        sprite(dl, {"..XX.", ".XXXX", "XXXXX", "X...."}, x + p * 26, y - p * 4, p, kArt);
-        break;
-    }
-    case 8: {  // snake, along a rounded loop
-        const int cols = static_cast<int>(w / (p * 2)) - 2, rows = static_cast<int>(h / (p * 2)) - 2;
-        const int perimeter = 2 * (cols + rows);
-        auto cell = [&](int k) {
-            k = ((k % perimeter) + perimeter) % perimeter;
-            if (k < cols)
-                return ImVec2(static_cast<float>(k), 0);
-            k -= cols;
-            if (k < rows)
-                return ImVec2(static_cast<float>(cols), static_cast<float>(k));
-            k -= rows;
-            if (k < cols)
-                return ImVec2(static_cast<float>(cols - k), static_cast<float>(rows));
-            k -= cols;
-            return ImVec2(0, static_cast<float>(rows - k));
-        };
-        const int head = static_cast<int>(t * 8.0f);
-        for (int k = 0; k < 14; ++k) {
-            const ImVec2 c = cell(head - k);
-            const float cx = a.x + p * 2 + c.x * p * 2, cy = a.y + p * 2 + c.y * p * 2;
-            dl->AddRectFilled(ImVec2(cx, cy), ImVec2(cx + p * 2 - 1, cy + p * 2 - 1), k == 0 ? kArt : kArtDim);
+        for (int s = 0; s < 3; ++s) {  // shields
+            const float sx = a.x + w * (0.2f + 0.3f * static_cast<float>(s)), sy = b.y - u * 9;
+            dl->AddRectFilled(ImVec2(sx - u * 3, sy), ImVec2(sx + u * 3, sy + u * 3), dim, u * 1.5f, ImDrawFlags_RoundCornersTop);
         }
-        if (std::fmod(t, 0.8f) < 0.6f)
-            dl->AddRectFilled(ImVec2(a.x + w * 0.45f, a.y + h * 0.45f), ImVec2(a.x + w * 0.45f + p * 2, a.y + h * 0.45f + p * 2), kArt);
+        const float cx = a.x + u * 3 + (w - u * 6) * tri01(t * 0.2f);
+        glowRect(dl, ImVec2(cx - u * 2.5f, b.y - u * 3), ImVec2(cx + u * 2.5f, b.y - u * 1.5f), col, u * 0.5f);
+        dl->AddRectFilled(ImVec2(cx - u * 0.6f, b.y - u * 4.5f), ImVec2(cx + u * 0.6f, b.y - u * 3), col, u * 0.3f);
+        const float shot = std::fmod(t * 1.3f, 1.0f);
+        glowLine(dl, ImVec2(cx, b.y - u * 5 - shot * h * 0.8f), ImVec2(cx, b.y - u * 7 - shot * h * 0.8f), col, u * 0.5f);
         break;
     }
-    case 9: {  // asteroids: drifting rocks, a ship firing
+    case 2: {  // Asteroids, in vector lines
+        for (int k = 0; k < 4; ++k) {
+            const float r = u * (k == 0 ? 6.0f : 3.5f), sp = 0.15f + 0.1f * static_cast<float>(k);
+            const ImVec2 rc(a.x + std::fmod(hash01(k * 7) * w + t * u * 3 * (1 + sp), w + r * 2) - r, a.y + std::fmod(hash01(k * 13) * h + t * u * 2 * sp * 4, h + r * 2) - r);
+            ImVec2 pts[9];
+            for (int i = 0; i < 9; ++i) {
+                const float ang = static_cast<float>(i) / 9 * 6.2832f + t * sp;
+                const float rr = r * (0.75f + 0.25f * hash01(k * 31 + i));
+                pts[i] = ImVec2(rc.x + std::cos(ang) * rr, rc.y + std::sin(ang) * rr);
+            }
+            dl->AddPolyline(pts, 9, alpha(col, 0.18f), u * 1.6f, ImDrawFlags_Closed);
+            dl->AddPolyline(pts, 9, col, u * 0.45f, ImDrawFlags_Closed);
+        }
+        const float ang = t * 0.9f;
+        auto rot = [&](float x, float y) { return ImVec2(c.x + x * std::cos(ang) - y * std::sin(ang), c.y + x * std::sin(ang) + y * std::cos(ang)); };
+        const ImVec2 ship[4] = {rot(u * 3.5f, 0), rot(-u * 2.5f, u * 2.2f), rot(-u * 1.5f, 0), rot(-u * 2.5f, -u * 2.2f)};
+        dl->AddPolyline(ship, 4, alpha(col, 0.2f), u * 1.8f, ImDrawFlags_Closed);
+        dl->AddPolyline(ship, 4, col, u * 0.55f, ImDrawFlags_Closed);
         for (int k = 0; k < 3; ++k) {
-            const float q = k == 0 ? p : std::max(1.0f, p * 0.7f);
-            const float rx = a.x + std::fmod(static_cast<float>(k) * w * 0.37f + t * (12.0f + static_cast<float>(k) * 7.0f), w);
-            const float ry = a.y + std::fmod(static_cast<float>(k) * h * 0.53f + t * (8.0f + static_cast<float>(k) * 5.0f), h);
-            sprite(dl, {"..XXXX..", ".X....X.", "X......X", "X.....X.", ".X....X.", "..XXXX.."}, rx, ry, q, kArt);
+            const float d = std::fmod(t * u * 40 + static_cast<float>(k) * u * 12, u * 36) + u * 5;
+            glowCircle(dl, rot(d, 0), u * 0.45f, col);
         }
-        const ImVec2 c((a.x + b.x) * 0.5f, (a.y + b.y) * 0.5f);
-        sprite(dl, {"...X...", "...X...", "..X.X..", "..X.X..", ".X...X.", ".XXXXX.", "X.....X"}, c.x - p * 3.5f, c.y - p * 3.5f, p, kArt);
-        for (int k = 0; k < 3; ++k)
-            dl->AddRectFilled(ImVec2(c.x - p * 0.5f, c.y - p * 6 - std::fmod(t * 90.0f + static_cast<float>(k) * h / 3, h * 0.5f)),
-                              ImVec2(c.x + p * 0.5f, c.y - p * 5 - std::fmod(t * 90.0f + static_cast<float>(k) * h / 3, h * 0.5f)), kArt);
         break;
     }
-    case 10: {  // breakout
-        const float bw = (w - p * 4) / 8.0f;
-        for (int row = 0; row < 3; ++row)
-            for (int col = 0; col < 8; ++col)
-                if ((row * 3 + col + static_cast<int>(t * 0.5f)) % 7 != 2)
-                    dl->AddRectFilled(ImVec2(a.x + static_cast<float>(col) * bw + 1, a.y + static_cast<float>(row) * p * 3),
-                                      ImVec2(a.x + static_cast<float>(col + 1) * bw - 1, a.y + static_cast<float>(row) * p * 3 + p * 2), kArt);
-        const float bx = a.x + (w - p * 6) * wave01(t * 0.5f), by = a.y + p * 10 + (h - p * 16) * wave01(t * 0.7f);
-        dl->AddRectFilled(ImVec2(bx, by), ImVec2(bx + p * 2, by + p * 2), kArt);
-        const float padX = std::clamp(bx - p * 6, a.x, b.x - p * 12);
-        dl->AddRectFilled(ImVec2(padX, b.y - p * 2), ImVec2(padX + p * 12, b.y - p), kArt);
+    case 3: {  // Pong: soft paddles, a ball with its trail, the scores
+        for (float y = a.y + u; y < b.y; y += u * 3)
+            dl->AddRectFilled(ImVec2(c.x - u * 0.3f, y), ImVec2(c.x + u * 0.3f, y + u * 1.5f), faint, u * 0.3f);
+        auto ball = [&](float tt) { return ImVec2(a.x + u * 4 + (w - u * 8) * tri01(tt * 0.45f), a.y + u * 2 + (h - u * 4) * tri01(tt * 0.62f + 0.3f)); };
+        for (int k = 8; k >= 1; --k)
+            dl->AddCircleFilled(ball(t - static_cast<float>(k) * 0.03f), u * 1.1f * (1 - static_cast<float>(k) * 0.08f), alpha(col, 0.08f * static_cast<float>(9 - k)));
+        const ImVec2 bp = ball(t);
+        glowCircle(dl, bp, u * 1.2f, col);
+        const float ph = u * 9, ly = std::clamp(bp.y - ph * 0.5f, a.y, b.y - ph), ry = std::clamp(a.y + (h - ph) * tri01(t * 0.5f + 0.7f), a.y, b.y - ph);
+        glowRect(dl, ImVec2(a.x + u * 1.5f, ly), ImVec2(a.x + u * 2.7f, ly + ph), col, u * 0.6f);
+        glowRect(dl, ImVec2(b.x - u * 2.7f, ry), ImVec2(b.x - u * 1.5f, ry + ph), col, u * 0.6f);
+        text(dl, gBold, u * 6, c.x - u * 5, a.y + u * 2, dim, "3", H::Right);
+        text(dl, gBold, u * 6, c.x + u * 5, a.y + u * 2, dim, "2", H::Left);
         break;
     }
-    default: {  // a pac-man eating dots, a ghost behind
-        const float x = a.x - p * 20 + std::fmod(t * 30.0f, w + p * 40), y = (a.y + b.y) * 0.5f - p * 3.5f;
-        const bool open = std::fmod(t, 0.3f) < 0.15f;
-        sprite(dl, {"..XXXX..", ".XXXXXX.", open ? "XXXXX..." : "XXXXXXXX", open ? "XXXX...." : "XXXXXXXX", open ? "XXXXX..." : "XXXXXXXX",
-                    ".XXXXXX.", "..XXXX.."},
-               x, y, p, kArt);
-        for (float dx = std::ceil((x + p * 10 - a.x) / (p * 4)) * p * 4 + a.x; dx < b.x; dx += p * 4)
-            dl->AddRectFilled(ImVec2(dx, y + p * 3), ImVec2(dx + p, y + p * 4), kArt);
-        sprite(dl, {"..XXXX..", ".XXXXXX.", "XX.XX.XX", "XXXXXXXX", "XXXXXXXX", std::fmod(t, 0.4f) < 0.2f ? "X.X..X.X" : ".X.XX.X."},
-               x - p * 16, y + p, p, kArt);
+    case 4: {  // Breakout: rounded bricks, the ball's trail, the paddle
+        const float bw = (w - u * 4) / 7.0f;
+        for (int row = 0; row < 4; ++row)
+            for (int k = 0; k < 7; ++k)
+                if ((row * 3 + k + static_cast<int>(t * 0.6f)) % 9 != 4)
+                    dl->AddRectFilled(ImVec2(a.x + u * 2 + static_cast<float>(k) * bw + u * 0.4f, a.y + u * 2 + static_cast<float>(row) * u * 3),
+                                      ImVec2(a.x + u * 2 + static_cast<float>(k + 1) * bw - u * 0.4f, a.y + u * 4.2f + static_cast<float>(row) * u * 3),
+                                      alpha(col, 1.0f - 0.18f * static_cast<float>(row)), u * 0.7f);
+        auto ball = [&](float tt) { return ImVec2(a.x + u * 2 + (w - u * 4) * tri01(tt * 0.5f), a.y + u * 15 + (h - u * 20) * tri01(tt * 0.7f)); };
+        for (int k = 6; k >= 1; --k)
+            dl->AddCircleFilled(ball(t - static_cast<float>(k) * 0.03f), u, alpha(col, 0.07f * static_cast<float>(7 - k)));
+        const ImVec2 bp = ball(t);
+        glowCircle(dl, bp, u * 1.1f, col);
+        const float pw = u * 10, pxl = std::clamp(bp.x - pw * 0.5f, a.x, b.x - pw);
+        glowRect(dl, ImVec2(pxl, b.y - u * 2.5f), ImVec2(pxl + pw, b.y - u * 1.2f), col, u * 0.65f);
+        break;
+    }
+    case 5: {  // Tron: two light cycles, their walls of light
+        for (float x = a.x; x < b.x; x += u * 6)
+            dl->AddLine(ImVec2(x, a.y), ImVec2(x, b.y), alpha(col, 0.07f), 1.0f);
+        for (float y = a.y; y < b.y; y += u * 6)
+            dl->AddLine(ImVec2(a.x, y), ImVec2(b.x, y), alpha(col, 0.07f), 1.0f);
+        for (int bike = 0; bike < 2; ++bike) {
+            // A path of right angles, from a seed: where it was over the last few seconds.
+            ImVec2 pts[64];
+            int n = 0;
+            const float seg = 1.4f, now = t + static_cast<float>(bike) * 7.3f;
+            const int first = static_cast<int>(now / seg) - 5;
+            ImVec2 p(c.x, c.y);
+            for (int s = first; s <= first + 5; ++s) {
+                const int dir = static_cast<int>(hash01(s * 17 + bike * 101) * 4);
+                const float len = (s == first + 5 ? std::fmod(now, seg) / seg : 1.0f) * u * 9;
+                if (n == 0) {
+                    p = ImVec2(a.x + w * (0.25f + 0.5f * hash01(s + bike * 3)), a.y + h * (0.25f + 0.5f * hash01(s * 3 + bike)));
+                    pts[n++] = p;
+                }
+                p = ImVec2(std::clamp(p.x + (dir == 0 ? len : dir == 2 ? -len : 0), a.x + u, b.x - u), std::clamp(p.y + (dir == 1 ? len : dir == 3 ? -len : 0), a.y + u, b.y - u));
+                pts[n++] = p;
+            }
+            const ImU32 bc = bike == 0 ? col : mix(col, IM_COL32(255, 255, 255, 255), 0.5f);
+            for (int i = 1; i < n; ++i)  // segment by segment: no miter spikes at the turns
+                dl->AddLine(pts[i - 1], pts[i], alpha(bc, 0.2f), u * 2.2f);
+            for (int i = 1; i < n; ++i)
+                dl->AddLine(pts[i - 1], pts[i], bc, u * 0.6f);
+            for (int i = 1; i < n - 1; ++i)
+                dl->AddCircleFilled(pts[i], u * 0.3f, bc);
+            glowCircle(dl, pts[n - 1], u * 1.1f, IM_COL32(255, 255, 255, 230));
+        }
+        break;
+    }
+    case 6: {  // Missile Command: trails falling on the cities, interceptions blooming
+        dl->AddLine(ImVec2(a.x, b.y - u * 2), ImVec2(b.x, b.y - u * 2), dim, u * 0.6f);
+        for (int k = 0; k < 5; ++k)
+            dl->AddRectFilled(ImVec2(a.x + w * (0.1f + 0.2f * static_cast<float>(k)) - u * 2, b.y - u * 4), ImVec2(a.x + w * (0.1f + 0.2f * static_cast<float>(k)) + u * 2, b.y - u * 2),
+                              k == 2 ? col : dim, u * 0.6f, ImDrawFlags_RoundCornersTop);
+        for (int k = 0; k < 3; ++k) {
+            const float life = std::fmod(t * 0.3f + static_cast<float>(k) * 0.33f, 1.0f);
+            const ImVec2 from(a.x + w * hash01(k * 11 + static_cast<int>(t * 0.3f + static_cast<float>(k) * 0.33f)), a.y), to(a.x + w * (0.1f + 0.4f * static_cast<float>(k)), b.y - u * 4);
+            const ImVec2 head(from.x + (to.x - from.x) * life * 0.8f, from.y + (to.y - from.y) * life * 0.8f);
+            glowLine(dl, from, head, alpha(col, 0.7f), u * 0.35f);
+            glowCircle(dl, head, u * 0.5f, IM_COL32(255, 255, 255, 220));
+            if (life > 0.55f) {  // the interception: a bloom, growing then fading
+                const float k2 = (life - 0.55f) / 0.45f;
+                const ImVec2 at(head.x + u * 4, head.y - u * 3);
+                dl->AddCircleFilled(at, u * 5 * std::sin(k2 * 3.1416f), alpha(col, 0.22f * (1 - k2)));
+                dl->AddCircle(at, u * 5 * std::sin(k2 * 3.1416f), alpha(col, 0.8f * (1 - k2)), 24, u * 0.4f);
+            }
+        }
+        break;
+    }
+    case 7: {  // Frogger: lanes of cars, the frog hopping across
+        for (int lane = 0; lane < 4; ++lane) {
+            const float ly = a.y + u * 5 + static_cast<float>(lane) * u * 8;
+            for (float x = a.x; x < b.x; x += u * 5)
+                dl->AddLine(ImVec2(x, ly + u * 6.5f), ImVec2(x + u * 2.5f, ly + u * 6.5f), faint, u * 0.4f);
+            const float dir = lane % 2 ? -1.0f : 1.0f, speed = u * (5 + static_cast<float>(lane) * 2);
+            for (int k = 0; k < 2; ++k) {
+                const float len = u * (lane == 1 ? 10 : 6);
+                float x = std::fmod(t * speed + static_cast<float>(k) * (w + len) * 0.5f + hash01(lane) * w, w + len) - len;
+                if (dir < 0)
+                    x = b.x - (x - a.x) - len + a.x - a.x;
+                else
+                    x += a.x;
+                glowRect(dl, ImVec2(x, ly + u * 1.5f), ImVec2(x + len, ly + u * 4.5f), lane == 1 ? dim : col, u * 1.2f);
+            }
+        }
+        const float hop = std::fmod(t * 1.2f, 5.0f), step = std::floor(hop), part = hop - step;
+        const float fy = b.y - u * 3 - (step + std::min(part * 3, 1.0f)) * u * 8 + std::sin(std::min(part * 3, 1.0f) * 3.1416f) * -u * 2;
+        glowCircle(dl, ImVec2(c.x, fy), u * 2, col);
+        dl->AddCircleFilled(ImVec2(c.x - u * 1.1f, fy - u * 1.6f), u * 0.8f, IM_COL32(255, 255, 255, 230));
+        dl->AddCircleFilled(ImVec2(c.x + u * 1.1f, fy - u * 1.6f), u * 0.8f, IM_COL32(255, 255, 255, 230));
+        break;
+    }
+    case 8: {  // Tetris: the well, the stack, a piece falling and turning
+        const float cell = u * 3.2f, wx = c.x - cell * 5, wy = b.y - u;
+        dl->AddLine(ImVec2(wx - u, a.y), ImVec2(wx - u, wy), dim, u * 0.5f);
+        dl->AddLine(ImVec2(wx + cell * 10 + u, a.y), ImVec2(wx + cell * 10 + u, wy), dim, u * 0.5f);
+        static constexpr int kStack[4][10] = {{1, 1, 0, 1, 1, 1, 1, 0, 1, 1}, {1, 1, 1, 1, 0, 1, 1, 1, 1, 1}, {0, 1, 1, 0, 0, 0, 1, 1, 0, 1}, {0, 0, 1, 0, 0, 0, 0, 1, 0, 0}};
+        auto block = [&](float x, float y, ImU32 bc) { dl->AddRectFilled(ImVec2(x + u * 0.25f, y + u * 0.25f), ImVec2(x + cell - u * 0.25f, y + cell - u * 0.25f), bc, u * 0.6f); };
+        for (int r = 0; r < 4; ++r)
+            for (int k = 0; k < 10; ++k)
+                if (kStack[r][k])
+                    block(wx + static_cast<float>(k) * cell, wy - static_cast<float>(r + 1) * cell, alpha(col, 0.55f + 0.1f * static_cast<float>(r)));
+        const float fall = std::fmod(t * 0.35f, 1.0f);
+        const int turn = static_cast<int>(t * 0.9f) % 4;
+        static constexpr int kT[4][4][2] = {{{0, 0}, {1, 0}, {2, 0}, {1, 1}}, {{1, -1}, {1, 0}, {1, 1}, {0, 0}}, {{0, 1}, {1, 1}, {2, 1}, {1, 0}}, {{1, -1}, {1, 0}, {1, 1}, {2, 0}}};
+        const float px0 = wx + cell * 4, py0 = a.y + u + fall * (h - cell * 7);
+        for (const auto& bl : kT[turn]) {
+            const float bx = px0 + static_cast<float>(bl[0]) * cell, by = py0 + static_cast<float>(bl[1]) * cell;
+            dl->AddRectFilled(ImVec2(bx - u * 0.4f, by - u * 0.4f), ImVec2(bx + cell + u * 0.4f, by + cell + u * 0.4f), alpha(col, 0.15f), u);
+            block(bx, by, col);
+        }
+        break;
+    }
+    case 9: {  // Galaga: a formation, one diving in a loop, the fighter firing
+        const float sway = std::sin(t * 0.8f) * u * 3;
+        auto bug = [&](ImVec2 p, ImU32 bc, float flap) {
+            dl->AddEllipseFilled(ImVec2(p.x - u * 1.6f, p.y), ImVec2(u * 1.4f, u * (0.7f + 0.5f * flap)), alpha(bc, 0.6f));
+            dl->AddEllipseFilled(ImVec2(p.x + u * 1.6f, p.y), ImVec2(u * 1.4f, u * (0.7f + 0.5f * flap)), alpha(bc, 0.6f));
+            glowCircle(dl, p, u * 1.1f, bc);
+        };
+        const float flap = tri01(t * 4);
+        for (int row = 0; row < 2; ++row)
+            for (int k = 0; k < 6; ++k)
+                if (!(row == 0 && k == 3))
+                    bug(ImVec2(a.x + w * (0.14f + 0.145f * static_cast<float>(k)) + sway, a.y + u * 5 + static_cast<float>(row) * u * 6), row == 0 ? col : dim, flap);
+        const float dive = std::fmod(t * 0.4f, 1.0f) * 6.2832f;
+        bug(ImVec2(c.x + std::sin(dive) * w * 0.32f, a.y + u * 5 + (1 - std::cos(dive)) * h * 0.3f), col, flap);
+        const float fx = c.x + std::sin(t * 0.7f) * w * 0.3f, fy = b.y - u * 4;
+        dl->AddTriangleFilled(ImVec2(fx, fy - u * 3), ImVec2(fx - u * 2.5f, fy + u * 1.5f), ImVec2(fx + u * 2.5f, fy + u * 1.5f), col);
+        dl->AddCircleFilled(ImVec2(fx, fy), u * 3.5f, alpha(col, 0.1f));
+        for (int k = 0; k < 2; ++k) {
+            const float sy = fy - u * 4 - std::fmod(t * h * 1.2f + static_cast<float>(k) * h * 0.5f, h);
+            glowLine(dl, ImVec2(fx, sy), ImVec2(fx, sy - u * 2), IM_COL32(255, 255, 255, 220), u * 0.4f);
+        }
+        break;
+    }
+    case 10: {  // Donkey Kong: slanted girders, ladders, barrels rolling down
+        const int floors = 3;
+        auto girderY = [&](int f, float x) {
+            const float y0 = a.y + u * 9 + static_cast<float>(f) * (h - u * 12) / static_cast<float>(floors - 1);
+            const float tilt = (f % 2 ? 1.0f : -1.0f) * u * 2;
+            return y0 + tilt * ((x - a.x) / w - 0.5f);
+        };
+        for (int f = 0; f < floors; ++f) {
+            const ImVec2 l(a.x + (f % 2 ? u * 4 : 0), girderY(f, a.x)), r(b.x - (f % 2 ? 0 : u * 4), girderY(f, b.x));
+            glowLine(dl, l, r, dim, u * 1.2f);
+            for (float x = l.x + u * 2; x < r.x; x += u * 4)
+                dl->AddCircleFilled(ImVec2(x, girderY(f, x)), u * 0.35f, col);
+            if (f < floors - 1) {
+                const float lx = f % 2 ? a.x + w * 0.2f : a.x + w * 0.75f;
+                for (float yy = girderY(f, lx) + u; yy < girderY(f + 1, lx) - u; yy += u * 1.5f)
+                    dl->AddLine(ImVec2(lx - u * 1.2f, yy), ImVec2(lx + u * 1.2f, yy), faint, u * 0.4f);
+            }
+        }
+        for (int k = 0; k < 3; ++k) {  // a barrel per floor, rolling the floor's way
+            const int f = k;
+            const float dir = f % 2 ? -1.0f : 1.0f;
+            const float prog = std::fmod(t * 0.25f + static_cast<float>(k) * 0.33f, 1.0f);
+            const float x = dir > 0 ? a.x + u * 3 + prog * (w - u * 6) : b.x - u * 3 - prog * (w - u * 6);
+            const ImVec2 bc(x, girderY(f, x) - u * 2.2f);
+            glowCircle(dl, bc, u * 1.8f, col);
+            const float ang = prog * 25.0f * dir;
+            dl->AddLine(ImVec2(bc.x - std::cos(ang) * u * 1.4f, bc.y - std::sin(ang) * u * 1.4f), ImVec2(bc.x + std::cos(ang) * u * 1.4f, bc.y + std::sin(ang) * u * 1.4f),
+                        IM_COL32(20, 20, 30, 200), u * 0.5f);
+        }
+        dl->AddRectFilled(ImVec2(a.x + u * 2, girderY(0, a.x) - u * 7), ImVec2(a.x + u * 7, girderY(0, a.x) - u * 1.5f), dim, u * 1.2f);  // Kong, at the top
+        break;
+    }
+    default: {  // Q*bert: a pyramid of cubes, a ball hopping, the tops lighting up
+        const float s = u * 3.6f;  // half a cube's width
+        const ImVec2 top(c.x, a.y + u * 6);
+        auto cubeAt = [&](int r, int k) { return ImVec2(top.x + (static_cast<float>(k) - static_cast<float>(r) * 0.5f) * s * 2, top.y + static_cast<float>(r) * s * 1.5f); };
+        const int path[6][2] = {{0, 0}, {1, 1}, {2, 1}, {3, 2}, {2, 2}, {1, 0}};
+        const float hop = t * 1.4f;
+        const int at = static_cast<int>(hop) % 6, next = (at + 1) % 6;
+        for (int r = 0; r < 4; ++r)
+            for (int k = 0; k <= r; ++k) {
+                const ImVec2 p = cubeAt(r, k);
+                bool lit = false;
+                for (int q = 0; q <= at; ++q)
+                    lit = lit || (path[q][0] == r && path[q][1] == k);
+                const ImVec2 t0(p.x, p.y - s * 0.5f), t1(p.x + s, p.y), t2(p.x, p.y + s * 0.5f), t3(p.x - s, p.y);
+                dl->AddQuadFilled(t0, t1, t2, t3, lit ? col : alpha(col, 0.3f));
+                dl->AddQuadFilled(t3, t2, ImVec2(p.x, p.y + s * 1.6f), ImVec2(p.x - s, p.y + s * 1.1f), alpha(col, 0.18f));
+                dl->AddQuadFilled(t2, t1, ImVec2(p.x + s, p.y + s * 1.1f), ImVec2(p.x, p.y + s * 1.6f), alpha(col, 0.1f));
+            }
+        const ImVec2 p0 = cubeAt(path[at][0], path[at][1]), p1 = cubeAt(path[next][0], path[next][1]);
+        const float f = hop - std::floor(hop);
+        const ImVec2 ball(p0.x + (p1.x - p0.x) * f, p0.y + (p1.y - p0.y) * f - s * 0.9f - std::sin(f * 3.1416f) * u * 4);
+        glowCircle(dl, ball, u * 1.6f, IM_COL32(255, 255, 255, 235));
         break;
     }
     }
     dl->PopClipRect();
+}
+
+// The idle animation of an empty LOOP box: its game on a grey screen.
+void idleArt(ImDrawList* dl, int art, ImVec2 a, ImVec2 b, double time) {
+    screen(dl, a, b, kIdleTint, [&] { arcade(dl, art % kIdleArtCount, ImVec2(a.x + px(4), a.y + px(4)), ImVec2(b.x - px(4), b.y - px(4)), time, kIdleInk); });
 }
 
 // Screen geometry shared by the modules.
@@ -1551,11 +1690,15 @@ std::optional<PerformanceView::SessionAction> PerformanceView::drawSession(const
         const float x = origin.x + static_cast<float>(col) * (colW + gap);
         const bool playing = (live.clipsPlaying >> ch) & 1u;
         dl->AddRectFilled(ImVec2(x, origin.y), ImVec2(x + colW, origin.y + gridH), T::kPanel, px(8));
+        dl->AddRectFilled(ImVec2(x, origin.y), ImVec2(x + colW, origin.y + headH), T::kPanelHeader, px(8), ImDrawFlags_RoundCornersTop);
         dl->AddRect(ImVec2(x, origin.y), ImVec2(x + colW, origin.y + gridH), T::kBorder, px(8), px(1));
-        // Header: the channel, a dot while it plays; the active one underlined. A click chooses it.
+        // Header, as a module's: the channel, a LED while it plays; the active one underlined. A click chooses it.
         const bool active = ch == live.channel;
-        text(dl, gBold, px(11), x + px(12), origin.y + px(17), active ? T::kText : T::kDim, fit(gBold, px(11), channelTitle(ch), colW - px(64)), H::Left, V::Middle);
-        dl->AddCircleFilled(ImVec2(x + colW - px(15), origin.y + px(17)), px(5), playing ? T::kGreen : IM_COL32(0x3C, 0x40, 0x46, 255));
+        text(dl, gBold, px(12.5f), x + px(12), origin.y + px(17), active ? T::kText : T::kLabel, fit(gBold, px(12.5f), channelTitle(ch), colW - px(64)), H::Left,
+             V::Middle);
+        led(dl, ImVec2(x + colW - px(15), origin.y + px(17)), px(5), T::kGreen, playing);
+        if (!playing)
+            dl->AddCircleFilled(ImVec2(x + colW - px(15), origin.y + px(17)), px(5), T::kDim);
         {  // a chain sign when it has one: green with its chain and step while one runs
             const LiveState::Chains& chains = live.chains[c];
             const bool runs = chains.at >= 0 && chains.playing >= 0;
@@ -1616,15 +1759,15 @@ std::optional<PerformanceView::SessionAction> PerformanceView::drawSession(const
                 action = SessionAction{SessionAction::Kind::Launch, ch, slot};
             if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Right))
                 menuRequest_ = MenuRequest{MenuTarget{MenuTarget::Kind::Clip, ch, slot}, ImGui::GetIO().MousePos};
-            if (!clip.sources) {
-                dl->AddRectFilled(a, b, IM_COL32(0x24, 0x26, 0x2A, 255), px(5));
-                dl->AddRect(a, b, hovered ? T::kControlBorder : IM_COL32(0x34, 0x38, 0x3E, 255), px(5), px(1));
-            } else {
+            if (!clip.sources) {  // empty: a screen off
+                screen(dl, a, b, kScreenOff, [] {});
+                if (hovered)
+                    dl->AddRect(a, b, T::kControlBorder, px(4), px(1));
+            } else {  // a screen in the channel's colour, its state around it
                 const ImU32 outline = clip.recording ? T::kRed : clipPlays ? T::kGreen : queued ? alpha(T::kGreen, blink ? 0.9f : 0.3f)
                                     : hovered      ? T::kControlBorder
-                                                   : IM_COL32(0x46, 0x4B, 0x53, 255);
-                dl->AddRectFilled(a, b, IM_COL32(0x28, 0x2B, 0x30, 255), px(5));
-                dl->AddRect(a, b, outline, px(5), px(clip.recording || clipPlays || queued ? 2.0f : 1.0f));
+                                                   : 0;
+                screen(dl, a, b, chColor, [&] {
                 dl->AddRectFilled(ImVec2(a.x + px(2), a.y + px(4)), ImVec2(a.x + px(5), b.y - px(4)), chColor, px(1));
                 const bool hasNotes = clip.sources & (1u << static_cast<int>(LoopSource::Notes));
                 const bool hasCurves = clip.sources & ~(1u << static_cast<int>(LoopSource::Notes));
@@ -1690,6 +1833,9 @@ std::optional<PerformanceView::SessionAction> PerformanceView::drawSession(const
                 } else if (queued) {
                     dl->AddTriangle(tri0, tri1, tri2, alpha(T::kGreen, blink ? 1.0f : 0.35f), px(1.2f));
                 }
+                });
+                if (outline)
+                    dl->AddRect(a, b, outline, px(4), px(clip.recording || clipPlays || queued ? 2.0f : 1.0f));
             }
             if (active && slot == cursorSlot) {  // the cursor
                 sessionCursorBox_ = {a, b};
@@ -1817,6 +1963,7 @@ std::optional<PerformanceView::SessionAction> PerformanceView::drawChainStrip(Im
     const bool nextHere = chains.next >= 0 && (chains.nextChain >= 0 ? chains.nextChain == shownChain : runs);
     const bool blink = std::fmod(time_, 0.8) < 0.45;
     dl->AddRectFilled(at, ImVec2(at.x + w, at.y + h), T::kPanel, px(8));
+    dl->AddRectFilled(at, ImVec2(at.x + w, at.y + px(29)), T::kPanelHeader, px(8), ImDrawFlags_RoundCornersTop);
     dl->AddRect(at, ImVec2(at.x + w, at.y + h), T::kBorder, px(8), px(1));
     const float hy = at.y + px(15);
     text(dl, gBold, px(11), at.x + px(12), hy, T::kText, "CHAIN", H::Left, V::Middle);
@@ -1916,10 +2063,8 @@ std::optional<PerformanceView::SessionAction> PerformanceView::drawChainStrip(Im
             const int shown = random ? (playsNow ? chains.clipNow : -1) : clipSlot;
             static const LiveState::Clip kNone{};
             const LiveState::Clip& clip = shown >= 0 ? live.clips[c * Engine::kClipSlots + static_cast<std::size_t>(shown)] : kNone;
-            const ImU32 outline = playsNow ? T::kGreen : isNext ? alpha(T::kGreen, blink ? 0.9f : 0.3f) : hovered ? T::kControlBorder
-                                                                                                                  : IM_COL32(0x46, 0x4B, 0x53, 255);
-            dl->AddRectFilled(a, b, IM_COL32(0x20, 0x22, 0x26, 255), px(6));
-            dl->AddRect(a, b, outline, px(6), px(playsNow || isNext ? 2.0f : 1.0f));
+            const ImU32 outline = playsNow ? T::kGreen : isNext ? alpha(T::kGreen, blink ? 0.9f : 0.3f) : hovered ? T::kControlBorder : 0;
+            screen(dl, a, b, random ? IM_COL32(0xB0, 0x8C, 0xFF, 255) : chColor, [&] {  // a screen, its state around it
             dl->AddRectFilled(ImVec2(x0 + px(2), y0 + px(6)), ImVec2(x0 + px(5), y1 - px(6)), chColor, px(1));
             const ImU32 kViolet = IM_COL32(0xB0, 0x8C, 0xFF, 255);
             if (random) {
@@ -1994,6 +2139,9 @@ std::optional<PerformanceView::SessionAction> PerformanceView::drawChainStrip(Im
                 dl->AddRectFilled(ImVec2(x0 + px(6), y1 - px(5)), ImVec2(x0 + px(6) + (stepW - px(12)) * p, y1 - px(3)), T::kGreen);
                 dl->AddTriangleFilled(ImVec2(x1 - px(16), y1 - px(18)), ImVec2(x1 - px(16), y1 - px(8)), ImVec2(x1 - px(8), y1 - px(13)), T::kGreen);
             }
+            });
+            if (outline)
+                dl->AddRect(a, b, outline, px(4), px(playsNow || isNext ? 2.0f : 1.0f));
         }
         if (cursor == k)
             sessionCursorBox_ = {a, b};
@@ -2028,9 +2176,9 @@ std::optional<PerformanceView::SessionAction> PerformanceView::drawChainStrip(Im
         menuRequest_ = MenuRequest{MenuTarget{MenuTarget::Kind::Chain, ch, shownChain}, io.MousePos};
     ImGui::SetItemTooltip("Arrows or wheel: another chain of the channel\nClick: play or stop it. Right-click: its menu (then, duplicate, rename)");
     ImGui::PopID();
-    dl->AddRectFilled(ImVec2(ex0, y0), ImVec2(ex1, y1), IM_COL32(0x20, 0x22, 0x26, 255), px(6));
-    dl->AddRect(ImVec2(ex0, y0), ImVec2(ex1, y1), runs ? T::kGreen : endHovered ? T::kControlBorder : IM_COL32(0x46, 0x4B, 0x53, 255), px(6),
-                px(runs ? 2.0f : 1.0f));
+    screen(dl, ImVec2(ex0, y0), ImVec2(ex1, y1), runs ? T::kGreen : kScreenOff, [] {});
+    if (runs || endHovered)
+        dl->AddRect(ImVec2(ex0, y0), ImVec2(ex1, y1), runs ? T::kGreen : T::kControlBorder, px(4), px(runs ? 2.0f : 1.0f));
     text(dl, gBold, px(7.5f), letterX, y0 + px(8), T::kDim, "CHAIN", H::Center, V::Middle);
     const ImU32 arrowColor = endHovered ? T::kCyan : alpha(T::kCyan, 0.6f);
     dl->AddTriangleFilled(ImVec2(arrowX - px(5), letterY - px(4)), ImVec2(arrowX + px(5), letterY - px(4)), ImVec2(arrowX, letterY - px(10)), arrowColor);
@@ -2154,7 +2302,10 @@ std::optional<PerformanceView::SongAction> PerformanceView::drawSong(const LiveS
     // --- The whole song, at scale ---
     const float topH = px(150);
     dl->AddRectFilled(origin, ImVec2(origin.x + width, origin.y + topH), T::kPanel, px(8));
+    dl->AddRectFilled(origin, ImVec2(origin.x + width, origin.y + px(31)), T::kPanelHeader, px(8), ImDrawFlags_RoundCornersTop);
     dl->AddRect(origin, ImVec2(origin.x + width, origin.y + topH), T::kBorder, px(8), px(1));
+    // The song at scale on a screen, as the modules show what they do.
+    screen(dl, ImVec2(origin.x + px(8), origin.y + px(31)), ImVec2(origin.x + width - px(8), origin.y + topH - px(6)), kSongScreen, [] {});
     const float hy = origin.y + px(16);
     text(dl, gBold, px(11), origin.x + px(12), hy, T::kText, "SONG", H::Left, V::Middle);
     std::string summary = std::to_string(sections) + (sections == 1 ? " section" : " sections") + "  \xC2\xB7  " + std::to_string(startOf.back()) +
@@ -2225,7 +2376,7 @@ std::optional<PerformanceView::SongAction> PerformanceView::drawSong(const LiveS
         const float y = ly0 + static_cast<float>(k) * (laneH + px(2));
         const ImU32 chColor = kChannelColors[ch % 8];
         text(dl, gBold, px(8), origin.x + px(12), y + laneH * 0.5f, chColor, fit(gBold, px(8), channelTitle(ch), px(60)), H::Left, V::Middle);
-        dl->AddRectFilled(ImVec2(sx0, y), ImVec2(sx1, y + laneH), IM_COL32(0x22, 0x25, 0x29, 255), px(2));
+        dl->AddRectFilled(ImVec2(sx0, y), ImVec2(sx1, y + laneH), IM_COL32(0, 0, 0, 70), px(2));
         for (int s = 0; s < sections; ++s) {
             const auto& items = song.sections[static_cast<std::size_t>(s)].cells[c];
             const double end = startOf[static_cast<std::size_t>(s) + 1];
@@ -2253,9 +2404,10 @@ std::optional<PerformanceView::SongAction> PerformanceView::drawSong(const LiveS
 
     // --- The sections, a row each; a column per channel ---
     const float editorH = px(168), gy0 = origin.y + topH + px(6), gy1 = origin.y + height - editorH - px(6);
-    dl->AddRectFilled(ImVec2(origin.x, gy0), ImVec2(origin.x + width, gy1), T::kPanel, px(8));
-    dl->AddRect(ImVec2(origin.x, gy0), ImVec2(origin.x + width, gy1), T::kBorder, px(8), px(1));
     const float nameW = px(128), headH = px(26), rowH = px(60), gap = px(6);
+    dl->AddRectFilled(ImVec2(origin.x, gy0), ImVec2(origin.x + width, gy1), T::kPanel, px(8));
+    dl->AddRectFilled(ImVec2(origin.x, gy0), ImVec2(origin.x + width, gy0 + headH), T::kPanelHeader, px(8), ImDrawFlags_RoundCornersTop);
+    dl->AddRect(ImVec2(origin.x, gy0), ImVec2(origin.x + width, gy1), T::kBorder, px(8), px(1));
     const float cx0 = origin.x + px(8) + nameW + gap, colW = (origin.x + width - px(8) - cx0 - gap * (kColumns - 1)) / kColumns;
     for (int k = 0; k < kColumns; ++k) {
         const int ch = songFirst_ + k;
@@ -2306,8 +2458,9 @@ std::optional<PerformanceView::SongAction> PerformanceView::drawSong(const LiveS
         const int bars = barsOf[static_cast<std::size_t>(r)];
         const bool now = playing && live.song.section == r;
         // Its name, length, and a play sign.
-        dl->AddRectFilled(na, nb, now ? alpha(T::kGreen, 0.16f) : IM_COL32(0x20, 0x22, 0x26, 255), px(6));
-        dl->AddRect(na, nb, now ? T::kGreen : IM_COL32(0x46, 0x4B, 0x53, 255), px(6), px(now ? 2.0f : 1.0f));
+        screen(dl, na, nb, kSectionColors[r % 7], [] {});  // a screen in the section's colour
+        if (now)
+            dl->AddRect(na, nb, T::kGreen, px(4), px(2));
         dl->AddRectFilled(ImVec2(na.x + px(2), na.y + px(7)), ImVec2(na.x + px(5), nb.y - px(7)), kSectionColors[r % 7], px(1));
         text(dl, gBold, px(11), na.x + px(12), na.y + px(15), T::kText, fit(gBold, px(11), sec.name.empty() ? "SECTION " + std::to_string(r + 1) : sec.name, nameW - px(36)),
              H::Left, V::Middle);
@@ -2343,9 +2496,13 @@ std::optional<PerformanceView::SongAction> PerformanceView::drawSong(const LiveS
             const ImVec2 a(x, y), b(x + colW, y + rowH);
             const auto& items = sec.cells[c];
             const bool here = cursor.row == r && cursor.col == ch;
-            dl->AddRectFilled(a, b, items.empty() ? IM_COL32(0x26, 0x29, 0x2E, 255) : IM_COL32(0x20, 0x22, 0x26, 255), px(6));
-            if (!items.empty())
-                dl->AddRect(a, b, now ? alpha(T::kGreen, 0.8f) : IM_COL32(0x46, 0x4B, 0x53, 255), px(6), px(1));
+            if (items.empty()) {
+                dl->AddRectFilled(a, b, IM_COL32(0x26, 0x29, 0x2E, 255), px(6));
+            } else {  // a screen in the channel's colour
+                screen(dl, a, b, kChannelColors[ch % 8], [] {});
+                if (now)
+                    dl->AddRect(a, b, alpha(T::kGreen, 0.8f), px(4), px(1));
+            }
             const float ix0 = a.x + px(6), ix1 = b.x - px(6), barW = (ix1 - ix0) / static_cast<float>(bars);
             const ImU32 chColor = kChannelColors[ch % 8];
             const auto st = songItemBars(live, ch, items);
@@ -2401,6 +2558,7 @@ std::optional<PerformanceView::SongAction> PerformanceView::drawSong(const LiveS
     // --- The editor of the cell under the cursor ---
     const float ey0 = origin.y + height - editorH, ey1 = origin.y + height;
     dl->AddRectFilled(ImVec2(origin.x, ey0), ImVec2(origin.x + width, ey1), T::kPanel, px(8));
+    dl->AddRectFilled(ImVec2(origin.x, ey0), ImVec2(origin.x + width, ey0 + px(29)), T::kPanelHeader, px(8), ImDrawFlags_RoundCornersTop);
     dl->AddRect(ImVec2(origin.x, ey0), ImVec2(origin.x + width, ey1), cursor.editing ? T::kCyan : T::kBorder, px(8), px(cursor.editing ? 2.0f : 1.0f));
     if (cursor.col < 0 || cursor.row >= sections) {
         static constexpr const char* kHelp[] = {
@@ -2436,6 +2594,7 @@ std::optional<PerformanceView::SongAction> PerformanceView::drawSong(const LiveS
         std::snprintf(buf, sizeof buf, "%.1f of %d bars played", std::min(used, static_cast<double>(bars)), bars);
         text(dl, gMedium, px(10), origin.x + width - px(12), ey0 + px(15), T::kDim, buf, H::Right, V::Middle);
     }
+    screen(dl, ImVec2(origin.x + px(8), ey0 + px(29)), ImVec2(origin.x + width - px(8), ey1 - px(22)), kSongScreen, [] {});  // the cell's timeline, on a screen
     const float ex0 = origin.x + px(14), ex1 = origin.x + width - px(60), barW = (ex1 - ex0) / static_cast<float>(bars);
     const float ry = ey0 + px(32);
     const int every = bars <= 16 ? 1 : bars <= 32 ? 2 : bars <= 64 ? 4 : 8;
@@ -2888,8 +3047,6 @@ void PerformanceView::drawLoopPanel(ImDrawList* dl, float x, float w, float loop
     // border telling its state.
     const ImVec2 ga(x + px(12), loopY + px(10)), gb(x + w - px(12), bottom);
     if (!recording && !playing && !st.waiting) {
-        dl->AddRectFilled(ga, gb, kGraph, px(4));
-        dl->AddRect(ga, gb, kGraph, px(4), px(1.3f));
         idleArt(dl, art, ga, gb, time_);
     }
     std::array<std::pair<ImVec2, ImVec2>, 4> laneBoxes{};

@@ -7,7 +7,8 @@ DAW or synthesizer: the sticks, the analog triggers and the two-finger touchpad
 move your sounds, the buttons play notes and chords, and every MIDI channel can
 have its own layout. Hold one button, play, release: what you played loops at
 once, notes and gestures alike, on as many channels as you like. Then arrange
-your loops into clips and chain them, right from the controller.
+your loops into clips, chain them, and lay them out into a whole song, right
+from the controller.
 
 Arcadance runs on Linux; Windows and macOS versions are planned.
 
@@ -31,13 +32,17 @@ Arcadance runs on Linux; Windows and macOS versions are planned.
   or compress it in time, widen or narrow its swing, shorten or lengthen it,
   or play it in steps, like a step sequencer, without recording it again.
 - **Clips, chains and the session screen.** Each channel keeps up to eight
-  clips. Launch them in time from the controller, and chain them to build a
-  song (see below).
+  clips. Launch them in time from the controller, and play them in chains,
+  up to eight per channel (see below).
+- **Arrange a song.** Lay out sections (intro, verse, chorus…) and, in each,
+  the clips, chains and silences every channel plays, on the bar or right
+  after one another; play the song from any section and see where it is in
+  real time.
 - **Edit your loops in a large piano roll.** Move a note, a chord or a
   selection in time and pitch (onto the scale if you like), change their
   length, delete them, shorten or lengthen the loop, all while it plays.
-- **Sessions.** Save every channel's clips, chains, the preset, the tonality
-  and the tempo in one file, and open them again later.
+- **Sessions.** Save every channel's clips, chains, the song, the preset, the
+  tonality and the tempo in one file, and open them again later.
 - **Chords made easy.** Named chords (`Fm9`, `Dbmaj7#11`, `Eb9sus4`…) with octave,
   inversion and doubled bass root; choose a tonality and Arcadance offers only
   the notes and chords of the scale. With voice leading, each chord takes the
@@ -76,7 +81,9 @@ Arcadance runs on Linux; Windows and macOS versions are planned.
 
 Each module shows its loops as lanes, one per axis, each with its own length,
 playhead and controller number. Reshape them while they play, from the
-controller (Shift and a stick) or with the mouse wheel.
+controller (Shift and a stick) or with the mouse wheel. A LOOP panel with
+nothing recorded yet plays a little 80s arcade game on its grey screen
+(Pac-Man, Tetris, Asteroids, Q*bert…), so you see at a glance which ones are free.
 
 ![The LOOP panels: a stick's X stretched, its Y narrowed and in steps; R2 widened](docs/media/lanes.png)
 
@@ -86,7 +93,7 @@ controller (Shift and a stick) or with the mouse wheel.
 
 ## Clips, chains and the session screen
 
-![The session screen: a column of clips per channel, those playing outlined in green, and the chain of channel 1 underneath](docs/media/session.png)
+![The session screen: a column of clips per channel, each clip a small screen in its channel's colour, those playing outlined in green, and the chain of channel 1 underneath](docs/media/session.png)
 
 Each channel keeps up to **eight clips**, each a full set of its loops (notes,
 sticks, triggers, touchpad). The **session screen** shows them all, a column
@@ -102,18 +109,42 @@ per channel, and plays them live:
 - Every channel plays its own clip: switch the drums on channel 1 while the
   bass carries on on channel 2.
 
-Under the clips, the **chain** of the active channel plays its clips in
-sequence, up to eight steps:
+Under the clips, a **chain** of the active channel plays its clips in
+sequence, up to eight steps. Each channel has up to **eight chains** (A to H),
+chosen in the CHAIN cell at the end of the strip:
 
 ![The chain of a channel: clip 3 twice, a random clip four times, clip 2 sixteen times, clip 1 until you move on, a random clip once](docs/media/chain.png)
 
 - Each step is a clip and how many times it plays: ×1 to ×64, or ∞ until you
-  move on. After the last step the chain goes back to the first, or stops.
+  move on. After the last step the chain goes back to the first, stops, or
+  goes on to another chain.
 - **R** picks one of the channel's clips at random each time the chain comes
   to it, for an arrangement that never plays twice the same.
 - Set the steps from the controller (the right stick chooses the clip and the
   repeats, L3 starts the chain or moves on, R3 empties a step) or with the
   mouse (drag a clip onto a step, turn the wheel).
+- The CHAIN cell shows which chain you see (arrows, the wheel or the right
+  stick show another) and plays it; its menu sets what follows it, and
+  duplicates, renames or clears it.
+
+## Arrange a song
+
+![The song screen: the whole song at scale on top, a row per section and a column per channel, the editor of a cell at the bottom](docs/media/song.png)
+
+The **song screen** (press the Mode button again from the session screen, Tab,
+or the SONG button) lays your clips and chains out in time:
+
+- A song is a list of **sections**, as many as you like, each with its name
+  and its length in bars (or as long as its longest channel).
+- In each section, every channel plays **clips, chains and silences**, one
+  after the other or each on a bar of its own. Pick them from the list the +
+  opens, or add a clip or a chain to the song from its menu in the session
+  screen. After its repeats an item is silent, or loops on until the next one.
+- The top of the screen shows the whole song at scale, a lane per channel,
+  with a playhead in real time; play it from any section, at the next bar,
+  or loop the section playing.
+- Everything works from the controller (cursor, Select, Menu, the right stick
+  for lengths and repeats) and with the mouse (click, drag, wheel).
 
 ## Getting started
 
@@ -167,7 +198,8 @@ The window is an animated view built for the stage, which plays while it edits.
 - A strip of pads for the buttons (✕ ○ □ △ in PlayStation colours): they flash
   on every press and stay lit while their note or chord sounds.
 - At the top: the ☰ menu (sessions, Options, About), the preset, ▶ / ■ for
-  the loops, the clock and its tempo, TAP, the session screen and PANIC.
+  the loops, the clock and its tempo, TAP, the session and song screens and
+  PANIC.
 
 Click a control (a pad, a D-pad direction, a touchpad zone, a stick, a LOOP
 panel) to set it up in a window over the view, and hear the change at once.
