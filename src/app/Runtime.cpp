@@ -267,6 +267,7 @@ LiveState Runtime::live() const {
     s.stickAmplitudes = {(amplitudes & 1u) != 0, (amplitudes & 2u) != 0};
     s.fingerAmplitudes = (amplitudes & 4u) != 0;
     s.velocityShaping = velocityShaping_.load(std::memory_order_relaxed);
+    s.velocityLoop = velocityLoop_.load(std::memory_order_relaxed);
     s.transposeNotes = transposeNotes_.load(std::memory_order_relaxed);
     s.transposeLoop = transposeLoop_.load(std::memory_order_relaxed);
     s.clock = clock_.load(std::memory_order_relaxed);
@@ -355,6 +356,7 @@ void Runtime::publish(const GamepadInput& gamepad, const Engine& engine) {
                       std::memory_order_relaxed);
     const auto shaping = engine.shaping(engine.channel());
     velocityShaping_.store(shaping.velocity, std::memory_order_relaxed);
+    velocityLoop_.store(shaping.velocityLoop, std::memory_order_relaxed);
     transposeNotes_.store(shaping.transposeNotes, std::memory_order_relaxed);
     transposeLoop_.store(shaping.transposeLoop, std::memory_order_relaxed);
 

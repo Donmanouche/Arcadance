@@ -27,15 +27,15 @@ using namespace midipad;
 
 namespace {
 
-constexpr const char* kUsage = R"(Usage: midipad --headless [options] <preset.json>
+constexpr const char* kUsage = R"(Usage: arcadance --headless [options] <preset.json>
 
-Plays a MidiPad preset with the first gamepad connected, without a window.
+Plays an Arcadance preset with the first gamepad connected, without a window.
 The preset is reloaded automatically when its file changes.
 
 Options:
   -c, --connect NAME   send to an existing MIDI port whose name contains NAME,
                        instead of creating a virtual port
-  -n, --port-name NAME name of the virtual port (default: MidiPad)
+  -n, --port-name NAME name of the virtual port (default: Arcadance)
       --api alsa|jack  MIDI API on Linux (default: alsa)
       --channel N      starting MIDI channel, 1 to 16 (default: 1)
   -m, --monitor        print every MIDI message sent
@@ -49,7 +49,7 @@ Options:
 struct Options {
     fs::path preset;
     std::optional<std::string> connect;
-    std::string portName = "MidiPad";
+    std::string portName = "Arcadance";
     MidiOutput::Api api = MidiOutput::Api::Default;
     int channel = 0;
     bool monitor = false;
@@ -74,7 +74,7 @@ std::optional<int> parseInt(const std::string& s) {
 std::variant<Options, int> parseArgs(const std::vector<std::string>& args) {
     Options o;
     auto fail = [](const std::string& message) {
-        std::cerr << "midipad: " << message << "\n\n" << kUsage;
+        std::cerr << "arcadance: " << message << "\n\n" << kUsage;
         return 2;
     };
     for (std::size_t i = 0; i < args.size(); ++i) {
@@ -157,7 +157,7 @@ int run(const Options& options) {
     try {
         out = std::make_shared<MidiOutput>(options.api);
     } catch (const std::exception& e) {
-        std::cerr << "midipad: " << e.what() << '\n';
+        std::cerr << "arcadance: " << e.what() << '\n';
         return 1;
     }
 
@@ -175,7 +175,7 @@ int run(const Options& options) {
     try {
         preset = std::make_shared<const Preset>(loadPreset(options.preset));
     } catch (const PresetError& e) {
-        std::cerr << "midipad: " << e.what() << '\n';
+        std::cerr << "arcadance: " << e.what() << '\n';
         return 1;
     }
 
@@ -187,12 +187,12 @@ int run(const Options& options) {
             say("MIDI output: virtual port \"" + options.portName + "\" (" + out->apiName() + ")");
         }
     } catch (const std::exception& e) {
-        std::cerr << "midipad: " << e.what() << '\n';
+        std::cerr << "arcadance: " << e.what() << '\n';
         return 1;
     }
 
     if (!SDL_Init(SDL_INIT_GAMEPAD)) {
-        std::cerr << "midipad: SDL_Init failed: " << SDL_GetError() << '\n';
+        std::cerr << "arcadance: SDL_Init failed: " << SDL_GetError() << '\n';
         return 1;
     }
     SDL_SetGamepadEventsEnabled(false);  // the runtime polls the gamepad itself

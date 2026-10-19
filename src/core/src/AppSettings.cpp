@@ -133,6 +133,7 @@ AppSettings loadSettings(const std::filesystem::path& file, AppSettings s) {
     navButton("nav_select", s.navSelect);
     navButton("nav_menu", s.navMenu);
     navButton("nav_back", s.navBack);
+    read(j, "migrated_from_midipad", s.migratedFromMidipad);
     std::string quantize;
     read(j, "quantize_notes", quantize);
     static constexpr std::pair<const char*, int> kGrids[] = {{"off", 0}, {"1/8", 2}, {"1/16", 4}, {"1/32", 8}};
@@ -140,7 +141,7 @@ AppSettings loadSettings(const std::filesystem::path& file, AppSettings s) {
         if (quantize == name)
             s.quantize = value;
     if (s.virtualPortName.empty())
-        s.virtualPortName = "MidiPad";
+        s.virtualPortName = "Arcadance";
     return s;
 }
 
@@ -182,6 +183,8 @@ void saveSettings(const AppSettings& s, const std::filesystem::path& file) {
     j["nav_select"] = navName(s.navSelect);
     j["nav_menu"] = navName(s.navMenu);
     j["nav_back"] = navName(s.navBack);
+    if (s.migratedFromMidipad)
+        j["migrated_from_midipad"] = true;
     j["quantize_notes"] = s.quantize == 2 ? "1/8" : s.quantize == 4 ? "1/16" : s.quantize == 8 ? "1/32" : "off";
 
     std::filesystem::create_directories(file.parent_path());

@@ -16,7 +16,7 @@ struct AppSettings {
 
     enum class Output { VirtualPort, ExistingPort };
     Output output = Output::VirtualPort;
-    std::string virtualPortName = "MidiPad";
+    std::string virtualPortName = "Arcadance";
     std::string existingPortName;  // matched as a substring, like --connect
     bool outputChosen = false;     // false: ask which output to use at startup
 
@@ -57,6 +57,9 @@ struct AppSettings {
     // The buttons driving the session and edit screens (Engine::setNavButtons),
     // as Button values; -1: none (select: L3 and R3).
     int navSelect = -1, navMenu = -1, navBack = -1;
+    // MidiPad's files (presets, sessions) renamed for Arcadance, once.
+    // Remove from version 0.5 on, with the migration in GuiApp.
+    bool migratedFromMidipad = false;
     // The snap in beats: 0 for Free.
     int snapBeats() const {
         switch (loopSnap) {

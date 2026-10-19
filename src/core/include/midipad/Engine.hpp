@@ -132,7 +132,8 @@ public:
     // the loops of their sources: the velocity in [-1, 1] of the way to 127 or
     // to 1, and the transpositions in steps (degrees of the key, or semitones).
     struct Shaping {
-        float velocity = 0;
+        float velocity = 0;      // the notes played
+        float velocityLoop = 0;  // the note loop's notes
         int transposeNotes = 0, transposeLoop = 0;
     };
     Shaping shaping(int channel) const;
@@ -240,8 +241,9 @@ public:
     // except while Record is held: then they play and record as usual (a stick
     // moves the cursor again once back at rest). What is asked comes out of
     // takeSessionEvent(), oldest first.
-    // With setSessionValues(true) (the cursor in a chain), the right stick
-    // asks for ValueUp... instead of moving the cursor, and R3 for PressRight.
+    // With setSessionValues(true) (the app sets it in its session and edit
+    // screens), the right stick asks for ValueUp... instead of moving the
+    // cursor, and R3 for PressRight; the left stick and the D-pad move it.
     //
     // The Mode control (a SessionScreen binding, PS / Guide without one) asks
     // for Toggle when let go, Edit with Shift on, and while held longer than

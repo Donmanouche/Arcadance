@@ -210,14 +210,28 @@ bool MappingEditor::drawAxisForm(const char* id, AxisBinding& a, float position,
         hint("The travel picks a program in this range, in the bank set above; it is sent once the control stays on "
              "it a moment, never when it springs back to rest.");
         break;
-    case AxisMode::Velocity:
+    case AxisMode::Velocity: {
         changed |= ImGui::Checkbox("Invert", &a.invert);
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted("Shapes");
+        static constexpr std::pair<VelocityTarget, const char*> kTargets[] = {
+            {VelocityTarget::Notes, "the notes played"}, {VelocityTarget::Loop, "the note loop"}, {VelocityTarget::Both, "both"}};
+        for (const auto& [target, name] : kTargets) {
+            ImGui::SameLine();
+            if (ImGui::RadioButton(name, a.velocityTarget == target) && a.velocityTarget != target) {
+                a.velocityTarget = target;
+                changed = true;
+            }
+        }
         hint(trigger ? "Pressed, the trigger raises the velocity of the notes then played, from their mapping's "
                        "velocity up to 127 at the end of its travel."
                      : "Away from the middle, the velocity of the notes then played rises from their mapping's "
                        "velocity up to 127 one way, and falls down to 1 the other way. A stick at rest changes "
                        "nothing; a finger keeps its last value once lifted. A loop of this axis does the same.");
+        hint("On the note loop, each note goes louder or softer from the velocity it was recorded with, so the accents "
+             "you played stay. Record this axis's movement and it becomes an accent pattern on the note loop.");
         break;
+    }
     case AxisMode::Transpose: {
         if (!trigger) {
             changed |= inputU7("Down", a.transposeDown, 0, kMaxTranspose);

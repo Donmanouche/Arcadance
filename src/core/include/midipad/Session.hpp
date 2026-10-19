@@ -69,7 +69,8 @@ public:
     using std::runtime_error::runtime_error;
 };
 
-inline constexpr const char* kSessionExtension = ".midipad";
+inline constexpr const char* kSessionExtension = ".arcadance";
+inline constexpr const char* kFormerSessionExtension = ".midipad";  // Arcadance's former name (MidiPad)
 
 nlohmann::ordered_json sessionToJson(const Session& session);
 Session sessionFromJson(const nlohmann::ordered_json& json);  // throws SessionError, PresetError

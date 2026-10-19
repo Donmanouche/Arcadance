@@ -133,11 +133,13 @@ std::string axisTarget(const AxisBinding& b, const LiveState& live) {
     switch (b.mode) {
     case AxisMode::Program:
         return "PC " + std::to_string(b.min + 1) + "-" + std::to_string(b.max + 1);
-    case AxisMode::Velocity:
-        if (std::abs(live.velocityShaping) < 0.005f)
-            return "VEL";
-        std::snprintf(buf, sizeof buf, "VEL %+d%%", static_cast<int>(std::lround(live.velocityShaping * 100.0f)));
+    case AxisMode::Velocity: {
+        const float v = b.velocityTarget == VelocityTarget::Loop ? live.velocityLoop : live.velocityShaping;
+        if (std::abs(v) < 0.005f)
+            return b.velocityTarget == VelocityTarget::Loop ? "VEL LOOP" : "VEL";
+        std::snprintf(buf, sizeof buf, "VEL %+d%%", static_cast<int>(std::lround(v * 100.0f)));
         return buf;
+    }
     case AxisMode::Transpose: {
         const int steps = b.transposeTarget == TransposeTarget::Loop ? live.transposeLoop : live.transposeNotes;
         if (steps == 0)
@@ -1334,6 +1336,11 @@ void PerformanceView::drawPianoRoll(const Mapping& m, const LiveState& live, flo
         text(dl, gBold, px(10), chipR - px(4), ay0 + px(10), lengthDrag_ && editing_ ? kViolet : statusColor, status, H::Right, V::Middle);
         if (st.locked && clip)
             drawLock(dl, chipX + px(5), ay0 + px(10), px(10), kViolet);
+        if (clip && std::abs(live.velocityLoop) >= 0.005f) {  // a Velocity axis on the loop: by how much
+            char vel[24];
+            std::snprintf(vel, sizeof vel, "VEL %+d%%", static_cast<int>(std::lround(live.velocityLoop * 100.0f)));
+            drawChip(dl, chipX - px(6), ay0 + px(10), vel, T::kBlue);
+        }
     }
     if (st.locked && clip)
         drawLockedBorder(dl, ImVec2(ax0, ay0), ImVec2(ax1, ay1), kViolet, px(3));
@@ -1547,7 +1554,7 @@ std::optional<PerformanceView::SessionAction> PerformanceView::drawSession(const
         dl->AddRect(ImVec2(x, origin.y), ImVec2(x + colW, origin.y + gridH), T::kBorder, px(8), px(1));
         // Header: the channel, a dot while it plays; the active one underlined. A click chooses it.
         const bool active = ch == live.channel;
-        text(dl, gBold, px(11), x + px(12), origin.y + px(17), active ? T::kText : T::kDim, "CHANNEL " + std::to_string(ch + 1), H::Left, V::Middle);
+        text(dl, gBold, px(11), x + px(12), origin.y + px(17), active ? T::kText : T::kDim, fit(gBold, px(11), channelTitle(ch), colW - px(64)), H::Left, V::Middle);
         dl->AddCircleFilled(ImVec2(x + colW - px(15), origin.y + px(17)), px(5), playing ? T::kGreen : IM_COL32(0x3C, 0x40, 0x46, 255));
         {  // a chain sign when it has one: green with its step while it runs
             const LiveState::Chain& chain = live.chains[c];
@@ -1805,7 +1812,7 @@ std::optional<PerformanceView::SessionAction> PerformanceView::drawChainStrip(Im
     dl->AddRect(at, ImVec2(at.x + w, at.y + h), T::kBorder, px(8), px(1));
     const float hy = at.y + px(15);
     text(dl, gBold, px(11), at.x + px(12), hy, T::kText, "CHAIN", H::Left, V::Middle);
-    text(dl, gBold, px(11), at.x + px(16) + textWidth(gBold, px(11), "CHAIN"), hy, chColor, "CHANNEL " + std::to_string(ch + 1), H::Left, V::Middle);
+    text(dl, gBold, px(11), at.x + px(16) + textWidth(gBold, px(11), "CHAIN"), hy, chColor, channelTitle(ch), H::Left, V::Middle);
     // CHAIN ON / OFF, and what plays.
     const float bw = px(84), bx = at.x + w - px(150) - bw;
     const ImVec2 ba(bx, at.y + px(5)), bb(bx + bw, at.y + px(25));
@@ -2095,39 +2102,60 @@ void PerformanceView::drawScale(const std::optional<Key>& key, float x, float y,
         click("scale");
 }
 
-// The active MIDI channel, large, and the sixteen channels: a violet dot on
-// those where a loop plays.
+// A channel's title: its number and name, or CHANNEL and its number.
+std::string PerformanceView::channelTitle(int channel) const {
+    const std::string& name = channelNames_[static_cast<std::size_t>(std::clamp(channel, 0, kChannelCount - 1))];
+    return name.empty() ? "CHANNEL " + std::to_string(channel + 1) : std::to_string(channel + 1) + "  " + name;
+}
+
+// The active channel, large, and its name. Its arrows (or the wheel over it)
+// go to the previous or next channel; a click in the middle or a right-click
+// opens its menu (previous, next, rename).
 void PerformanceView::drawChannel(const LiveState& live, float x, float y, float w, float h) {
     ImDrawList* dl = ImGui::GetWindowDrawList();
     plainBlock(dl, x, y, w, h);
     const ImVec2 a(x + px(10), y + px(10)), b(x + w - px(10), y + h - px(10));
     if (b.y - a.y < px(30))
         return;
-    const ImU32 kViolet = IM_COL32(0xB0, 0x8C, 0xFF, 255);
+    const std::string& name = channelNames_[static_cast<std::size_t>(std::clamp(live.channel, 0, kChannelCount - 1))];
+    const bool hovered = ImGui::IsWindowHovered() && ImGui::IsMouseHoveringRect(a, b);
     screen(dl, a, b, T::kGreen, [&] {
-        const float numX = a.x + (b.x - a.x) * 0.24f, midY = (a.y + b.y) * 0.5f;
+        text(dl, gBold, px(9), a.x + px(9), a.y + px(10), alpha(T::kGreen, 0.7f), "CHANNEL", H::Left, V::Middle);
+        const float cx = (a.x + b.x) * 0.5f, midY = (a.y + b.y) * 0.5f + (name.empty() ? px(3) : -px(5));
         const std::string number = std::to_string(live.channel + 1);
-        const float size = std::min(px(64), (b.y - a.y) * 0.8f);
+        const float size = std::min(px(64), (b.y - a.y) * (name.empty() ? 0.72f : 0.6f));
         for (float r : {px(3), px(1.5f)})  // glow
             for (auto [dx, dy] : {std::pair{-r, 0.0f}, {r, 0.0f}, {0.0f, -r}, {0.0f, r}})
-                text(dl, gBold, size, numX + dx, midY + dy, alpha(T::kGreen, 0.18f), number, H::Center, V::Middle);
-        text(dl, gBold, size, numX, midY, T::kGreen, number, H::Center, V::Middle);
-        // The sixteen channels, four by four.
-        const float gx0 = a.x + (b.x - a.x) * 0.48f, gx1 = b.x - px(6), gy0 = a.y + px(5), gy1 = b.y - px(5);
-        const float cw = (gx1 - gx0) / 4.0f, ch = (gy1 - gy0) / 4.0f;
-        for (int c = 0; c < 16; ++c) {
-            const ImVec2 ca(gx0 + static_cast<float>(c % 4) * cw + px(2), gy0 + static_cast<float>(c / 4) * ch + px(2));
-            const ImVec2 cb(ca.x + cw - px(4), ca.y + ch - px(4));
-            const bool active = c == live.channel;
-            dl->AddRectFilled(ca, cb, active ? alpha(T::kGreen, 0.85f) : alpha(T::kGreen, 0.10f), px(3));
-            dl->AddRect(ca, cb, alpha(T::kGreen, active ? 1.0f : 0.35f), px(3), px(1));
-            text(dl, gCondensed, px(9), (ca.x + cb.x) * 0.5f, (ca.y + cb.y) * 0.5f,
-                 active ? IM_COL32(0x0A, 0x1E, 0x12, 255) : mix(T::kGreen, IM_COL32(0, 0, 0, 255), 0.2f), std::to_string(c + 1),
-                 H::Center, V::Middle);
-            if ((live.loopChannels >> c) & 1u)
-                dl->AddCircleFilled(ImVec2(cb.x - px(1), ca.y + px(1)), px(2.5f), kViolet);
-        }
+                text(dl, gBold, size, cx + dx, midY + dy, alpha(T::kGreen, 0.18f), number, H::Center, V::Middle);
+        text(dl, gBold, size, cx, midY, T::kGreen, number, H::Center, V::Middle);
+        if (!name.empty())
+            text(dl, gBold, px(12), cx, b.y - px(13), mix(T::kGreen, T::kText, 0.3f), fit(gBold, px(12), name, b.x - a.x - px(50)), H::Center, V::Middle);
+        // The arrows: faint, lit while the mouse is over the block.
+        const float ay = (a.y + b.y) * 0.5f + px(3), s = px(7);
+        const ImU32 col = alpha(T::kGreen, hovered ? 1.0f : 0.3f);
+        dl->AddTriangleFilled(ImVec2(a.x + px(10), ay), ImVec2(a.x + px(10) + s, ay - s * 1.3f), ImVec2(a.x + px(10) + s, ay + s * 1.3f), col);
+        dl->AddTriangleFilled(ImVec2(b.x - px(10), ay), ImVec2(b.x - px(10) - s, ay - s * 1.3f), ImVec2(b.x - px(10) - s, ay + s * 1.3f), col);
     });
+    const MenuTarget target{MenuTarget::Kind::ChannelBlock, live.channel};
+    if (gFocusItems)
+        focusTargets_.push_back({"##channelblock", target});
+    if (hoverButton("##channelblock", a, b)) {
+        const float mx = ImGui::GetIO().MousePos.x, third = (b.x - a.x) / 3.0f;
+        if (mx < a.x + third)
+            channelRequest_ = (live.channel + kChannelCount - 1) % kChannelCount;
+        else if (mx > b.x - third)
+            channelRequest_ = (live.channel + 1) % kChannelCount;
+        else
+            menuRequest_ = MenuRequest{target, ImGui::GetIO().MousePos};
+    }
+    if (ImGui::IsItemHovered()) {
+        if (ImGui::IsMouseClicked(ImGuiMouseButton_Right))
+            menuRequest_ = MenuRequest{target, ImGui::GetIO().MousePos};
+        const float wheel = ImGui::GetIO().MouseWheel;
+        if (wheel != 0.0f)
+            channelRequest_ = (live.channel + (wheel > 0 ? 1 : kChannelCount - 1)) % kChannelCount;
+        ImGui::SetItemTooltip("Arrows or wheel: previous / next channel\nClick or right-click: its menu (rename)");
+    }
 }
 
 void PerformanceView::trackFrozenPositions(const LiveState& live) {

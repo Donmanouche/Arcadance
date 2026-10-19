@@ -59,13 +59,16 @@ struct TriggerBinding {
 //   stayed on it a moment, never on the way back to rest, and preceded by a
 //   Bank Select (CC 0, CC 32) when set;
 // - Velocity: raises the velocity of the notes then played, up to 127 at the
-//   end of its travel, or lowers it, down to 1 (a trigger only raises it);
+//   end of its travel, or lowers it, down to 1 (a trigger only raises it); on
+//   the note loop (velocityTarget), each note of the loop the same way, from
+//   the velocity it was recorded with, so the accents stay;
 // - Transpose: transposes the notes then played, or the note loop's, by up to
 //   transposeDown / transposeUp semitones at the ends of its travel (a trigger
 //   only up); by degrees of the scale when a tonality is chosen.
 // A stick at rest changes nothing; a finger keeps its last value once lifted.
 enum class AxisMode : std::uint8_t { Cc, Program, Velocity, Transpose };
 enum class TransposeTarget : std::uint8_t { Notes, Loop };
+enum class VelocityTarget : std::uint8_t { Notes, Loop, Both };
 inline constexpr int kMaxTranspose = 24;  // semitones each way
 
 struct AxisBinding {
@@ -78,6 +81,7 @@ struct AxisBinding {
     std::int16_t bankMsb = -1, bankLsb = -1;  // Program: -1 none
     std::uint8_t transposeDown = 12, transposeUp = 12;
     TransposeTarget transposeTarget = TransposeTarget::Notes;
+    VelocityTarget velocityTarget = VelocityTarget::Notes;
 
     bool sendsCc() const { return mode == AxisMode::Cc; }
 };
@@ -152,6 +156,8 @@ struct Preset {
     // Replaces `base` entirely while that output channel is active (index 0 =
     // MIDI channel 1, which presets load into `base`).
     std::array<std::optional<Mapping>, kChannelCount> channels;
+    // A name per channel ("BASS", "PADS"), shown with its number; empty: none.
+    std::array<std::string, kChannelCount> channelNames;
 
     const Mapping& forChannel(int channel) const {
         if (channel < 0 || channel >= kChannelCount || !channels[static_cast<std::size_t>(channel)])

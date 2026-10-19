@@ -9,7 +9,7 @@
 
 namespace {
 
-constexpr const char* kClientName = "MidiPad";
+constexpr const char* kClientName = "Arcadance";
 
 RtMidi::Api toRtMidi(MidiOutput::Api api) {
     switch (api) {

@@ -40,6 +40,7 @@
 #include <memory>
 #include <mutex>
 #include <nlohmann/json.hpp>
+#include <fstream>
 #include <optional>
 #include <utility>
 
@@ -63,10 +64,69 @@ constexpr ImVec4 kErrorColor{1.0f, 0.45f, 0.4f, 1.0f};
 constexpr ImVec4 kWarningColor{1.0f, 0.78f, 0.35f, 1.0f};
 
 fs::path prefPath() {
-    char* path = SDL_GetPrefPath("MidiPad", "MidiPad");
+    char* path = SDL_GetPrefPath("Arcadance", "Arcadance");
     fs::path result = path ? fs::path(path) : fs::current_path();
     SDL_free(path);
     return result;
+}
+
+// --- From MidiPad to Arcadance. Remove from version 0.5 on: formerPrefPath,
+// takeOverFormerFolder, renameFormerFiles, AppSettings::migratedFromMidipad
+// (the readers keep accepting the former format names).
+
+// Where MidiPad, its former name, kept its settings, presets and sessions:
+// beside the new folder (SDL: <data>/<org>/<app>/).
+fs::path formerPrefPath(const fs::path& pref) {
+    const fs::path base = pref.lexically_normal().parent_path();  // without its trailing separator
+    return base.parent_path().parent_path() / "MidiPad" / "MidiPad";
+}
+
+// The first time Arcadance starts, MidiPad's settings, presets and sessions
+// are copied over (the old folder stays as it was).
+void takeOverFormerFolder(const fs::path& pref) {
+    const fs::path former = formerPrefPath(pref);
+    std::error_code ec;
+    if (fs::exists(pref / "settings.json", ec) || !fs::exists(former / "settings.json", ec))
+        return;
+    fs::copy(former, pref, fs::copy_options::recursive | fs::copy_options::skip_existing, ec);
+}
+
+// Once: the presets of the presets folder say "arcadance-preset", the
+// sessions end in .arcadance and say "arcadance-session". A file that cannot
+// be read stays as it is (the readers take the former names anyway).
+void renameFormerFiles(const fs::path& presetsDir, const fs::path& sessionsDir) {
+    auto rewrite = [](const fs::path& from, const fs::path& to, const char* oldFormat, const char* newFormat, int indent) {
+        try {
+            std::ifstream in(from);
+            nlohmann::ordered_json j = nlohmann::ordered_json::parse(in);
+            in.close();
+            if (!j.is_object() || j.value("format", std::string()) != oldFormat)
+                return;
+            j["format"] = newFormat;
+            const fs::path temp = to.string() + ".tmp";
+            {
+                std::ofstream out(temp);
+                out << (indent > 0 ? j.dump(indent) : j.dump()) << '\n';
+                if (!out)
+                    return;
+            }
+            fs::rename(temp, to);
+            if (from != to)
+                fs::remove(from);
+        } catch (const std::exception&) {
+        }
+    };
+    std::error_code ec;
+    for (const auto& entry : fs::directory_iterator(presetsDir, ec))
+        if (entry.is_regular_file() && entry.path().extension() == ".json")
+            rewrite(entry.path(), entry.path(), "midipad-preset", "arcadance-preset", 4);
+    for (const auto& entry : fs::directory_iterator(sessionsDir, ec))
+        if (entry.is_regular_file() && entry.path().extension() == kFormerSessionExtension) {
+            fs::path to = entry.path();
+            to.replace_extension(kSessionExtension);
+            if (!fs::exists(to, ec))
+                rewrite(entry.path(), to, "midipad-session", "arcadance-session", 0);
+        }
 }
 
 // "0.21" as numbers, for comparing versions; a leading "v" is skipped.
@@ -131,7 +191,7 @@ const TriggerBinding* specBinding(const Mapping& m, const std::string& spec) {
     return nullptr;
 }
 
-constexpr const char* kReleasesUrl = "https://github.com/Donmanouche/MidiPad/releases/latest";
+constexpr const char* kReleasesUrl = "https://github.com/Donmanouche/Arcadance/releases/latest";
 
 // Asks GitHub for the latest release (through curl, so MidiPad links no
 // network library): what to tell the user.
@@ -145,7 +205,7 @@ UpdateCheck checkForUpdates() {
     UpdateCheck result;
     std::string reply;
     if (FILE* pipe = popen("curl -fsSL --max-time 10 -H 'Accept: application/vnd.github+json' "
-                           "https://api.github.com/repos/Donmanouche/MidiPad/releases/latest 2>/dev/null",
+                           "https://api.github.com/repos/Donmanouche/Arcadance/releases/latest 2>/dev/null",
                            "r")) {
         char buffer[4096];
         std::size_t n = 0;
@@ -168,7 +228,7 @@ UpdateCheck checkForUpdates() {
     result.ok = true;
     const std::string latest = tag[0] == 'v' || tag[0] == 'V' ? tag.substr(1) : tag;
     result.newer = versionNumbers(latest) > versionNumbers(MIDIPAD_VERSION);
-    result.message = result.newer ? "MidiPad " + latest + " is available."
+    result.message = result.newer ? "Arcadance " + latest + " is available."
                                   : "You have the latest version.";
     return result;
 }
@@ -324,10 +384,10 @@ LiveState demoLive(double t) {
     return s;
 }
 
-constexpr const char* kUsage = R"(Usage: midipad [preset.json]
-       midipad --headless [options] <preset.json>   (no window, see --headless --help)
+constexpr const char* kUsage = R"(Usage: arcadance [preset.json]
+       arcadance --headless [options] <preset.json>   (no window, see --headless --help)
 
-Opens the MidiPad window. With a preset file, its folder becomes the presets
+Opens the Arcadance window. With a preset file, its folder becomes the presets
 folder and the preset is opened.
 
 In the window: F11 toggles fullscreen, Ctrl+Q quits.
@@ -377,10 +437,25 @@ private:
         std::string title;
         std::vector<MenuEntry> items;
         bool fromController = false, opened = false;  // opened by the controller: beside its cursor
+        bool above = false;  // above it (pivot on its bottom)
         int selected = 0;
         ImVec2 at;
     };
     std::optional<ContextMenu> menu_;
+    // Renaming a channel (its block's menu).
+    int renameChannel_ = -1;
+    std::string renameInput_;
+    bool openRename_ = false;
+    void drawRenameDialog();
+    // Select and Menu on the same button: a press opens the menu, the same button then chooses.
+    bool sharedSelectMenu() const { return settings_.navSelect >= 0 && settings_.navSelect == settings_.navMenu; }
+    // What a button does in the preset that matters for the edit menu: red,
+    // it cannot be one of its buttons; amber, a reminder; empty, nothing.
+    struct NavConflict {
+        bool blocking = false;
+        std::string text;
+    };
+    NavConflict navConflict(int button) const;
     void toggleEdit(const LiveState& live);
     void openMenu(const PerformanceView::MenuTarget& target, const LiveState& live, bool fromController, ImVec2 at);
     void runMenu(const PerformanceView::MenuTarget& target, int id, const LiveState& live);
@@ -550,18 +625,30 @@ bool GuiApp::init() {
     // ignores controllers while none of its windows is focused.
     SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
-        std::cerr << "midipad: SDL_Init failed: " << SDL_GetError() << '\n';
+        std::cerr << "arcadance: SDL_Init failed: " << SDL_GetError() << '\n';
         return false;
     }
     SDL_SetGamepadEventsEnabled(false);  // the runtime polls the gamepad itself
     SDL_SetJoystickEventsEnabled(false);
 
     const fs::path pref = prefPath();
+    takeOverFormerFolder(pref);
     settingsFile_ = pref / "settings.json";
     sessionsDir_ = pref / "Sessions";
     AppSettings defaults;
     defaults.presetsDir = pref / "presets";
     settings_ = loadSettings(settingsFile_, defaults);
+    if (!settings_.migratedFromMidipad) {  // MidiPad's files, once (remove from 0.5 on)
+        const std::string former = formerPrefPath(pref).string(), dir = settings_.presetsDir.lexically_normal().string();
+        if (dir.starts_with(former))  // presets kept in MidiPad's folder: now in Arcadance's copy of it
+            settings_.presetsDir = pref.lexically_normal().parent_path() / dir.substr(former.size() + (dir.size() > former.size() ? 1 : 0));
+        renameFormerFiles(settings_.presetsDir, sessionsDir_);
+        settings_.migratedFromMidipad = true;
+        try {
+            saveSettings(settings_, settingsFile_);
+        } catch (const std::exception&) {
+        }
+    }
     if (options_.preset) {
         const fs::path file = fs::absolute(*options_.preset);
         settings_.presetsDir = file.parent_path();
@@ -588,7 +675,7 @@ bool GuiApp::init() {
             openOutputDialog_ = true;
         }
     } else {
-        outputDialogReason_ = "Choose where MidiPad sends its MIDI.";
+        outputDialogReason_ = "Choose where Arcadance sends its MIDI.";
         openOutputDialog_ = true;
     }
     if (!output_) {
@@ -612,10 +699,10 @@ bool GuiApp::init() {
     // At standard resolution, a scaled screen's compositor stretches the
     // window, drawn at its size in points: fewer pixels for MidiPad to draw.
     standardResolution_ = settings_.standardResolution;
-    if (!SDL_CreateWindowAndRenderer("MidiPad", 1080, 846,
+    if (!SDL_CreateWindowAndRenderer("Arcadance", 1080, 846,
                                      SDL_WINDOW_RESIZABLE | (standardResolution_ ? 0 : SDL_WINDOW_HIGH_PIXEL_DENSITY),
                                      &window_, &renderer_)) {
-        std::cerr << "midipad: cannot open the window: " << SDL_GetError() << '\n';
+        std::cerr << "arcadance: cannot open the window: " << SDL_GetError() << '\n';
         return false;
     }
     SDL_SetRenderVSync(renderer_, 1);
@@ -716,7 +803,7 @@ int GuiApp::run() {
             ++frameCount_;
             if (options_.screenshot && frameCount_ == screenshotFrame) {
                 if (!saveScreenshot(*options_.screenshot))
-                    std::cerr << "midipad: screenshot failed: " << SDL_GetError() << '\n';
+                    std::cerr << "arcadance: screenshot failed: " << SDL_GetError() << '\n';
                 quit_ = true;
             }
             // A recording starts where a screenshot would be taken.
@@ -725,7 +812,7 @@ int GuiApp::run() {
                 char name[32];
                 std::snprintf(name, sizeof name, "frame_%04d.bmp", index);
                 if (!saveScreenshot(*options_.record / name)) {
-                    std::cerr << "midipad: recording failed: " << SDL_GetError() << '\n';
+                    std::cerr << "arcadance: recording failed: " << SDL_GetError() << '\n';
                     quit_ = true;
                 }
                 if (index + 1 >= options_.frames)
@@ -868,7 +955,7 @@ void GuiApp::update() {
         }
     }
 
-    std::string title = "MidiPad - " + (hasFile_ ? preset_.name : std::string("Untitled")) + (dirty_ ? " *" : "");
+    std::string title = "Arcadance - " + (hasFile_ ? preset_.name : std::string("Untitled")) + (dirty_ ? " *" : "");
     if (title != SDL_GetWindowTitle(window_))
         SDL_SetWindowTitle(window_, title.c_str());
 }
@@ -981,7 +1068,7 @@ void GuiApp::refreshPorts() {
         MidiOutput probe(MidiOutput::Api::Default);
         for (auto& name : probe.portNames()) {
             // Skip our own ports and the system ones nobody plays into.
-            if (name.starts_with("MidiPad:") || name.find("Midi Through") != std::string::npos ||
+            if ((name.starts_with("Arcadance:") || name.starts_with("MidiPad:")) || name.find("Midi Through") != std::string::npos ||
                 name.find("rtpmidid") != std::string::npos || name.find("Announce") != std::string::npos ||
                 (name.starts_with("Client-") && name.find("pipewire") == std::string::npos))
                 continue;
@@ -1090,7 +1177,7 @@ void GuiApp::finishVirMidiJob() {
 // --- Helpers ----------------------------------------------------------------
 
 // Notes for a terminal the window was started from.
-void GuiApp::log(const std::string& line) { std::cout << "midipad: " << line << '\n'; }
+void GuiApp::log(const std::string& line) { std::cout << "arcadance: " << line << '\n'; }
 
 void GuiApp::showError(const std::string& message) {
     errorMessage_ = message;
@@ -1151,7 +1238,7 @@ void GuiApp::draw() {
     ImGui::SetNextWindowSize(page);
     // No background of its own: the clear colour of each frame is the page's
     // (Theme::kBackground), so its pixels are not drawn twice.
-    ImGui::Begin("MidiPad", nullptr,
+    ImGui::Begin("Arcadance", nullptr,
                  ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
                      ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoBackground);
 
@@ -1266,6 +1353,8 @@ void GuiApp::sessionEvent(Engine::SessionEvent e, const LiveState& live) {
     }
     if (!sessionView_)
         return;
+    if (e == E::Press && sharedSelectMenu())  // Select = Menu: the press opens the menu
+        e = E::Menu;
     if (e == E::Menu) {  // the menu of the clip, step or end under the cursor
         using K = PerformanceView::MenuTarget::Kind;
         if (sessionSlot_ < Engine::kClipSlots)
@@ -1298,6 +1387,10 @@ void GuiApp::sessionEvent(Engine::SessionEvent e, const LiveState& live) {
     case E::Right: moveSessionCursor((sessionChannel_ + 1) % kChannelCount, sessionSlot_, live); break;
     case E::Press:
     case E::PressRight: pressClip(sessionChannel_, sessionSlot_, live); break;
+    case E::ValueLeft:  // the right stick: the channel
+    case E::ValueRight:
+        moveSessionCursor((sessionChannel_ + (e == E::ValueRight ? 1 : kChannelCount - 1)) % kChannelCount, sessionSlot_, live);
+        break;
     default: break;
     }
 }
@@ -1365,6 +1458,8 @@ void GuiApp::editEvent(Engine::SessionEvent e, const LiveState& live) {
         case E::Left: tap(ImGuiKey_GamepadDpadLeft); break;
         case E::Right: tap(ImGuiKey_GamepadDpadRight); break;
         case E::Press: tap(ImGuiKey_GamepadFaceDown); break;
+        case E::ValueLeft: tap(ImGuiKey_GamepadDpadLeft); break;
+        case E::ValueRight: tap(ImGuiKey_GamepadDpadRight); break;
         case E::Back:
             if (ImGui::IsAnyItemActive()) {
                 tap(ImGuiKey_GamepadFaceRight);
@@ -1377,16 +1472,30 @@ void GuiApp::editEvent(Engine::SessionEvent e, const LiveState& live) {
         }
         return;
     }
+    using K = PerformanceView::MenuTarget::Kind;
+    const auto target = performance_.focusTarget();
     switch (e) {
     case E::Up: performance_.moveFocus(0, -1); break;
     case E::Down: performance_.moveFocus(0, 1); break;
     case E::Left: performance_.moveFocus(-1, 0); break;
     case E::Right: performance_.moveFocus(1, 0); break;
     case E::Press:
-    case E::PressRight: performance_.activateFocus(); break;
-    case E::Menu:
-        if (const auto target = performance_.focusTarget())
+    case E::PressRight:  // the CHANNEL block has only its menu; with Select = Menu, every item does
+        if (target && (sharedSelectMenu() || target->kind == K::ChannelBlock))
             openMenu(*target, live, true, {});
+        else
+            performance_.activateFocus();
+        break;
+    case E::Menu:
+        if (target)
+            openMenu(*target, live, true, {});
+        break;
+    case E::ValueLeft:  // the right stick: the channel, wherever the cursor is
+    case E::ValueRight: runtime_->setChannel((live.channel + (e == E::ValueRight ? 1 : kChannelCount - 1)) % kChannelCount); break;
+    case E::ValueUp:  // and the value under the cursor: a lane's length
+    case E::ValueDown:
+        if (target && target->kind == K::Lane)
+            runtime_->stretchLoop(target->source, target->axis, e == E::ValueUp ? 1 : -1);
         break;
     case E::Back: toggleEdit(live); break;
     default: break;
@@ -1415,7 +1524,7 @@ enum MenuId : int {
     kLaunch, kStop, kRecordHere, kDuplicate, kAddToChain, kClearClip,
     kStartHere, kRandom, kInsertStep, kDeleteStep, kEmptyStep,
     kChannelStop, kChainOn, kChainOff, kEndLoop, kEndStop, kClearChain,
-    kLock, kUnlock, kClearLoop, kResetShape, kSettings, kEditNotes
+    kLock, kUnlock, kClearLoop, kResetShape, kSettings, kEditNotes, kPrevChannel, kNextChannel, kRename
 };
 
 }  // namespace
@@ -1511,6 +1620,12 @@ void GuiApp::openMenu(const PerformanceView::MenuTarget& t, const LiveState& liv
         menu.title = "CONTROL";
         add("Settings\xE2\x80\xA6", kSettings);
         break;
+    case K::ChannelBlock:
+        menu.title = "CHANNEL " + std::to_string(t.channel + 1);
+        add("Next channel", kNextChannel);
+        add("Previous channel", kPrevChannel);
+        add("Rename\xE2\x80\xA6", kRename);
+        break;
     }
     menu.selected = 0;
     while (menu.selected < static_cast<int>(menu.items.size()) - 1 && !menu.items[static_cast<std::size_t>(menu.selected)].enabled)
@@ -1596,6 +1711,13 @@ void GuiApp::runMenu(const PerformanceView::MenuTarget& t, int id, const LiveSta
                 runtime_->resetLoopShape(t.source, a);
         break;
     case kEditNotes: openWindow("notes"); break;
+    case kNextChannel: runtime_->setChannel((ch + 1) % kChannelCount); break;
+    case kPrevChannel: runtime_->setChannel((ch + kChannelCount - 1) % kChannelCount); break;
+    case kRename:
+        renameChannel_ = ch;
+        renameInput_ = preset_.channelNames[c];
+        openRename_ = true;
+        break;
     case kSettings:
         if (t.kind == K::Control)
             performance_.activateFocus();  // its window, as a click
@@ -1651,10 +1773,11 @@ void GuiApp::drawContextMenu(const LiveState& live) {
             const auto [a, b] = performance_.cursorBox();
             const float h = ImGui::GetFrameHeightWithSpacing() * static_cast<float>(menu_->items.size() + 2), gap = ImGui::GetFontSize() * 0.25f;
             const ImGuiViewport* vp = ImGui::GetMainViewport();
-            menu_->at = b.y + gap + h < vp->Pos.y + vp->Size.y ? ImVec2(a.x, b.y + gap) : ImVec2(a.x, a.y - gap - h);
+            menu_->above = b.y + gap + h >= vp->Pos.y + vp->Size.y;  // no room under it: above, its bottom against the item
+            menu_->at = menu_->above ? ImVec2(a.x, a.y - gap) : ImVec2(a.x, b.y + gap);
         }
     }
-    ImGui::SetNextWindowPos(menu_->at, ImGuiCond_Appearing);
+    ImGui::SetNextWindowPos(menu_->at, ImGuiCond_Appearing, ImVec2(0, menu_->above ? 1.0f : 0.0f));
     if (ImGui::BeginPopup("##context")) {
         const std::string title = menu_->title.substr(0, menu_->title.find('\n'));
         const auto nl = menu_->title.find('\n');
@@ -1700,13 +1823,14 @@ void GuiApp::drawHelpOverlay() {
         rows = {{{"Left stick", "D-pad"}, "move the cursor (down past the clips: the chain)"},
                 {select, "launch or stop the clip; in the chain: start there, or go on"},
                 {{menu.empty() ? "Menu" : menu}, menu.empty() ? "the menu " + unset : "the menu: duplicate, clear, add to the chain\xE2\x80\xA6"},
-                {{"Right stick"}, "in the chain: the clip (up, down), its repeats (left, right)"},
+                {{"Right stick"}, "left / right: the channel; in the chain: the clip (up, down), its repeats"},
                 {{rec}, "record into the slot under the cursor"},
                 {{back.empty() ? "Back" : back}, back.empty() ? "close a menu " + unset : "close a menu"},
                 {{mode}, "back to the main screen;  " + shift + " + " + mode + ": edit mode"}};
         performance_.drawHelp("SESSION", T::kGreen, closeHint, rows);
     } else if (editView_) {
         rows = {{{"Left stick", "D-pad"}, "move the cursor; in a window, from field to field"},
+                {{"Right stick"}, "left / right: the channel;  up / down: a lane's length"},
                 {select, "open (a control's window, the note editor); in a window, change the field"},
                 {{menu.empty() ? "Menu" : menu}, menu.empty() ? "the menu " + unset : "the menu: lock, clear, back to 1x\xE2\x80\xA6"},
                 {{back.empty() ? "Back" : back}, back.empty() ? "close, leave " + unset : "close the window, or leave edit mode"},
@@ -1817,13 +1941,37 @@ void GuiApp::drawPerformance(const LiveState& live) {
     }
     ImGui::SameLine(0, px(12));
     {
+        // ARCADANCE in pixel letters, violet to pink, a hard shadow: 2 points a pixel.
+        static constexpr const char* kGlyphs[6][7] = {
+            {".###.", "#...#", "#...#", "#####", "#...#", "#...#", "#...#"},  // A
+            {"####.", "#...#", "#...#", "####.", "#.#..", "#..#.", "#...#"},  // R
+            {".####", "#....", "#....", "#....", "#....", "#....", ".####"},  // C
+            {"####.", "#...#", "#...#", "#...#", "#...#", "#...#", "####."},  // D
+            {"#...#", "##..#", "#.#.#", "#..##", "#...#", "#...#", "#...#"},  // N
+            {"#####", "#....", "#....", "####.", "#....", "#....", "#####"},  // E
+        };
+        static constexpr int kWord[] = {0, 1, 2, 0, 3, 0, 4, 2, 5};  // A R C A D A N C E
         const ImVec2 p = ImGui::GetCursorScreenPos();
-        const float size = px(22);
-        const ImVec2 sz = bold->CalcTextSizeA(size, FLT_MAX, 0, "MIDIPAD");
-        dl->AddText(bold, size, ImVec2(p.x, p.y + (px(32) - sz.y) * 0.5f), Theme::kText, "MIDIPAD");
-        ImGui::Dummy(ImVec2(sz.x + px(14), px(32)));
+        const float cell = std::round(px(2));
+        const float wordW = cell * (9 * 6 - 1 + 1), top = std::round(p.y + (px(32) - cell * 8) * 0.5f);
+        auto pixel = [&](float x, float y, ImU32 col) { dl->AddRectFilled(ImVec2(x, y), ImVec2(x + cell, y + cell), col); };
+        for (int pass = 0; pass < 2; ++pass)  // the shadow, then the letters
+            for (int k = 0; k < 9; ++k)
+                for (int row = 0; row < 7; ++row)
+                    for (int col = 0; col < 5; ++col) {
+                        if (kGlyphs[kWord[k]][row][col] != '#')
+                            continue;
+                        const float x = std::round(p.x) + cell * static_cast<float>(k * 6 + col), y = top + cell * static_cast<float>(row);
+                        if (pass == 0) {
+                            pixel(x + cell, y + cell, IM_COL32(10, 10, 14, 255));
+                        } else {
+                            const float t = static_cast<float>(row) / 6.0f;  // violet (176, 120, 255) to pink (255, 70, 140)
+                            pixel(x, y, IM_COL32(static_cast<int>(176 + 79 * t), static_cast<int>(120 - 50 * t), static_cast<int>(255 - 115 * t), 255));
+                        }
+                    }
+        ImGui::Dummy(ImVec2(wordW + px(14), px(32)));
     }
-    // Small arrow buttons drawn as triangles, for the channel and the preset.
+    // Small arrow buttons drawn as triangles, for the preset.
     auto arrow = [&](const char* id, ImVec2 at, float w, float h, bool left) {
         ImGui::SetCursorScreenPos(at);
         const bool clicked = ImGui::InvisibleButton(id, ImVec2(w, h));
@@ -1836,29 +1984,17 @@ void GuiApp::drawPerformance(const LiveState& live) {
         return clicked;
     };
 
-    // Channel and preset, centered in the bar.
-    ImGui::SameLine(0, px(14));
+    // Preset, Play / Stop, the clock, TAP and the session button: centred in
+    // the bar (the channel is chosen on the CHANNEL block).
     {
-        const float groupW = px(150) + px(16) + medium->CalcTextSizeA(px(12), FLT_MAX, 0, "PRESET").x + px(8) + px(26) * 2 + px(180) +
-                             px(14) + px(70) + px(10) + px(200) + px(6) + px(44);  // then Play and Stop, the clock, TAP
+        const float groupW = medium->CalcTextSizeA(px(12), FLT_MAX, 0, "PRESET").x + px(8) + px(26) * 2 + px(180) + px(14) + px(32) +
+                             px(6) + px(32) + px(10) + px(166) + px(6) + px(44) + px(8) + px(36);
         const float centered = winPos.x + (winW - groupW) * 0.5f;
-        ImGui::SetCursorScreenPos(ImVec2(std::max(ImGui::GetCursorScreenPos().x, centered), ImGui::GetCursorScreenPos().y));
-    }
-    // Channel: one framed control with arrows on both sides.
-    {
-        const ImVec2 p = ImGui::GetCursorScreenPos();
-        const float w = px(150), h = px(32);
-        dl->AddRectFilled(p, ImVec2(p.x + w, p.y + h), Theme::kControl, px(5));
-        dl->AddRect(p, ImVec2(p.x + w, p.y + h), Theme::kControlBorder, px(5));
-        if (arrow("##chdown", p, px(30), h, true))
-            runtime_->setChannel((live.channel + 15) % 16);
-        if (arrow("##chup", ImVec2(p.x + w - px(30), p.y), px(30), h, false))
-            runtime_->setChannel((live.channel + 1) % 16);
-        const std::string channel = "CHANNEL " + std::to_string(live.channel + 1);
-        const ImVec2 sz = bold->CalcTextSizeA(px(15), FLT_MAX, 0, channel.c_str());
-        dl->AddText(bold, px(15), ImVec2(p.x + (w - sz.x) * 0.5f, p.y + (h - sz.y) * 0.5f), Theme::kText, channel.c_str());
-        ImGui::SetCursorScreenPos(p);
-        ImGui::Dummy(ImVec2(w, h));
+        ImGui::SameLine(0, 0);  // on the line of MIDIPAD
+        const ImVec2 at = ImGui::GetCursorScreenPos();
+        // The caption below starts with a gap of 16: start that much before the centre.
+        ImGui::SetCursorScreenPos(ImVec2(std::max(at.x, centered - px(16)), at.y));
+        ImGui::Dummy(ImVec2(0, px(32)));
     }
     auto caption = [&](const char* s) {
         ImGui::SameLine(0, px(16));
@@ -2049,9 +2185,9 @@ void GuiApp::drawPerformance(const LiveState& live) {
             if (!editingTempo_)
                 ImGui::SetItemTooltip(overTempo ? "Turn the wheel to change the tempo (Shift: by 0.1), double-click to type it."
                                       : on      ? (link ? "Ableton Link: tempo and beat shared with the session. Click to run free."
-                                                        : "Internal clock: MidiPad's own tempo and beat. Click to run free.")
-                                                : (link ? "Free: MidiPad keeps no beat. Click to join the Ableton Link session."
-                                                        : "Free: MidiPad keeps no beat. Click to start the internal clock."));
+                                                        : "Internal clock: Arcadance's own tempo and beat. Click to run free.")
+                                                : (link ? "Free: Arcadance keeps no beat. Click to join the Ableton Link session."
+                                                        : "Free: Arcadance keeps no beat. Click to start the internal clock."));
             if (editingTempo_) {  // typing the tempo, over it
                 ImGui::SetCursorScreenPos(ImVec2(tx - px(1), q.y + px(4)));
                 ImGui::SetNextItemWidth(px(78));
@@ -2154,7 +2290,9 @@ void GuiApp::drawPerformance(const LiveState& live) {
         sessionSlot_ = live.currentClip[static_cast<std::size_t>(live.channel)];
     }
     // The right stick sets the chain's values, and moves in a menu.
-    runtime_->setSessionValues((sessionView_ && sessionSlot_ == Engine::kClipSlots) || (menu_ && menu_->fromController));
+    // In the session screen and edit mode, the left stick moves and the right one sets values.
+    runtime_->setSessionValues(sessionView_ || editView_);
+    performance_.setChannelNames(preset_.channelNames);
     performance_.setEditMode(editView_ && !overlaySpec_ && !optionsOpen_);
     if (sessionView_) {
         // A clip clicked: the cursor goes there, its channel becomes the active
@@ -2196,6 +2334,8 @@ void GuiApp::drawPerformance(const LiveState& live) {
     }
     if (const auto request = performance_.takeMenuRequest())  // a right-click
         openMenu(request->target, live, false, request->at);
+    if (const auto channel = performance_.takeChannelRequest())  // the CHANNEL block's arrows or wheel
+        runtime_->setChannel(*channel);
     if (const auto clear = performance_.takeClearRequest())  // the x of a lane
         runtime_->clearLoop(clear->source, clear->axis);
     if (const auto stretch = performance_.takeStretchRequest())  // Shift + wheel over a LOOP panel
@@ -2355,7 +2495,7 @@ void GuiApp::drawOptionsOverlay() {
         // MIDI interface: every output, the current one selected.
         beginCard("##cardmidi", "MIDI INTERFACE", Theme::kBlue);
         ImGui::PushFont(medium, 12.0f);
-        ImGui::TextColored(color(Theme::kLabel), "Where MidiPad sends its MIDI. Some programs only see the VirMIDI ports.");
+        ImGui::TextColored(color(Theme::kLabel), "Where Arcadance sends its MIDI. Some programs only see the VirMIDI ports.");
         ImGui::PopFont();
         ImGui::Spacing();
         {  // the output drop-down
@@ -2506,8 +2646,8 @@ void GuiApp::drawOptionsOverlay() {
                                settings_.clock == AppSettings::Clock::Link
                                    ? "Ableton Link shares tempo and beat with your DAW and other apps on this network."
                                : settings_.clock == AppSettings::Clock::Internal
-                                   ? "Internal clock: MidiPad's own tempo and beat, no network needed."
-                                   : "Free: MidiPad keeps no beat. Choose a clock to play loops in time.");
+                                   ? "Internal clock: Arcadance's own tempo and beat, no network needed."
+                                   : "Free: Arcadance keeps no beat. Choose a clock to play loops in time.");
             ImGui::PopFont();
             ImGui::Spacing();
             ImGui::PushFont(medium, 13.0f);
@@ -2754,34 +2894,47 @@ void GuiApp::drawOptionsOverlay() {
         ImGui::PopFont();
         endCard();
 
-        // Controller: the buttons that drive the session screen and the edit mode.
-        beginCard("##cardcontroller", "CONTROLLER", Theme::kCyan);
+        // Edit menu: the buttons that drive the session screen and the edit mode.
+        beginCard("##cardeditmenu", "EDIT MENU", Theme::kCyan);
         ImGui::PushFont(medium, 12.0f);
-        ImGui::TextColored(color(Theme::kLabel), "The buttons that drive the session screen and the edit mode. There, they do this");
-        ImGui::TextColored(color(Theme::kLabel), "instead of what the preset gives them; on the main screen they play as usual.");
-        ImGui::TextColored(color(Theme::kLabel), "Mode (session, edit, help) is an action of the mapping: PS without one.");
+        ImGui::TextColored(color(Theme::kLabel), "The buttons of the session screen and the edit mode. There, they do this instead");
+        ImGui::TextColored(color(Theme::kLabel), "of what the preset gives them; on the main screen they play as usual. Select and");
+        ImGui::TextColored(color(Theme::kLabel), "Menu may be one button: a press opens the menu, the same button then chooses.");
         ImGui::PopFont();
         ImGui::Spacing();
         ImGui::PushFont(medium, 13.0f);
         {
             static constexpr Button kChoices[] = {Button::South, Button::East, Button::West, Button::North, Button::LeftStick,
                                                   Button::RightStick, Button::LeftShoulder, Button::RightShoulder, Button::Touchpad,
-                                                  Button::Back, Button::Start, Button::Guide, Button::Misc1};
+                                                  Button::Back, Button::Start, Button::Guide, Button::Misc1, Button::DpadUp,
+                                                  Button::DpadDown, Button::DpadLeft, Button::DpadRight};
             auto navCombo = [&](const char* name, const char* what, int& value, const char* none) {
                 rowLabel(name);
                 ImGui::SetNextItemWidth(px(200));
                 const std::string shown = value < 0 ? std::string(none) : label(static_cast<Button>(value));
                 bool changed = false;
-                if (ImGui::BeginCombo((std::string("##nav") + name).c_str(), shown.c_str())) {
+                if (ImGui::BeginCombo((std::string("##nav") + name).c_str(), shown.c_str(), ImGuiComboFlags_HeightLarge)) {
                     if (ImGui::Selectable(none, value < 0)) {
                         value = -1;
                         changed = true;
                     }
-                    for (Button b : kChoices)
-                        if (ImGui::Selectable(label(b).c_str(), value == static_cast<int>(b))) {
+                    for (Button b : kChoices) {
+                        // Each with what it does in the preset: red, it cannot be chosen.
+                        const NavConflict conflict = navConflict(static_cast<int>(b));
+                        if (ImGui::Selectable(label(b).c_str(), value == static_cast<int>(b), conflict.blocking ? ImGuiSelectableFlags_Disabled : 0)) {
                             value = static_cast<int>(b);
                             changed = true;
                         }
+                        if (!conflict.text.empty()) {  // a dot, red or amber; what it means on hover
+                            ImGui::SameLine(px(150));
+                            const ImVec2 at = ImGui::GetCursorScreenPos();
+                            const float r = px(4.5f), lineH = ImGui::GetTextLineHeight();
+                            ImGui::Dummy(ImVec2(r * 2, lineH));
+                            ImGui::GetWindowDrawList()->AddCircleFilled(ImVec2(at.x + r, at.y + lineH * 0.5f), r,
+                                                                        ImGui::GetColorU32(conflict.blocking ? kErrorColor : kWarningColor));
+                            ImGui::SetItemTooltip("%s", conflict.text.c_str());
+                        }
+                    }
                     ImGui::EndCombo();
                 }
                 ImGui::SameLine();
@@ -2792,8 +2945,21 @@ void GuiApp::drawOptionsOverlay() {
                 }
             };
             navCombo("Select", "launch, choose, open", settings_.navSelect, "L3 / R3");
-            navCombo("Menu", "the menu under the cursor", settings_.navMenu, "None");
+            navCombo("Menu", sharedSelectMenu() ? "same as Select: a press opens the menu" : "the menu under the cursor", settings_.navMenu, "None");
             navCombo("Back", "close a menu, leave edit mode", settings_.navBack, "None");
+            // What the buttons chosen do elsewhere.
+            ImGui::PushFont(medium, 12.0f);
+            std::vector<int> shown;
+            for (int b : {settings_.navSelect, settings_.navMenu, settings_.navBack}) {
+                if (b < 0 || std::find(shown.begin(), shown.end(), b) != shown.end())
+                    continue;  // once each
+                shown.push_back(b);
+                const NavConflict conflict = navConflict(b);
+                if (!conflict.text.empty())
+                    ImGui::TextColored(conflict.blocking ? kErrorColor : kWarningColor, "%s %s", label(static_cast<Button>(b)).c_str(),
+                                       conflict.text.c_str());
+            }
+            ImGui::PopFont();
         }
         ImGui::PopFont();
         endCard();
@@ -3322,7 +3488,7 @@ void GuiApp::drawOpenSessionDialog() {
 }
 
 void GuiApp::drawAboutDialog() {
-    constexpr const char* kTitle = "About MidiPad";
+    constexpr const char* kTitle = "About Arcadance";
     if (openAboutDialog_) {
         ImGui::OpenPopup(kTitle);
         openAboutDialog_ = false;
@@ -3333,7 +3499,7 @@ void GuiApp::drawAboutDialog() {
     if (!beginDialog(kTitle))
         return;
     ImGui::PushFont(uiFonts_.bold ? uiFonts_.bold : ImGui::GetFont(), 22.0f);
-    ImGui::TextUnformatted("MidiPad");
+    ImGui::TextUnformatted("Arcadance");
     ImGui::PopFont();
     ImGui::Text("Version %s", MIDIPAD_VERSION);
     ImGui::Spacing();
@@ -3383,6 +3549,7 @@ void GuiApp::applyTempo(double bpm) {
 }
 
 void GuiApp::drawDialogs() {
+    drawRenameDialog();
     drawNameDialog();
     drawUnsavedDialog();
     drawDeleteDialog();
@@ -3390,6 +3557,61 @@ void GuiApp::drawDialogs() {
     drawOutputDialog();
     drawOpenSessionDialog();
     drawAboutDialog();
+}
+
+void GuiApp::drawRenameDialog() {
+    constexpr const char* kTitle = "Rename the channel";
+    if (openRename_) {
+        ImGui::OpenPopup(kTitle);
+        openRename_ = false;
+    }
+    if (!beginDialog(kTitle))
+        return;
+    ImGui::Text("Channel %d", renameChannel_ + 1);
+    if (ImGui::IsWindowAppearing())
+        ImGui::SetKeyboardFocusHere();
+    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 16);
+    const bool enter = ImGui::InputTextWithHint("##channelname", "BASS, PADS, DRUMS\xE2\x80\xA6", &renameInput_, ImGuiInputTextFlags_EnterReturnsTrue);
+    ImGui::TextDisabled("Kept in the preset. Empty: no name.");
+    const int button = dialogButtons({"OK", "Cancel"});
+    if (button == 0 || enter) {
+        if (renameChannel_ >= 0 && renameChannel_ < kChannelCount) {
+            std::string name = renameInput_.substr(0, 24);
+            while (!name.empty() && name.back() == ' ')
+                name.pop_back();
+            preset_.channelNames[static_cast<std::size_t>(renameChannel_)] = name;
+            edited();
+        }
+        ImGui::CloseCurrentPopup();
+    } else if (button == 1) {
+        ImGui::CloseCurrentPopup();
+    }
+    endDialog();
+}
+
+GuiApp::NavConflict GuiApp::navConflict(int button) const {
+    if (button < 0)
+        return {};
+    const auto b = static_cast<Button>(button);
+    const TriggerBinding* binding = &preset_.base.buttons[static_cast<std::size_t>(button)];
+    bool dpad = false;
+    switch (b) {
+    case Button::DpadUp: binding = &preset_.base.dpad[static_cast<std::size_t>(HatDir::Up)]; dpad = true; break;
+    case Button::DpadDown: binding = &preset_.base.dpad[static_cast<std::size_t>(HatDir::Down)]; dpad = true; break;
+    case Button::DpadLeft: binding = &preset_.base.dpad[static_cast<std::size_t>(HatDir::Left)]; dpad = true; break;
+    case Button::DpadRight: binding = &preset_.base.dpad[static_cast<std::size_t>(HatDir::Right)]; dpad = true; break;
+    default: break;
+    }
+    if (binding->type == ActionType::LoopRecord)
+        return {true, "Loop record: you could not record in the session screen"};
+    if (binding->type == ActionType::Shift)
+        return {true, "Shift: Shift + Mode would no longer open the edit mode"};
+    if (binding->type == ActionType::SessionScreen || (b == Button::Guide && bindingName(ActionType::SessionScreen, "").empty()))
+        return {true, "it is the Mode button"};
+    std::string text = binding->isSet() ? "plays " + describe(*binding, false) + " on the main screen" : "";
+    if (dpad)
+        text += std::string(text.empty() ? "" : "; ") + "no longer moves the cursor (the left stick still does)";
+    return {false, text};
 }
 
 void GuiApp::drawNameDialog() {
@@ -3597,7 +3819,7 @@ int runGui(const std::vector<std::string>& args) {
         return 0;
     }
     if (!options.error.empty()) {
-        std::cerr << "midipad : " << options.error << "\n\n" << kUsage;
+        std::cerr << "arcadance: " << options.error << "\n\n" << kUsage;
         return 2;
     }
     GuiApp app(std::move(options));

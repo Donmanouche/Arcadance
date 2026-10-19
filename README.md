@@ -1,21 +1,21 @@
-# MidiPad
+# Arcadance
 
 **Turn a game controller into a MIDI instrument and a live MIDI looper.**
 
-MidiPad turns a DualSense (PlayStation 5) controller into an instrument for your
+Arcadance turns a DualSense (PlayStation 5) controller into an instrument for your
 DAW or synthesizer: the sticks, the analog triggers and the two-finger touchpad
 move your sounds, the buttons play notes and chords, and every MIDI channel can
 have its own layout. Hold one button, play, release: what you played loops at
 once, notes and gestures alike, on as many channels as you like. Then arrange
 your loops into clips and chain them, right from the controller.
 
-MidiPad runs on Linux; Windows and macOS versions are planned.
+Arcadance runs on Linux; Windows and macOS versions are planned.
 
 - **Download**: a ready-to-run Linux version is attached to each
-  [release](https://github.com/Donmanouche/MidiPad/releases).
-- **User manual**: [MidiPad User Manual (PDF)](docs/MidiPad%20User%20Manual.pdf).
+  [release](https://github.com/Donmanouche/Arcadance/releases).
+- **User manual**: [Arcadance User Manual (PDF)](docs/Arcadance%20User%20Manual.pdf).
 
-![MidiPad at work: sticks, triggers, touchpad, loops and the piano roll](docs/media/overview.gif)
+![Arcadance at work: sticks, triggers, touchpad, loops and the piano roll](docs/media/overview.gif)
 
 ## What you can do
 
@@ -39,7 +39,7 @@ MidiPad runs on Linux; Windows and macOS versions are planned.
 - **Sessions.** Save every channel's clips, chains, the preset, the tonality
   and the tempo in one file, and open them again later.
 - **Chords made easy.** Named chords (`Fm9`, `Dbmaj7#11`, `Eb9sus4`…) with octave
-  and doubled bass root; choose a tonality and MidiPad offers only the notes
+  and doubled bass root; choose a tonality and Arcadance offers only the notes
   and chords of the scale.
 - **Expressive controls.** Two sticks, two analog triggers and two touchpad
   fingers, each with its own controller number, range and direction. Freeze a
@@ -48,21 +48,25 @@ MidiPad runs on Linux; Windows and macOS versions are planned.
   and the touchpad pads play a second layout, while the sticks and fingers
   reshape your loops.
 - **Sixteen channels, sixteen layouts.** Switch channels while playing; each
-  channel can have its own layout, so one controller drives a whole
-  multitimbral setup.
+  channel can have its own layout and a name (BASS, PADS…), so one controller
+  drives a whole multitimbral setup.
 - **Program Change** from a button (fixed, next, previous) or by sweeping a
   stick through a range of sounds, with optional Bank Select.
-- **Play in time: internal clock, Ableton Link, or free.** Run MidiPad's own
+- **Play in time: internal clock, Ableton Link, or free.** Run Arcadance's own
   clock, or join the tempo of your DAW, a phone app or any Link app on the
   network. Loops snap to whole beats, start on the beat and follow tempo
   changes; their notes can be quantized without delaying what you hear. Set
   the tempo with the mouse wheel, type it, or tap it. With the internal clock,
-  drum machines and sequencers can follow MidiPad.
+  drum machines and sequencers can follow Arcadance.
+- **Accents on your loops.** Give a stick or a trigger to the velocity and
+  it makes the notes you play, or the note loop already playing, louder or
+  softer, keeping the accents you played.
 - **Humanize** velocity and timing per channel.
 - **Set it up from the controller.** An edit mode puts a cursor on the screen:
   open a control's settings, lock or clear a loop, duplicate a clip or edit a
-  chain from small menus, the same ones a right-click opens. You choose which
-  buttons select, open menus and go back; hold the Mode button for a help of
+  chain from small menus, the same ones a right-click opens; the right stick
+  changes the channel. You choose which buttons select, open menus and go back
+  (Select and Menu can share one button); hold the Mode button for a help of
   the screen you are on.
 - **Built for the stage.** One window that plays and edits at the same time,
   a PANIC button, and a mode without any window.
@@ -113,16 +117,16 @@ sequence, up to eight steps:
 ## Getting started
 
 1. Download the AppImage from the
-   [latest release](https://github.com/Donmanouche/MidiPad/releases), make it
+   [latest release](https://github.com/Donmanouche/Arcadance/releases), make it
    executable and run it:
 
    ```bash
-   chmod +x MidiPad-*-x86_64.AppImage
-   ./MidiPad-*-x86_64.AppImage
+   chmod +x Arcadance-*-x86_64.AppImage
+   ./Arcadance-*-x86_64.AppImage
    ```
 
 2. Connect the controller (USB or Bluetooth).
-3. Choose where the MIDI goes (MidiPad asks on the first launch), and select
+3. Choose where the MIDI goes (Arcadance asks on the first launch), and select
    that port as a MIDI input in your DAW.
 4. Play. Hold the Loop record button (R1 in the demo layout), play, release:
    your loop plays.
@@ -132,7 +136,7 @@ The user manual walks through every step, with your DAW on Linux.
 ### Touchpad access (Linux)
 
 To use the touchpad, Linux needs a one-time permission. Without it the
-controller works, but without the touchpad, and MidiPad says so. Create the
+controller works, but without the touchpad, and Arcadance says so. Create the
 file `/etc/udev/rules.d/70-dualsense.rules` with:
 
 ```
@@ -157,12 +161,12 @@ The window is an animated view built for the stage, which plays while it edits.
   what it sends, and a LOOP panel.
 - Below the modules: the piano roll, the SCALE block (the tonality on a
   one-octave keyboard; click to choose it) and the CHANNEL block (the active
-  channel in large digits, and a dot on every channel where a loop plays).
+  channel in large digits and its name; its arrows or the wheel change the
+  channel, a click renames it).
 - A strip of pads for the buttons (✕ ○ □ △ in PlayStation colours): they flash
   on every press and stay lit while their note or chord sounds.
-- At the top: the ☰ menu (sessions, Options, About), the channel, the preset,
-  ▶ / ■ for the loops, the clock and its tempo, TAP, the session screen and
-  PANIC.
+- At the top: the ☰ menu (sessions, Options, About), the preset, ▶ / ■ for
+  the loops, the clock and its tempo, TAP, the session screen and PANIC.
 
 Click a control (a pad, a D-pad direction, a touchpad zone, a stick, a LOOP
 panel) to set it up in a window over the view, and hear the change at once.
@@ -177,7 +181,7 @@ New…, Save as… and Delete…. A preset holds every channel's layout.
 
 **Tonality** (optional, shared by all channels), chosen by clicking the SCALE
 screen: a root and a scale (major, natural, harmonic and melodic minor, the
-modes, pentatonics, blues, whole tone). MidiPad then offers only the notes of
+modes, pentatonics, blues, whole tone). Arcadance then offers only the notes of
 the scale and, for chords, every chord of the key, degree by degree. Anything
 outside the scale stays possible, and is flagged.
 
@@ -188,24 +192,30 @@ D-pad's response, humanization, the presets folder and the display.
 
 ### MIDI ports on Linux
 
-Most Linux music programs see MidiPad's own MIDI port directly. Some only see
-hardware MIDI ports: for them, MidiPad can create virtual hardware ports
+Most Linux music programs see Arcadance's own MIDI port directly. Some only see
+hardware MIDI ports: for them, Arcadance can create virtual hardware ports
 (☰ › **Options** › MIDI INTERFACE › *VirMIDI ports*, with your administrator
-password). Choose `VirMIDI N-0` in MidiPad and `Virtual Raw MIDI` as the input
-of the other program. MidiPad finds its port again at every start.
+password). Choose `VirMIDI N-0` in Arcadance and `Virtual Raw MIDI` as the input
+of the other program. Arcadance finds its port again at every start.
 
 ## Playing without a window
 
 ```bash
-./MidiPad-*-x86_64.AppImage --headless my-preset.json
+./Arcadance-*-x86_64.AppImage --headless my-preset.json
 ```
 
-MidiPad then runs without a window: it creates a MIDI port named *MidiPad* to
+Arcadance then runs without a window: it creates a MIDI port named *Arcadance* to
 connect to your DAW and plays your preset, reloaded as soon as you save it.
 `--headless --help` lists the options (another port, the starting channel, a monitor of
 what is sent).
 
+## Coming from MidiPad
+
+Arcadance was called MidiPad until version 0.238. On its first start it takes
+your MidiPad settings, presets and sessions over, once, and leaves the MidiPad
+folder as it was. Files made by MidiPad still open.
+
 ## License
 
-MidiPad is free software under the [GNU General Public License v3](LICENSE).
+Arcadance is free software under the [GNU General Public License v3](LICENSE).
 It uses [Ableton Link](https://github.com/Ableton/link) (GPL v2 or later).

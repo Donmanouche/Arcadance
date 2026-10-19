@@ -108,7 +108,7 @@ public:
     // axes), the note loop, a control (its window, `spec`), a clip, a chain
     // step (`slot` is the step), a channel's column.
     struct MenuTarget {
-        enum class Kind : std::uint8_t { Lane, Panel, NoteLoop, Control, Clip, Step, Channel } kind = Kind::Control;
+        enum class Kind : std::uint8_t { Lane, Panel, NoteLoop, Control, Clip, Step, Channel, ChannelBlock } kind = Kind::Control;
         int channel = 0, slot = 0, source = 0, axis = -1;
         std::string spec;
         MenuTarget() = default;
@@ -122,6 +122,10 @@ public:
         ImVec2 at;
     };
     std::optional<MenuRequest> takeMenuRequest() { return std::exchange(menuRequest_, std::nullopt); }
+    // The CHANNEL block's arrows or the wheel over it, during the last draw: the channel asked for.
+    std::optional<int> takeChannelRequest() { return std::exchange(channelRequest_, std::nullopt); }
+    // The channels' names (Preset::channelNames), shown with their numbers.
+    void setChannelNames(const std::array<std::string, midipad::kChannelCount>& names) { channelNames_ = names; }
     // Edit mode: a cursor on the controls, the lanes and the piano roll of the
     // main view, drawn by the next draw(). moveFocus goes to the nearest one
     // that way; activateFocus clicks it at the next draw (opens its window,
@@ -228,6 +232,10 @@ private:
     std::optional<StretchRequest> stretch_;
     std::optional<LockRequest> clearRequest_;
     std::optional<MenuRequest> menuRequest_;
+    std::optional<int> channelRequest_;
+    std::array<std::string, midipad::kChannelCount> channelNames_;
+    // "CHANNEL 3", or "3  PADS" when it has a name.
+    std::string channelTitle(int channel) const;
     bool editMode_ = false, focusClick_ = false;
     std::string focus_;  // the id of the item under the edit cursor
     std::pair<ImVec2, ImVec2> sessionCursorBox_{};  // the session screen's cursor, as last drawn

@@ -17,7 +17,8 @@ using Json = nlohmann::ordered_json;
 
 namespace {
 
-constexpr std::string_view kFormatName = "midipad-preset";
+constexpr std::string_view kFormatName = "arcadance-preset";
+constexpr std::string_view kFormerFormatName = "midipad-preset";  // Arcadance's former name: still read
 
 [[noreturn]] void fail(const std::string& where, const std::string& message) {
     throw PresetError(where + ": " + message);
@@ -291,8 +292,18 @@ AxisBinding axisFromJson(const Json& j, const std::string& where) {
     };
     if (flag("program"))
         a.mode = AxisMode::Program;
-    if (flag("velocity"))
+    if (flag("velocity")) {
         a.mode = AxisMode::Velocity;
+        const std::string to = readString(j, "velocity_to", "notes", where);
+        if (to == "notes")
+            a.velocityTarget = VelocityTarget::Notes;
+        else if (to == "loop")
+            a.velocityTarget = VelocityTarget::Loop;
+        else if (to == "both")
+            a.velocityTarget = VelocityTarget::Both;
+        else
+            fail(where + ".velocity_to", "expected \"notes\", \"loop\" or \"both\"");
+    }
     if (j.contains("transpose")) {
         const std::string at = where + ".transpose";
         if (!j["transpose"].is_object())
@@ -336,6 +347,8 @@ Json axisToJson(const AxisBinding& a) {
             j["bank_lsb"] = a.bankLsb;
     } else if (a.mode == AxisMode::Velocity) {
         j["velocity"] = true;
+        if (a.velocityTarget != VelocityTarget::Notes)
+            j["velocity_to"] = a.velocityTarget == VelocityTarget::Loop ? "loop" : "both";
     } else if (a.mode == AxisMode::Transpose) {
         j["transpose"] = {{"down", a.transposeDown},
                           {"up", a.transposeUp},
@@ -614,12 +627,12 @@ std::optional<std::uint8_t> noteFromJson(const Json& value) {
 
 Preset presetFromJson(const Json& j) {
     requireObject(j, "preset");
-    if (j.value("format", std::string()) != kFormatName)
-        fail("format", "not a MidiPad preset (expected \"format\": \"midipad-preset\")");
+    if (const std::string format = j.value("format", std::string()); format != kFormatName && format != kFormerFormatName)
+        fail("format", "not an Arcadance preset (expected \"format\": \"arcadance-preset\")");
     if (!j.contains("version") || !j["version"].is_number_integer())
         fail("version", "missing format version");
     if (j["version"].get<int>() > kPresetFormatVersion)
-        fail("version", "written by a newer MidiPad (version " + j["version"].dump() + ")");
+        fail("version", "written by a newer Arcadance (version " + j["version"].dump() + ")");
 
     Preset p;
     p.name = j.value("name", std::string());
@@ -637,6 +650,21 @@ Preset presetFromJson(const Json& j) {
             if (channel < 1 || channel > kChannelCount)
                 fail("channels." + key, "expected a channel number from 1 to 16");
             p.channels[static_cast<std::size_t>(channel - 1)] = mappingFromJson(value, "channels." + key);
+        }
+    }
+    if (j.contains("channel_names")) {
+        for (const auto& [key, value] : requireObject(j["channel_names"], "channel_names").items()) {
+            int channel = 0;
+            try {
+                std::size_t used = 0;
+                channel = std::stoi(key, &used);
+                if (used != key.size())
+                    channel = 0;
+            } catch (const std::exception&) {
+            }
+            if (channel < 1 || channel > kChannelCount || !value.is_string())
+                fail("channel_names." + key, "expected a channel number from 1 to 16 and a name");
+            p.channelNames[static_cast<std::size_t>(channel - 1)] = value.get<std::string>().substr(0, 24);
         }
     }
     // Channel 1's mapping is the base one, which every channel without its own
@@ -660,6 +688,12 @@ Json presetToJson(const Preset& p) {
             channels[std::to_string(i + 1)] = mappingToJson(*m);
     if (!channels.empty())
         j["channels"] = channels;
+    Json names = Json::object();
+    for (int i = 0; i < kChannelCount; ++i)
+        if (!p.channelNames[static_cast<std::size_t>(i)].empty())
+            names[std::to_string(i + 1)] = p.channelNames[static_cast<std::size_t>(i)];
+    if (!names.empty())
+        j["channel_names"] = names;
     return j;
 }
 

@@ -22,7 +22,7 @@ midipad_embed_file(${PROJECT_SOURCE_DIR}/assets/fonts/Roboto-Bold.ttf ${MIDIPAD_
 set(MIDIPAD_FONT_CONDENSED_SOURCE ${CMAKE_CURRENT_BINARY_DIR}/RobotoCondensedBold.cpp)
 midipad_embed_file(${PROJECT_SOURCE_DIR}/assets/fonts/RobotoCondensed-Bold.ttf ${MIDIPAD_FONT_CONDENSED_SOURCE} kRobotoCondensedBold)
 
-add_executable(midipad
+add_executable(arcadance
     main.cpp
     Headless.cpp
     gui/GuiApp.cpp
@@ -32,5 +32,5 @@ add_executable(midipad
     ${MIDIPAD_FONT_BOLD_SOURCE}
     ${MIDIPAD_FONT_CONDENSED_SOURCE}
 )
-target_link_libraries(midipad PRIVATE midipad_platform imgui midipad_warnings)
-target_compile_definitions(midipad PRIVATE MIDIPAD_VERSION="${PROJECT_VERSION}")
+target_link_libraries(arcadance PRIVATE midipad_platform imgui midipad_warnings)
+target_compile_definitions(arcadance PRIVATE MIDIPAD_VERSION="${PROJECT_VERSION}")

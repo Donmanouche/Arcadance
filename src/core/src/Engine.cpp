@@ -448,7 +448,17 @@ void Engine::press(int slot) {
         }
     }
     if (navigating()) {
-        auto is = [&](const std::optional<Button>& b) { return b && slot == slotOf(*b); };
+        // A D-pad direction chosen: its D-pad slot (it then no longer moves the cursor).
+        auto navSlot = [](Button b) {
+            switch (b) {
+            case Button::DpadUp: return slotOf(HatDir::Up);
+            case Button::DpadDown: return slotOf(HatDir::Down);
+            case Button::DpadLeft: return slotOf(HatDir::Left);
+            case Button::DpadRight: return slotOf(HatDir::Right);
+            default: return slotOf(b);
+            }
+        };
+        auto is = [&](const std::optional<Button>& b) { return b && slot == navSlot(*b); };
         if (is(navSelect_) || is(navMenu_) || is(navBack_)) {
             pushSessionEvent(is(navSelect_) ? SessionEvent::Press : is(navMenu_) ? SessionEvent::Menu : SessionEvent::Back);
             return;
@@ -1171,7 +1181,10 @@ Engine::Shaping Engine::shaping(int channel) const {
         if (stick && std::abs(v) < 0.12f)
             v = 0;  // a stick at rest changes nothing
         if (a.mode == AxisMode::Velocity) {
-            sh.velocity += v;
+            if (a.velocityTarget != VelocityTarget::Loop)
+                sh.velocity += v;
+            if (a.velocityTarget != VelocityTarget::Notes)
+                sh.velocityLoop += v;
         } else if (a.mode == AxisMode::Transpose) {
             const int steps = static_cast<int>(std::lround(v * static_cast<float>(transposeSteps(v > 0 ? a.transposeUp : a.transposeDown))));
             (a.transposeTarget == TransposeTarget::Loop ? sh.transposeLoop : sh.transposeNotes) += steps;
@@ -1211,6 +1224,7 @@ Engine::Shaping Engine::shaping(int channel) const {
         }
     }
     sh.velocity = std::clamp(sh.velocity, -1.0f, 1.0f);
+    sh.velocityLoop = std::clamp(sh.velocityLoop, -1.0f, 1.0f);
     return sh;
 }
 
@@ -1706,14 +1720,18 @@ void Engine::playLoopNotes(std::size_t index) {
     while (hi != events.end() && hi->at == loop.position)
         ++hi;
     auto& shift = loopShift_[static_cast<std::size_t>(channel)];
-    const int steps = shaping(channel).transposeLoop;  // a Transpose axis set on the loop
+    const Shaping sh = shaping(channel);  // a Transpose or Velocity axis set on the loop
+    const int steps = sh.transposeLoop;
     auto play = [&](const NoteEvent& e, bool start) {
         if (start) {
             if (on.test(e.note))  // the same note again: the one on stops first
                 sendNow(MidiMessage::noteOff(channel, e.note + shift[e.note]));
             const int note = transposed(e.note, steps);
             shift[e.note] = static_cast<std::int8_t>(note - e.note);
-            sendNow(MidiMessage::noteOn(channel, note, e.velocity));
+            // Louder or softer from its own velocity: the accents stay.
+            const float v = sh.velocityLoop, base = static_cast<float>(e.velocity);
+            const int velocity = std::clamp(static_cast<int>(std::lround(base + (v > 0 ? v * (127.0f - base) : v * (base - 1.0f)))), 1, 127);
+            sendNow(MidiMessage::noteOn(channel, note, velocity));
             on.set(e.note);
         } else if (on.test(e.note)) {
             sendNow(MidiMessage::noteOff(channel, e.note + shift[e.note]));

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.25)
-project(MidiPad VERSION 0.238 LANGUAGES CXX)
+project(Arcadance VERSION 0.239 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -13,7 +13,7 @@ else()
     set(MIDIPAD_TESTS_PRESENT OFF)
 endif()
 option(MIDIPAD_BUILD_TESTS "Build the unit tests (when the tests folder is present)" ${MIDIPAD_TESTS_PRESENT})
-option(MIDIPAD_BUILD_APP "Build the midipad application (needs SDL3 and RtMidi)" ON)
+option(MIDIPAD_BUILD_APP "Build the arcadance application (needs SDL3 and RtMidi)" ON)
 
 include(cmake/Dependencies.cmake)
 

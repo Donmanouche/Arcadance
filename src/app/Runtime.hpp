@@ -121,6 +121,7 @@ struct LiveState {
     bool stretchHeld = false;  // Shift is on (held or latched)
     // The Velocity and Transpose axes on the active channel (Engine::shaping).
     float velocityShaping = 0;
+    float velocityLoop = 0;  // the same on the note loop's notes
     int transposeNotes = 0, transposeLoop = 0;
     // The beat clock: which one, its tempo, the beat now, how many other apps
     // take part (Ableton Link); the beats of a bar MidiPad counts.
@@ -322,7 +323,7 @@ private:
     std::atomic<double> internalTempo_{120}, requestedTempo_{0};  // 0: no tempo asked for
     std::atomic<int> snapBeats_{1}, beatsPerBar_{4}, quantize_{0};
     std::atomic<double> tempo_{120}, beat_{0};
-    std::atomic<float> velocityShaping_{0};
+    std::atomic<float> velocityShaping_{0}, velocityLoop_{0};
     std::atomic<int> transposeNotes_{0}, transposeLoop_{0};
     mutable std::mutex loopsMutex_;  // the input thread only try_locks it
     std::array<LiveState::Loop, midipad::kLoopSourceCount> loops_{};

@@ -13,7 +13,8 @@ using Json = nlohmann::ordered_json;
 
 namespace {
 
-constexpr std::string_view kFormatName = "midipad-session";
+constexpr std::string_view kFormatName = "arcadance-session";
+constexpr std::string_view kFormerFormatName = "midipad-session";  // Arcadance's former name: still read
 constexpr int kFormatVersion = 1;
 // As the preset's "loops" keys, by LoopSource.
 constexpr const char* kSources[] = {"left", "right", "finger1", "finger2", "triggers", "notes"};
@@ -127,10 +128,10 @@ Json sessionToJson(const Session& session) {
 }
 
 Session sessionFromJson(const Json& j) {
-    if (!j.is_object() || !j.contains("format") || j["format"] != kFormatName)
-        fail("session", "not a MidiPad session file");
+    if (!j.is_object() || !j.contains("format") || (j["format"] != kFormatName && j["format"] != kFormerFormatName))
+        fail("session", "not an Arcadance session file");
     if (!j.contains("version") || !j["version"].is_number_integer() || j["version"].get<int>() > kFormatVersion)
-        fail("session", "made by a newer MidiPad");
+        fail("session", "made by a newer Arcadance");
     Session s;
     s.channel = readInt(j, "channel", 1, 16, 1, "session") - 1;
     s.tempo = readNumber(j, "tempo", "session");
