@@ -447,12 +447,27 @@ bool MappingEditor::drawLoopForm(int source, Mapping& m, const LiveState& live) 
         ImGui::PopID();
         return changed;
     }
-    changed |= inputU7(triggers ? "Loop CC for L2" : "Loop CC for X", loop.ccX);
-    changed |= inputU7(triggers ? "Loop CC for R2" : "Loop CC for Y", loop.ccY);
     const Axis axisX = triggers ? Axis::LeftTrigger : source == 0 ? Axis::LeftX : Axis::RightX;
     const Axis axisY = triggers ? Axis::RightTrigger : source == 0 ? Axis::LeftY : Axis::RightY;
     const AxisBinding& own = finger ? f->x : m.axes[static_cast<std::size_t>(axisX)];
     const AxisBinding& ownY = finger ? f->y : m.axes[static_cast<std::size_t>(axisY)];
+    // Each axis of the loop: on its loop CC, or as the Velocity / Transpose its axis is set to.
+    auto shapesAs = [](const AxisBinding& axis) -> const char* {
+        if (axis.enabled && axis.mode == AxisMode::Velocity)
+            return "Velocity";
+        if (axis.enabled && axis.mode == AxisMode::Transpose)
+            return "Transpose";
+        return nullptr;
+    };
+    auto loopCc = [&](const AxisBinding& axis, const char* name, std::uint8_t& cc) {
+        if (const char* as = shapesAs(axis)) {  // no CC to choose: the loop plays as its axis
+            ImGui::TextDisabled("%s: plays as %s", name, as);
+            return false;
+        }
+        return inputU7((std::string("Loop CC for ") + name).c_str(), cc);
+    };
+    changed |= loopCc(own, triggers ? "L2" : "X", loop.ccX);
+    changed |= loopCc(ownY, triggers ? "R2" : "Y", loop.ccY);
 
     // The loop plays beside the sticks and fingers: a CC they send too would fight.
     std::string clash;
@@ -469,24 +484,21 @@ bool MappingEditor::drawLoopForm(int source, Mapping& m, const LiveState& live) 
             check(other.y, "finger " + std::to_string(k + 1) + " Y");
         }
     }
-    if (!clash.empty()) {
-        ImGui::PushStyleColor(ImGuiCol_Text, kErrorColor);
-        ImGui::TextWrapped("Also sent by %s: both would fight. Choose other CCs.", clash.c_str());
-        ImGui::PopStyleColor();
-    } else {
+    {
         ImGui::PushStyleColor(ImGuiCol_Text, kHintColor);
         const char* what = finger ? "finger" : triggers ? "triggers" : "stick";
-        // Each axis of the loop: on its loop CC, or as the Velocity / Transpose its axis is set to.
-        auto plays = [](const AxisBinding& axis, int loopCc) {
-            if (axis.enabled && axis.mode == AxisMode::Velocity)
-                return std::string("as Velocity");
-            if (axis.enabled && axis.mode == AxisMode::Transpose)
-                return std::string("as Transpose");
-            return "on CC " + std::to_string(loopCc);
+        auto plays = [&](const AxisBinding& axis, int cc) {
+            const char* as = shapesAs(axis);
+            return as ? std::string("as ") + as : "on CC " + std::to_string(cc);
         };
         const std::string text = std::string("The loop plays beside the ") + what + ": " + (triggers ? "L2 " : "X ") +
                                  plays(own, loop.ccX) + ", " + (triggers ? "R2 " : "Y ") + plays(ownY, loop.ccY) + ".";
         ImGui::TextWrapped("%s", text.c_str());
+        ImGui::PopStyleColor();
+    }
+    if (!clash.empty()) {
+        ImGui::PushStyleColor(ImGuiCol_Text, kErrorColor);
+        ImGui::TextWrapped("Also sent by %s: both would fight. Choose other CCs.", clash.c_str());
         ImGui::PopStyleColor();
     }
     drawAxisLanes(source, m, live);
@@ -636,7 +648,8 @@ void MappingEditor::drawAxisLanes(int source, const Mapping& m, const LiveState&
         dl->AddRectFilled(la, lb2, IM_COL32(0x14, 0x16, 0x19, 220), 6);
         dl->AddRect(la, lb2, dragging ? kViolet : alpha(color, 0.8f), 6);
         dl->AddText(ImVec2(la.x + 4, la.y + 1), dragging ? kViolet : T::kText, label.c_str());
-        const std::string cc = "CC " + std::to_string(axis == 0 ? lb.ccX : lb.ccY);
+        const bool shapes = binding.enabled && (binding.mode == AxisMode::Velocity || binding.mode == AxisMode::Transpose);
+        const std::string cc = shapes ? (binding.mode == AxisMode::Velocity ? "VEL" : "TR") : "CC " + std::to_string(axis == 0 ? lb.ccX : lb.ccY);
         const ImVec2 ccSize = ImGui::CalcTextSize(cc.c_str());
         dl->AddText(ImVec2(b.x - 16 - ccSize.x, b.y - ccSize.y - 4), T::kDim, cc.c_str());
         // The end: hovered, dragged.
@@ -947,10 +960,15 @@ bool MappingEditor::drawChordFields(TriggerBinding& b) {
         chordText_ = b.chordName;
     }
 
+    // A new chord keeps the inversion, if it has that many notes.
+    auto take = [&](const ChordNotes& chord) {
+        b.chord = chord;
+        b.chordInversion = static_cast<std::uint8_t>(std::min<int>(b.chordInversion, std::max(chord.count - chord.bassCount - 1, 0)));
+    };
     auto apply = [&](const std::string& text) {
-        if (auto chord = parseChord(text, b.chordOctave, b.chordRootBelow)) {
+        if (auto chord = parseChord(text, b.chordOctave, b.chordRootBelow, b.chordInversion)) {
             b.chordName = text;
-            b.chord = *chord;
+            take(*chord);
             chordText_ = text;
             changed = true;
         }
@@ -992,9 +1010,9 @@ bool MappingEditor::drawChordFields(TriggerBinding& b) {
 
     ImGui::SetNextItemWidth(ImGui::GetFontSize() * 10);
     if (ImGui::InputText(key_ ? "Free entry" : "Chord", &chordText_)) {
-        if (auto chord = parseChord(chordText_, b.chordOctave, b.chordRootBelow)) {
+        if (auto chord = parseChord(chordText_, b.chordOctave, b.chordRootBelow, b.chordInversion)) {
             b.chordName = chordText_;
-            b.chord = *chord;
+            take(*chord);
             changed = true;
         }
     }
@@ -1023,7 +1041,7 @@ bool MappingEditor::drawChordFields(TriggerBinding& b) {
         ImGui::SetNextItemWidth(ImGui::GetFontSize() * 6);
         if (ImGui::InputInt("Octave", &octave)) {
             octave = std::clamp(octave, kMinChordOctave, kMaxChordOctave);
-            if (auto chord = parseChord(b.chordName, octave, b.chordRootBelow)) {
+            if (auto chord = parseChord(b.chordName, octave, b.chordRootBelow, b.chordInversion)) {
                 b.chordOctave = static_cast<std::int8_t>(octave);
                 b.chord = *chord;
                 changed = true;
@@ -1039,7 +1057,7 @@ bool MappingEditor::drawChordFields(TriggerBinding& b) {
         ImGui::SetNextWindowSizeConstraints(ImVec2(ImGui::GetFontSize() * 11, 0), ImVec2(FLT_MAX, FLT_MAX));  // no scrollbar
         if (ImGui::BeginCombo("Bass root", kBelow[std::min<int>(b.chordRootBelow, 2)])) {
             for (int below = 0; below <= 2; ++below) {
-                const auto chord = parseChord(b.chordName, b.chordOctave, below);
+                const auto chord = parseChord(b.chordName, b.chordOctave, below, b.chordInversion);
                 std::string label = kBelow[below];
                 if (below > 0)
                     label += "  (" + noteName((b.chordOctave + 1 - below) * 12 + *rootPitch, flats()) + ")";
@@ -1054,6 +1072,38 @@ bool MappingEditor::drawChordFields(TriggerBinding& b) {
             ImGui::EndCombo();
         }
         ImGui::SetItemTooltip("Also plays the root one or two octaves lower, to anchor the bass of the chord");
+
+        // Inversion: the lowest note of the chord moved up an octave, once per step.
+        static constexpr const char* kInversions[] = {"Root", "1st", "2nd", "3rd", "4th", "5th", "6th"};
+        const int tones = std::min<int>(b.chord.count - b.chord.bassCount, 7);
+        if (tones > 1) {
+            for (int k = 0; k < tones; ++k) {
+                if (k > 0)
+                    ImGui::SameLine(0, 4);
+                const bool on = k == b.chordInversion;
+                if (on)
+                    ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_TabSelected));
+                if (ImGui::Button(kInversions[k], ImVec2(ImGui::GetFontSize() * (k == 0 ? 3.2f : 2.6f), 0)) && !on) {
+                    if (auto chord = parseChord(b.chordName, b.chordOctave, b.chordRootBelow, k)) {
+                        b.chordInversion = static_cast<std::uint8_t>(k);
+                        b.chord = *chord;
+                        changed = true;
+                    }
+                }
+                if (on)
+                    ImGui::PopStyleColor();
+            }
+            ImGui::SameLine();
+            ImGui::TextUnformatted("Inversion");
+            ImGui::SetItemTooltip("The lowest note of the chord goes up an octave at each step; the bass root stays");
+        }
+    }
+    if (b.chord.count - b.chord.bassCount > 1) {
+        changed |= ImGui::Checkbox("Closest to the previous chord", &b.chordVoiceLeading);
+        ImGui::SetItemTooltip("Plays the inversion whose notes are nearest to the chord played before on the channel, "
+                              "at this octave or the one below: the voices move as little as possible");
+        ImGui::SameLine();
+        ImGui::TextColored(kHintColor, "(voice leading)");
     }
     return changed;
 }

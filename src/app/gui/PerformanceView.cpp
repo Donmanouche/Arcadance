@@ -2102,6 +2102,16 @@ void PerformanceView::drawScale(const std::optional<Key>& key, float x, float y,
         click("scale");
 }
 
+// What a lane's loop plays on: its CC, or the Velocity / Transpose its axis is set to.
+constexpr int kLaneVelocity = -1, kLaneTranspose = -2;
+static int laneTarget(const AxisBinding& axis, int cc) {
+    if (axis.enabled && axis.mode == AxisMode::Velocity)
+        return kLaneVelocity;
+    if (axis.enabled && axis.mode == AxisMode::Transpose)
+        return kLaneTranspose;
+    return cc;
+}
+
 // A channel's title: its number and name, or CHANNEL and its number.
 std::string PerformanceView::channelTitle(int channel) const {
     const std::string& name = channelNames_[static_cast<std::size_t>(std::clamp(channel, 0, kChannelCount - 1))];
@@ -2275,8 +2285,8 @@ void PerformanceView::drawStick(int index, const Mapping& m, const LiveState& li
     const LiveState::Loop& loop = live.loops[static_cast<std::size_t>(index)];
     const LoopBinding& lb = m.loops[static_cast<std::size_t>(index)];
     const LaneLook lanes[2] = {
-        {&loop.lanes[0], Engine::trackOf(index, 0), accent, "X", bx.enabled, bx.invert, false, lb.ccX, lb.steps[0]},
-        {&loop.lanes[1], Engine::trackOf(index, 1), mix(accent, T::kText, 0.5f), "Y", by.enabled, by.invert, false, lb.ccY, lb.steps[1]}};
+        {&loop.lanes[0], Engine::trackOf(index, 0), accent, "X", bx.enabled, bx.invert, false, laneTarget(bx, lb.ccX), lb.steps[0]},
+        {&loop.lanes[1], Engine::trackOf(index, 1), mix(accent, T::kText, 0.5f), "Y", by.enabled, by.invert, false, laneTarget(by, lb.ccY), lb.steps[1]}};
     drawLoopPanel(dl, x, w, loopY, y + h - px(10), loop.status, lb.playback, lanes, 2, accent, artFor(live.channel, index),
                   "REC  \xC2\xB7  move a stick", index == 0 ? "##loopL" : "##loopR", index == 0 ? "axes:left_x,left_y" : "axes:right_x,right_y",
                   index);
@@ -2522,7 +2532,7 @@ void PerformanceView::drawLane(ImDrawList* dl, ImVec2 a, ImVec2 b, const LaneLoo
         }
     }
     if (b.y - a.y >= px(30)) {
-        const std::string cc = "CC " + std::to_string(look.cc);
+        const std::string cc = look.cc == kLaneVelocity ? "VEL" : look.cc == kLaneTranspose ? "TR" : "CC " + std::to_string(look.cc);
         const float ccW = textWidth(gCondensed, small, cc) + px(10);
         const ImVec2 pa(b.x - px(4) - ccW, b.y - small - px(7)), pb(b.x - px(4), b.y - px(3));
         dl->AddRectFilled(pa, pb, IM_COL32(0x14, 0x16, 0x19, 200), px(6));
@@ -2610,8 +2620,8 @@ void PerformanceView::drawTriggers(const Mapping& m, const LiveState& live, floa
     constexpr int kTriggers = static_cast<int>(LoopSource::Triggers);
     const LiveState::Loop& loop = live.loops[static_cast<std::size_t>(kTriggers)];
     const LoopBinding& lb = m.loops[static_cast<std::size_t>(kTriggers)];
-    const LaneLook lanes[2] = {{&loop.lanes[0], Engine::trackOf(kTriggers, 0), T::kPink, "L2", bl.enabled, bl.invert, false, lb.ccX, lb.steps[0]},
-                               {&loop.lanes[1], Engine::trackOf(kTriggers, 1), pinkLight, "R2", br.enabled, br.invert, false, lb.ccY, lb.steps[1]}};
+    const LaneLook lanes[2] = {{&loop.lanes[0], Engine::trackOf(kTriggers, 0), T::kPink, "L2", bl.enabled, bl.invert, false, laneTarget(bl, lb.ccX), lb.steps[0]},
+                               {&loop.lanes[1], Engine::trackOf(kTriggers, 1), pinkLight, "R2", br.enabled, br.invert, false, laneTarget(br, lb.ccY), lb.steps[1]}};
     drawLoopPanel(dl, x, w, loopY, y + h - px(10), loop.status, lb.playback, lanes, 2, T::kPink, artFor(live.channel, 2),
                   "REC  \xC2\xB7  press a trigger", "##looptriggers", "axes:left_trigger,right_trigger", kTriggers);
 }
@@ -2836,9 +2846,9 @@ void PerformanceView::drawTouchpad(const Mapping& m, const LiveState& live, floa
         const LoopBinding& lb = m.loops[static_cast<std::size_t>(source)];
         const bool axisMode = fb.mode == TouchMode::Axis;
         lanes[laneCount++] = {&loops[f]->lanes[0], Engine::trackOf(source, 0), fingerColors[f], f == 0 ? "1 X" : "2 X",
-                              axisMode && fb.x.enabled, fb.x.invert, false, lb.ccX, lb.steps[0]};
+                              axisMode && fb.x.enabled, fb.x.invert, false, laneTarget(fb.x, lb.ccX), lb.steps[0]};
         lanes[laneCount++] = {&loops[f]->lanes[1], Engine::trackOf(source, 1), mix(fingerColors[f], T::kText, 0.45f), f == 0 ? "1 Y" : "2 Y",
-                              axisMode && fb.y.enabled, fb.y.invert, true, lb.ccY, lb.steps[1]};
+                              axisMode && fb.y.enabled, fb.y.invert, true, laneTarget(fb.y, lb.ccY), lb.steps[1]};
         if (ls.state == LoopStatus::State::Recording || (ls.state == LoopStatus::State::Playing && st.state != LoopStatus::State::Recording))
             st.state = ls.state;
         st.waiting = st.waiting || ls.waiting;

@@ -475,6 +475,7 @@ private:
 
     std::bitset<kSlotCount> pressed_;
     std::array<Sounding, kSlotCount> held_{};
+    std::array<ChordNotes, kChannelCount> lastChord_{};  // the chord played last on each channel, for voice leading
     std::array<std::array<Sounding, kSlotCount>, kChannelCount> latched_{};
     std::array<std::uint8_t, kChannelCount> frozen_{};
     std::array<std::array<float, kAxisCount>, kChannelCount> frozenAt_{};  // where frozen axes stopped

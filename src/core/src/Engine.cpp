@@ -596,7 +596,12 @@ Engine::Sounding Engine::soundingFor(const TriggerBinding& binding, int channel)
         s.notes.notes[0] = binding.number;
         s.notes.count = 1;
     } else if (binding.type == ActionType::Chord) {
-        s.notes = binding.chord;
+        // Voice leading: the inversion nearest to the chord played before on this channel.
+        ChordNotes& last = lastChord_[static_cast<std::size_t>(channel)];
+        s.notes = binding.chordVoiceLeading
+                      ? voiceLead(binding.chord, std::span(last.notes.data() + last.bassCount, last.count - last.bassCount))
+                      : binding.chord;
+        last = s.notes;
     }
     if (binding.type == ActionType::Note || binding.type == ActionType::Chord) {
         // The Velocity and Transpose axes, as they are when the note starts.

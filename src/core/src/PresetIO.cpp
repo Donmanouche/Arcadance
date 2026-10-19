@@ -111,7 +111,11 @@ TriggerBinding triggerFromJson(const Json& j, const std::string& where) {
             if (!below.is_number_integer() || below.get<int>() < 0 || below.get<int>() > 2)
                 fail(where + ".root_below", "expected 0, 1 or 2 (octaves below the root)");
             b.chordRootBelow = below.get<std::uint8_t>();
-            auto chord = parseChord(b.chordName, b.chordOctave, b.chordRootBelow);
+            const Json inversion = j.value("inversion", Json(0));
+            if (!inversion.is_number_integer() || inversion.get<int>() < 0 || inversion.get<int>() > 8)
+                fail(where + ".inversion", "expected 0 (root position) to 8");
+            b.chordInversion = inversion.get<std::uint8_t>();
+            auto chord = parseChord(b.chordName, b.chordOctave, b.chordRootBelow, b.chordInversion);
             if (!chord && parseChord(b.chordName))
                 fail(where + ".octave", "\"" + b.chordName + "\" goes beyond the MIDI notes in this octave");
             if (!chord)
@@ -128,6 +132,11 @@ TriggerBinding triggerFromJson(const Json& j, const std::string& where) {
                 fail(where + ".notes", "expected 1 to 8 MIDI notes");
         } else {
             fail(where, "missing \"chord\" (a name) or \"notes\" (a list)");
+        }
+        if (j.contains("voice_leading")) {
+            if (!j["voice_leading"].is_boolean())
+                fail(where + ".voice_leading", "expected true or false");
+            b.chordVoiceLeading = j["voice_leading"].get<bool>();
         }
     } else if (type == "transport") {
         b.type = ActionType::Transport;
@@ -215,12 +224,16 @@ Json triggerToJson(const TriggerBinding& b) {
                 j["octave"] = b.chordOctave;
             if (b.chordRootBelow != 0)
                 j["root_below"] = b.chordRootBelow;
+            if (b.chordInversion != 0)
+                j["inversion"] = b.chordInversion;
         } else {
             Json notes = Json::array();
             for (auto n : b.chord.view())
                 notes.push_back(n);
             j["notes"] = notes;
         }
+        if (b.chordVoiceLeading)
+            j["voice_leading"] = true;
         if (b.velocity != 100)
             j["velocity"] = b.velocity;
         if (!b.humanize)

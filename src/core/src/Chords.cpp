@@ -2,6 +2,7 @@
 
 #include "midipad/Notes.hpp"
 
+#include <cstdlib>
 #include <string>
 
 namespace midipad {
@@ -158,7 +159,7 @@ const Quality* findQuality(std::string_view canonical) {
 
 std::span<const std::string_view> chordQualities() { return kQualityNames; }
 
-std::optional<ChordNotes> parseChord(std::string_view name, int rootOctave, int rootBelow) {
+std::optional<ChordNotes> parseChord(std::string_view name, int rootOctave, int rootBelow, int inversion) {
     while (!name.empty() && name.front() == ' ')
         name.remove_prefix(1);
     while (!name.empty() && name.back() == ' ')
@@ -202,12 +203,68 @@ std::optional<ChordNotes> parseChord(std::string_view name, int rootOctave, int 
         add(rootOctave * 12 + *bassPitch);  // the bass pitch, one octave below the root's octave
     if (rootBelow > 0)
         add(root - 12 * rootBelow);
-    for (std::uint8_t i = 0; i < q->count; ++i)
-        add(root + q->intervals[i]);
+    chord.bassCount = chord.count;
+    // The chord's own notes, the lowest moved up an octave once per inversion.
+    std::array<int, 9> tones{};
+    const int n = q->count;
+    for (int i = 0; i < n; ++i)
+        tones[static_cast<std::size_t>(i)] = root + q->intervals[i];
+    for (int k = 0; k < std::clamp(inversion, 0, std::max(n - 1, 0)); ++k)
+        *std::min_element(tones.begin(), tones.begin() + n) += 12;
+    for (int i = 0; i < n; ++i)
+        add(tones[static_cast<std::size_t>(i)]);
     if (!inRange || chord.count == 0)
         return std::nullopt;
     std::sort(chord.notes.begin(), chord.notes.begin() + chord.count);
     return chord;
+}
+
+ChordNotes voiceLead(const ChordNotes& chord, std::span<const std::uint8_t> previous) {
+    const int bass = chord.bassCount, n = chord.count - chord.bassCount;
+    if (previous.empty() || n < 2)
+        return chord;
+    const int floor = bass > 0 ? chord.notes[static_cast<std::size_t>(bass - 1)] : -1;  // stay above the bass
+    // How far apart: each note from the nearest of the other chord, both ways.
+    auto cost = [&](const std::array<int, 9>& c) {
+        int sum = 0;
+        for (int i = 0; i < n; ++i) {
+            int best = 128;
+            for (auto p : previous)
+                best = std::min(best, std::abs(c[static_cast<std::size_t>(i)] - p));
+            sum += best;
+        }
+        for (auto p : previous) {
+            int best = 128;
+            for (int i = 0; i < n; ++i)
+                best = std::min(best, std::abs(c[static_cast<std::size_t>(i)] - p));
+            sum += best;
+        }
+        return sum;
+    };
+    std::array<int, 9> turn{}, best{};
+    for (int i = 0; i < n; ++i)
+        turn[static_cast<std::size_t>(i)] = best[static_cast<std::size_t>(i)] = chord.notes[static_cast<std::size_t>(bass + i)];
+    int bestCost = cost(best);
+    for (int k = 0; k < n; ++k) {  // each inversion from the chord's own, at its octave and the one below
+        for (int shift : {0, -12}) {
+            std::array<int, 9> c = turn;
+            bool fits = true;
+            for (int i = 0; i < n; ++i) {
+                c[static_cast<std::size_t>(i)] += shift;
+                fits = fits && c[static_cast<std::size_t>(i)] > floor && c[static_cast<std::size_t>(i)] <= 127;
+            }
+            if (const int v = fits ? cost(c) : 0; fits && v < bestCost) {
+                bestCost = v;
+                best = c;
+            }
+        }
+        *std::min_element(turn.begin(), turn.begin() + n) += 12;
+    }
+    ChordNotes out = chord;
+    for (int i = 0; i < n; ++i)
+        out.notes[static_cast<std::size_t>(bass + i)] = static_cast<std::uint8_t>(best[static_cast<std::size_t>(i)]);
+    std::sort(out.notes.begin() + bass, out.notes.begin() + out.count);
+    return out;
 }
 
 }  // namespace midipad

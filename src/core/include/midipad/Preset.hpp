@@ -39,6 +39,8 @@ struct TriggerBinding {
     std::string chordName;       // empty when the chord was given as raw notes
     std::int8_t chordOctave = kDefaultChordOctave;  // octave of a named chord's root
     std::uint8_t chordRootBelow = 0;  // 1 or 2: the root doubled that many octaves lower
+    std::uint8_t chordInversion = 0;  // a named chord's lowest note moved up an octave that many times
+    bool chordVoiceLeading = false;   // the inversion nearest to the chord played before on the channel
     bool humanize = true;        // Note, Chord: follows the channel's humanization
     TransportCommand transport = TransportCommand::Start;
     std::int8_t channelStep = 1;

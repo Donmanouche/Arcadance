@@ -199,7 +199,7 @@ private:
         const char* name = "";
         bool enabled = true, invert = false;
         bool flip = false;  // a finger's Y: sent the other way up
-        int cc = 0;
+        int cc = 0;  // the loop's CC, or below 0 when its axis shapes the notes (laneTarget)
         midipad::StepGrid steps;
     };
     // `st`: the lanes together (LiveState::Loop::status); `lockSource` the
