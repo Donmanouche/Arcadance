@@ -38,9 +38,10 @@ Arcadance runs on Linux; Windows and macOS versions are planned.
   length, delete them, shorten or lengthen the loop, all while it plays.
 - **Sessions.** Save every channel's clips, chains, the preset, the tonality
   and the tempo in one file, and open them again later.
-- **Chords made easy.** Named chords (`Fm9`, `Dbmaj7#11`, `Eb9sus4`…) with octave
-  and doubled bass root; choose a tonality and Arcadance offers only the notes
-  and chords of the scale.
+- **Chords made easy.** Named chords (`Fm9`, `Dbmaj7#11`, `Eb9sus4`…) with octave,
+  inversion and doubled bass root; choose a tonality and Arcadance offers only
+  the notes and chords of the scale. With voice leading, each chord takes the
+  inversion closest to the one before, so the voices move smoothly.
 - **Expressive controls.** Two sticks, two analog triggers and two touchpad
   fingers, each with its own controller number, range and direction. Freeze a
   stick at its current value; split the touchpad into four pads.
