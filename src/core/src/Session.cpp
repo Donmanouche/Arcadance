@@ -129,6 +129,46 @@ Json sessionToJson(const Session& session) {
         }
         j["chains"] = std::move(chains);
     }
+    // The song: its sections, each with the items of its channels ("1" to "16").
+    if (!session.song.empty()) {
+        Json sections = Json::array();
+        for (const SongSection& sec : session.song.sections) {
+            Json o;
+            o["name"] = sec.name;
+            o["bars"] = sec.bars;
+            if (sec.fit)
+                o["fit"] = true;
+            Json channels = Json::object();
+            for (int ch = 0; ch < kChannelCount; ++ch) {
+                const auto& items = sec.cells[static_cast<std::size_t>(ch)];
+                if (items.empty())
+                    continue;
+                Json list = Json::array();
+                for (const SongItem& it : items) {
+                    Json i;
+                    if (it.kind == SongItem::Kind::Clip)
+                        i["clip"] = it.index + 1;
+                    else if (it.kind == SongItem::Kind::Chain)
+                        i["chain"] = std::string(1, static_cast<char>('A' + it.index));
+                    else
+                        i["rest"] = it.beats;  // in beats
+                    if (it.after)
+                        i["after"] = true;
+                    else
+                        i["bar"] = it.bar + 1;
+                    if (it.repeats != 1)
+                        i["repeats"] = it.repeats;
+                    if (it.loop)
+                        i["loop"] = true;
+                    list.push_back(std::move(i));
+                }
+                channels[std::to_string(ch + 1)] = std::move(list);
+            }
+            o["channels"] = std::move(channels);
+            sections.push_back(std::move(o));
+        }
+        j["song"] = {{"sections", std::move(sections)}};
+    }
     return j;
 }
 
@@ -274,6 +314,80 @@ Session sessionFromJson(const Json& j) {
                 }
             }
             s.chains.push_back(std::move(c));
+        }
+    }
+    if (j.contains("song")) {
+        const Json& song = j["song"];
+        if (!song.is_object() || (song.contains("sections") && !song["sections"].is_array()))
+            fail("session.song", "expected an object with a list of sections");
+        const Json sections = song.value("sections", Json::array());
+        for (std::size_t i = 0; i < sections.size(); ++i) {
+            const Json& o = sections[i];
+            const std::string where = "session.song.sections[" + std::to_string(i) + "]";
+            if (!o.is_object())
+                fail(where, "expected an object");
+            SongSection sec;
+            if (o.contains("name")) {
+                if (!o["name"].is_string())
+                    fail(where + ".name", "expected a name");
+                sec.name = o["name"].get<std::string>().substr(0, 24);
+            }
+            sec.bars = readInt(o, "bars", 1, kMaxSectionBars, 8, where);
+            if (o.contains("fit")) {
+                if (!o["fit"].is_boolean())
+                    fail(where + ".fit", "expected true or false");
+                sec.fit = o["fit"].get<bool>();
+            }
+            if (o.contains("channels")) {
+                if (!o["channels"].is_object())
+                    fail(where + ".channels", "expected an object");
+                for (const auto& [key, list] : o["channels"].items()) {
+                    const std::string at = where + ".channels." + key;
+                    int ch = 0;
+                    try {
+                        ch = std::stoi(key);
+                    } catch (const std::exception&) {
+                        ch = 0;
+                    }
+                    if (ch < 1 || ch > kChannelCount || !list.is_array() || list.size() > static_cast<std::size_t>(kMaxSongItems))
+                        fail(at, "expected a channel from 1 to 16 and up to 32 items");
+                    auto& items = sec.cells[static_cast<std::size_t>(ch - 1)];
+                    for (std::size_t k = 0; k < list.size(); ++k) {
+                        const Json& v = list[k];
+                        const std::string w = at + "[" + std::to_string(k) + "]";
+                        if (!v.is_object())
+                            fail(w, "expected an object");
+                        SongItem it;
+                        if (v.contains("clip")) {
+                            it.kind = SongItem::Kind::Clip;
+                            it.index = readInt(v, "clip", 1, 8, 1, w) - 1;
+                        } else if (v.contains("chain") && v["chain"].is_string() && v["chain"].get<std::string>().size() == 1 &&
+                                   v["chain"].get<std::string>()[0] >= 'A' && v["chain"].get<std::string>()[0] <= 'H') {
+                            it.kind = SongItem::Kind::Chain;
+                            it.index = v["chain"].get<std::string>()[0] - 'A';
+                        } else if (v.contains("rest")) {
+                            it.kind = SongItem::Kind::Rest;
+                            it.beats = readInt(v, "rest", 1, kMaxRestBeats, 4, w);
+                        } else {
+                            fail(w, "expected \"clip\" (1 to 8), \"chain\" (\"A\" to \"H\") or \"rest\" (beats)");
+                        }
+                        it.bar = readInt(v, "bar", 1, kMaxSectionBars, 1, w) - 1;
+                        it.repeats = readInt(v, "repeats", 1, kMaxSongRepeats, 1, w);
+                        if (v.contains("loop")) {
+                            if (!v["loop"].is_boolean())
+                                fail(w + ".loop", "expected true or false");
+                            it.loop = v["loop"].get<bool>();
+                        }
+                        if (v.contains("after")) {
+                            if (!v["after"].is_boolean())
+                                fail(w + ".after", "expected true or false");
+                            it.after = v["after"].get<bool>();
+                        }
+                        items.push_back(it);
+                    }
+                }
+            }
+            s.song.sections.push_back(std::move(sec));
         }
     }
     return s;

@@ -236,6 +236,30 @@ public:
     int chainNext(int channel) const { return chainJump_[static_cast<std::size_t>(std::clamp(channel, 0, kChannelCount - 1))]; }  // asked for, -1 none
     int chainNextChain(int channel) const { return chainJumpChain_[static_cast<std::size_t>(std::clamp(channel, 0, kChannelCount - 1))]; }  // its chain
     int chainClip(int channel) const { return chainClip_[static_cast<std::size_t>(std::clamp(channel, 0, kChannelCount - 1))]; }  // the step's clip (picked, for a random one)
+    // The song (Song.hpp). playSong plays it from a section: at the next bar
+    // while a clock runs (also when it already plays: a jump), at once
+    // without one, its bars then at the internal tempo. Each item starts on
+    // its bar (its clip at once, from its start; its chain from its first
+    // step), stops after its repeats unless it loops, and every channel the
+    // section played stops at its end unless the next section starts it
+    // again. With setSongLoop, the section playing plays again and again.
+    // stopSong stops the song and the channels in it; PANIC stops it too.
+    void setSong(const Song& song);  // playing, the section playing goes on (gone: the song stops)
+    void playSong(int section);
+    void stopSong();
+    void setSongLoop(bool on) { songLoop_ = on; }
+    bool songLoop() const { return songLoop_; }
+    bool songPlaying() const { return songOn_; }
+    int songSection() const { return songOn_ ? songSection_ : -1; }
+    double songBeat() const;  // in the section playing, beats; below 0 while waiting for its bar
+    // A turn of a clip, in beats (0: empty), at the clock's tempo for free
+    // loops; a pass of a chain (`open`: it has a forever step, counted once;
+    // a random step counts the average of the clips it may pick); an item,
+    // its repeats; a section, in bars (its own, or with fit its longest channel).
+    double clipBeats(int channel, int slot) const;
+    double chainBeats(int channel, int chain, bool& open) const;
+    double songItemBeats(int channel, const SongItem& item, bool& open) const;
+    int sectionBars(const SongSection& section) const;
     void launchClip(int channel, int slot);
     void stopClip(int channel) { launchClip(channel, kClipSlots); }
     void setRecordSlot(int channel, int slot);
@@ -592,6 +616,24 @@ private:
     bool chainStepPlays(int channel, int chain, int step) const;
     int chainFind(int channel, int chain, int from, bool wrap = true) const;  // the first step from there that plays, -1 none
     void runChains();
+    // The song.
+    struct SongEvent {
+        double at = 0;  // beats into the section
+        int channel = 0;
+        int what = -1;  // -1: stop; 0-7: a clip; 100 + n: chain n
+    };
+    Song song_;
+    bool songOn_ = false, songLoop_ = false;
+    int songSection_ = 0;
+    double songStart_ = 0;  // where the section playing starts, on songNow()
+    std::vector<SongEvent> songEvents_;
+    std::size_t songNext_ = 0;
+    double freeBeat_ = 0;  // a beat count that runs without a clock, at its tempo
+    std::uint64_t freeAt_ = 0;
+    double songNow() const { return clock_.on ? beatAt(now_) : freeBeat_; }
+    void enterSection(int section, double start);
+    void runSong();
+    void songStopChannel(int channel);
     void queueClip(int channel, int slot);  // launchClip, the chain left as it is
     // The current clip's turns so far, from its leading loop (false: none plays).
     bool clipTurns(int channel, double& turns) const;

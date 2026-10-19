@@ -97,6 +97,29 @@ public:
         int clip = -1, repeats = 1;  // ChainSet
     };
     std::optional<SessionAction> drawSession(const LiveState& live, int cursorSlot, int chainCursor);
+    // The song screen: on top, the whole song at scale, in real time (its
+    // sections, a lane per channel, the playhead); under it a row per
+    // section (its name, its length; "+ section" after the last) and a
+    // column per channel (eight at a time), each cell its items at scale;
+    // at the bottom the editor of the cell under the cursor, its items on
+    // the bars of the section. The cursor: a row, a column (-1: the
+    // section's name), and in the editor (`editing`) an item (its count: the
+    // "+" after the last). What a click, a drag or the wheel asks for, if anything.
+    struct SongCursor {
+        int row = 0, col = -1, item = 0;
+        bool editing = false;
+    };
+    struct SongAction {
+        enum class Kind : std::uint8_t { Cursor, Play, Stop, Loop, AddSection, EditCell, Bars, ItemSelect, ItemMove, ItemContent, ItemRepeats, AddItem } kind =
+            Kind::Cursor;
+        int row = 0, col = -1, item = 0, value = 0;
+    };
+    std::optional<SongAction> drawSong(const LiveState& live, const midipad::Song& song, const SongCursor& cursor);
+    // An item's length in beats (`open`: it has a forever step), and a section's in bars, from what the engine says.
+    static double songItemBeats(const LiveState& live, int channel, const midipad::SongItem& item, bool* open = nullptr);
+    static int songSectionBars(const LiveState& live, const midipad::SongSection& section);
+    static std::string restText(int beats, int beatsPerBar);  // "2 bars 1 beat"
+    static std::vector<double> songItemBars(const LiveState& live, int channel, const std::vector<midipad::SongItem>& items);
     std::optional<SessionAction> drawChainStrip(ImDrawList* dl, const LiveState& live, ImVec2 at, float w, float h, int cursor);
     // The repeats a chain step may take, in order (0: forever), and the one
     // after or before `repeats` (by `steps`, kept within them).
@@ -108,9 +131,13 @@ public:
     // What a context menu is for: a lane (an axis loop), a LOOP panel (its
     // axes), the note loop, a control (its window, `spec`), a clip, a chain
     // step (`slot` is the step), a channel's column, the CHANNEL block, a
-    // chain (the CHAIN cell; `slot` is the chain).
+    // chain (the CHAIN cell; `slot` is the chain), a song section (`slot`),
+    // a song cell (`slot` the section, `channel`), a song item (also `axis`:
+    // the item), the clips and chains of a channel to put in a song cell
+    // (SongPick: `axis` the item they replace, -1 a new one after the last).
     struct MenuTarget {
-        enum class Kind : std::uint8_t { Lane, Panel, NoteLoop, Control, Clip, Step, Channel, ChannelBlock, Chain } kind = Kind::Control;
+        enum class Kind : std::uint8_t { Lane, Panel, NoteLoop, Control, Clip, Step, Channel, ChannelBlock, Chain, Section, SongCell, SongItem, SongPick } kind =
+            Kind::Control;
         int channel = 0, slot = 0, source = 0, axis = -1;
         std::string spec;
         MenuTarget() = default;
@@ -244,6 +271,8 @@ private:
     std::optional<int> channelRequest_;
     std::array<std::string, midipad::kChannelCount> channelNames_;
     std::array<int, midipad::kChannelCount> shownChains_{};
+    int songScroll_ = 0, songFirst_ = 0;  // the first section row and channel shown
+    int songDragBars_ = 0;                // an item being dragged: by how many bars
     ChainNames chainNames_;
     // "CHANNEL 3", or "3  PADS" when it has a name.
     std::string channelTitle(int channel) const;

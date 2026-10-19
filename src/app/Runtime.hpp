@@ -125,6 +125,18 @@ struct LiveState {
         int turns = 0;
     };
     std::array<Chains, midipad::kChannelCount> chains{};
+    // The song: whether it plays (and loops its section), the section, the
+    // beats into it (below 0: waiting for its bar); every clip's turn and
+    // chain's pass, in beats (Engine::clipBeats, chainBeats; a bit per chain
+    // in chainOpen: it has a forever step).
+    struct Song {
+        bool playing = false, loop = false;
+        int section = -1;
+        double beat = 0;
+    } song;
+    std::array<std::array<float, midipad::Engine::kClipSlots>, midipad::kChannelCount> clipBeats{};
+    std::array<std::array<float, midipad::Engine::kChains>, midipad::kChannelCount> chainBeats{};
+    std::array<std::uint8_t, midipad::kChannelCount> chainOpen{};
     std::uint64_t sounding = 0;   // Engine::soundingSlots()
     std::uint16_t loopChannels = 0;  // Engine::channelsWithLoops()
     bool loopsPaused = false;
@@ -216,6 +228,11 @@ public:
     std::optional<std::vector<midipad::SessionLoop>> sessionLoops();
     void loadSessionLoops(std::vector<midipad::SessionLoop> loops);
     void loadSessionChains(std::vector<midipad::SessionChain> chains);  // Engine::loadSessionChains
+    // The song (Engine::setSong, playSong, stopSong, setSongLoop).
+    void setSong(midipad::Song song);
+    void playSong(int section);
+    void stopSong();
+    void setSongLoop(bool on);
     // See Engine::stretchLoop, amplifyLoop and setAxisLoopLength, on the
     // active channel; axis -1: both.
     void stretchLoop(int source, int axis, int steps);
@@ -266,7 +283,7 @@ private:
     struct Command {
         enum class Kind : std::uint8_t {
             SetChannel, Panic, ClearLoop, ToggleLock, ChainStep, ChainThen, ChainGo, ChainStop, ClearClip, CopyClip, ResetShape, LaunchClip, RecordSlot, StretchLoop, AmplifyLoop, AxisLength, PauseLoops, PlayLoops,
-            SaveLoops, LoadLoops, LoadChains, EditNotes
+            SaveLoops, LoadLoops, LoadChains, LoadSong, SongPlay, SongStop, SongLoop, EditNotes
         } kind;
         int channel = 0;
         int value = 0;
@@ -304,6 +321,7 @@ private:
     std::optional<std::promise<std::vector<midipad::SessionLoop>>> loopsWanted_;
     std::vector<midipad::SessionLoop> loopsToLoad_;
     std::vector<midipad::SessionChain> chainsToLoad_;
+    std::optional<midipad::Song> songToLoad_;
     struct NoteEdit {
         std::vector<midipad::LoopNoteRef> notes;
         bool remove = false;
@@ -347,6 +365,10 @@ private:
     std::uint16_t clipsPlaying_ = 0;
     std::array<float, midipad::kChannelCount> clipProgress_{};
     std::array<LiveState::Chains, midipad::kChannelCount> chains_{};
+    LiveState::Song song_{};
+    std::array<std::array<float, midipad::Engine::kClipSlots>, midipad::kChannelCount> clipBeats_{};
+    std::array<std::array<float, midipad::Engine::kChains>, midipad::kChannelCount> chainBeats_{};
+    std::array<std::uint8_t, midipad::kChannelCount> chainOpen_{};
     int clipSketchCountdown_ = 0;  // polls until the clips' sketches are drawn again
     mutable std::mutex nameMutex_;
     std::string gamepadName_;

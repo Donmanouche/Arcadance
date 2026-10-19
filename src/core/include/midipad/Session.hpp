@@ -2,6 +2,7 @@
 
 #include "midipad/Preset.hpp"
 #include "midipad/Scales.hpp"
+#include "midipad/Song.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -58,7 +59,8 @@ struct SessionChain {
 
 // What a session file keeps: the loops of every channel, the preset they play
 // with (a copy, so the session opens as it was even if the preset changed
-// since), the tonality, the active channel and the tempo. Synced loops keep
+// since), the tonality, the active channel, the tempo, the chains and the
+// song. Synced loops keep
 // their beats, not the clock they came from: a session saved with the
 // internal clock opens with Ableton Link, and the other way round.
 struct Session {
@@ -68,6 +70,7 @@ struct Session {
     double tempo = 0;  // of the clock when saved, in beats a minute; 0: none
     std::vector<SessionLoop> loops;
     std::vector<SessionChain> chains;
+    Song song;
 };
 
 class SessionError : public std::runtime_error {

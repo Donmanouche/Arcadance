@@ -209,6 +209,17 @@ void Runtime::loadSessionLoops(std::vector<midipad::SessionLoop> loops) {
     commands_.push({Command::Kind::LoadLoops});
 }
 
+void Runtime::setSong(midipad::Song song) {
+    {
+        std::lock_guard lock(sessionMutex_);
+        songToLoad_ = std::move(song);
+    }
+    commands_.push({Command::Kind::LoadSong});
+}
+void Runtime::playSong(int section) { commands_.push({Command::Kind::SongPlay, 0, section}); }
+void Runtime::stopSong() { commands_.push({Command::Kind::SongStop}); }
+void Runtime::setSongLoop(bool on) { commands_.push({Command::Kind::SongLoop, 0, on ? 1 : 0}); }
+
 void Runtime::loadSessionChains(std::vector<midipad::SessionChain> chains) {
     {
         std::lock_guard lock(sessionMutex_);
@@ -295,6 +306,10 @@ LiveState Runtime::live() const {
         s.clipsPlaying = clipsPlaying_;
         s.clipProgress = clipProgress_;
         s.chains = chains_;
+        s.song = song_;
+        s.clipBeats = clipBeats_;
+        s.chainBeats = chainBeats_;
+        s.chainOpen = chainOpen_;
     }
     std::lock_guard lock(nameMutex_);
     s.gamepadName = gamepadName_;
@@ -404,6 +419,7 @@ void Runtime::publish(const GamepadInput& gamepad, const Engine& engine) {
     }
     noteLoopCount_ = engine.noteLoopIntervals(channel, noteLoop_.data(), LiveState::kMaxNoteLoopNotes);
 
+    song_ = {engine.songPlaying(), engine.songLoop(), engine.songSection(), engine.songBeat()};
     // The clips: their state every poll, their sketches 20 times a second.
     clipsPlaying_ = 0;
     for (int c = 0; c < kChannelCount; ++c) {
@@ -428,6 +444,15 @@ void Runtime::publish(const GamepadInput& gamepad, const Engine& engine) {
         chains.nextChain = static_cast<std::int8_t>(engine.chainNextChain(c));
         chains.turns = engine.chainTurns(c);
         chains.clipNow = static_cast<std::int8_t>(engine.chainClip(c));
+        chainOpen_[ci] = 0;
+        for (int n = 0; n < Engine::kChains; ++n) {
+            bool open = false;
+            chainBeats_[ci][static_cast<std::size_t>(n)] = static_cast<float>(engine.chainBeats(c, n, open));
+            if (open)
+                chainOpen_[ci] = static_cast<std::uint8_t>(chainOpen_[ci] | (1u << n));
+        }
+        for (int k = 0; k < Engine::kClipSlots; ++k)
+            clipBeats_[ci][static_cast<std::size_t>(k)] = static_cast<float>(engine.clipBeats(c, k));
         if (engine.clipPlaying(c))
             clipsPlaying_ = static_cast<std::uint16_t>(clipsPlaying_ | (1u << c));
     }
@@ -617,6 +642,17 @@ void Runtime::run(std::stop_token stop, Options options, std::shared_ptr<const P
                 std::lock_guard lock(sessionMutex_);
                 engine.loadSessionLoops(loopsToLoad_);
                 loopsToLoad_.clear();
+            } else if (command->kind == Command::Kind::LoadSong) {
+                std::lock_guard lock(sessionMutex_);
+                if (songToLoad_)
+                    engine.setSong(*songToLoad_);
+                songToLoad_.reset();
+            } else if (command->kind == Command::Kind::SongPlay) {
+                engine.playSong(command->value);
+            } else if (command->kind == Command::Kind::SongStop) {
+                engine.stopSong();
+            } else if (command->kind == Command::Kind::SongLoop) {
+                engine.setSongLoop(command->value != 0);
             } else if (command->kind == Command::Kind::LoadChains) {
                 std::lock_guard lock(sessionMutex_);
                 engine.loadSessionChains(chainsToLoad_);
