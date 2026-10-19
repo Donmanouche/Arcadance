@@ -1941,7 +1941,7 @@ void GuiApp::drawPerformance(const LiveState& live) {
     }
     ImGui::SameLine(0, px(12));
     {
-        // ARCADANCE in pixel letters, violet to pink, a hard shadow: 2 points a pixel.
+        // ARCADANCE in pixel letters, violet to pink, a hard shadow: 3 points a pixel.
         static constexpr const char* kGlyphs[6][7] = {
             {".###.", "#...#", "#...#", "#####", "#...#", "#...#", "#...#"},  // A
             {"####.", "#...#", "#...#", "####.", "#.#..", "#..#.", "#...#"},  // R
@@ -1952,8 +1952,8 @@ void GuiApp::drawPerformance(const LiveState& live) {
         };
         static constexpr int kWord[] = {0, 1, 2, 0, 3, 0, 4, 2, 5};  // A R C A D A N C E
         const ImVec2 p = ImGui::GetCursorScreenPos();
-        const float cell = std::round(px(2));
-        const float wordW = cell * (9 * 6 - 1 + 1), top = std::round(p.y + (px(32) - cell * 8) * 0.5f);
+        const float cell = std::round(px(3));
+        const float wordW = cell * (9 * 6 - 1 + 1), top = std::round(p.y + (px(32) - cell * 8) * 0.5f - px(2));
         auto pixel = [&](float x, float y, ImU32 col) { dl->AddRectFilled(ImVec2(x, y), ImVec2(x + cell, y + cell), col); };
         for (int pass = 0; pass < 2; ++pass)  // the shadow, then the letters
             for (int k = 0; k < 9; ++k)

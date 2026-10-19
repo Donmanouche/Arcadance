@@ -2131,15 +2131,15 @@ void PerformanceView::drawChannel(const LiveState& live, float x, float y, float
     const bool hovered = ImGui::IsWindowHovered() && ImGui::IsMouseHoveringRect(a, b);
     screen(dl, a, b, T::kGreen, [&] {
         text(dl, gBold, px(9), a.x + px(9), a.y + px(10), alpha(T::kGreen, 0.7f), "CHANNEL", H::Left, V::Middle);
-        const float cx = (a.x + b.x) * 0.5f, midY = (a.y + b.y) * 0.5f + (name.empty() ? px(3) : -px(5));
+        const float cx = (a.x + b.x) * 0.5f, midY = (a.y + b.y) * 0.5f + (name.empty() ? px(3) : -px(11));
         const std::string number = std::to_string(live.channel + 1);
-        const float size = std::min(px(64), (b.y - a.y) * (name.empty() ? 0.72f : 0.6f));
+        const float size = name.empty() ? std::min(px(64), (b.y - a.y) * 0.72f) : std::min(px(52), (b.y - a.y) * 0.5f);  // smaller over a name
         for (float r : {px(3), px(1.5f)})  // glow
             for (auto [dx, dy] : {std::pair{-r, 0.0f}, {r, 0.0f}, {0.0f, -r}, {0.0f, r}})
                 text(dl, gBold, size, cx + dx, midY + dy, alpha(T::kGreen, 0.18f), number, H::Center, V::Middle);
         text(dl, gBold, size, cx, midY, T::kGreen, number, H::Center, V::Middle);
         if (!name.empty())
-            text(dl, gBold, px(12), cx, b.y - px(13), mix(T::kGreen, T::kText, 0.3f), fit(gBold, px(12), name, b.x - a.x - px(50)), H::Center, V::Middle);
+            text(dl, gBold, px(20), cx, b.y - px(18), mix(T::kGreen, T::kText, 0.3f), fit(gBold, px(20), name, b.x - a.x - px(50)), H::Center, V::Middle);
         // The arrows: faint, lit while the mouse is over the block.
         const float ay = (a.y + b.y) * 0.5f + px(3), s = px(7);
         const ImU32 col = alpha(T::kGreen, hovered ? 1.0f : 0.3f);
