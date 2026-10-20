@@ -2631,7 +2631,7 @@ void GuiApp::drawPerformance(const LiveState& live) {
     // the bar (the channel is chosen on the CHANNEL block).
     {
         const float groupW = medium->CalcTextSizeA(px(12), FLT_MAX, 0, "PRESET").x + px(8) + px(26) * 2 + px(180) + px(14) + px(32) +
-                             px(6) + px(32) + px(10) + px(166) + px(6) + px(44) + px(8) + px(36) + px(6) + px(56);
+                             px(6) + px(32) + px(10) + px(166) + px(6) + px(44) + px(8) + px(36) + px(6) + px(36);
         const float centered = winPos.x + (winW - groupW) * 0.5f;
         ImGui::SameLine(0, 0);  // on the line of MIDIPAD
         const ImVec2 at = ImGui::GetCursorScreenPos();
@@ -2889,20 +2889,23 @@ void GuiApp::drawPerformance(const LiveState& live) {
                 dl->AddRectFilled(ImVec2(gx, gy), ImVec2(gx + px(7), gy + px(7)), sessionView_ ? Theme::kGreen : Theme::kLabel, px(1.5f));
             }
             ImGui::SetItemTooltip("Session: the clips of every channel (Tab)");
-            // The song screen, lit while it shows.
+            // The song screen: lanes of blocks, as an arrangement; lit while it shows.
             const ImVec2 gp(sp.x + sw + px(6), q.y);
-            const float gw = px(56);
+            const float gw = px(36);
             ImGui::SetCursorScreenPos(gp);
             if (ImGui::InvisibleButton("##song", ImVec2(gw, lh)))
                 toggleSong(live);
             const bool songHovered = ImGui::IsItemHovered();
             ImGui::SetItemTooltip("Song: the sections of the song, the clips and chains each channel plays in them (Tab, from the session screen)");
             dl->AddRectFilled(gp, ImVec2(gp.x + gw, gp.y + lh),
-                              songView_ ? (Theme::kOrange & ~IM_COL32_A_MASK) | IM_COL32(0, 0, 0, 60)
+                              songView_ ? (Theme::kGreen & ~IM_COL32_A_MASK) | IM_COL32(0, 0, 0, 60)
                               : songHovered ? Theme::kControlBorder : Theme::kControl, px(5));
-            dl->AddRect(gp, ImVec2(gp.x + gw, gp.y + lh), songView_ || live.song.playing ? Theme::kOrange : Theme::kControlBorder, px(5), px(1));
-            const ImVec2 gsz = bold->CalcTextSizeA(px(11), FLT_MAX, 0, "SONG");
-            dl->AddText(bold, px(11), ImVec2(gp.x + (gw - gsz.x) * 0.5f, cy - gsz.y * 0.5f), songView_ || live.song.playing ? Theme::kOrange : Theme::kLabel, "SONG");
+            dl->AddRect(gp, ImVec2(gp.x + gw, gp.y + lh), songView_ ? Theme::kGreen : Theme::kControlBorder, px(5), px(1));
+            static constexpr float kLanes[4][3] = {{-8, 1, -7}, {-3, 8, -1.5f}, {-8, -1, 4}, {2, 8, 4}};  // x from, x to, y: a block each
+            const float gcx = gp.x + gw * 0.5f;
+            for (const auto& lane : kLanes)
+                dl->AddRectFilled(ImVec2(gcx + px(lane[0]), cy + px(lane[2])), ImVec2(gcx + px(lane[1]), cy + px(lane[2] + 3.5f)),
+                                  songView_ ? Theme::kGreen : Theme::kLabel, px(1.2f));
         }
 
         if (dirty_) {

@@ -346,7 +346,7 @@ void drawLockedBorder(ImDrawList* dl, ImVec2 a, ImVec2 b, ImU32 col, float round
 // --- Idle animations ------------------------------------------------------
 // When a LOOP box has nothing to show, a screen in grey plays a little 80s
 // arcade game, drawn smooth and glowing rather than in big pixels.
-// kIdleArtCount of them; PerformanceView picks one per box.
+// kIdleArtCount of them; PerformanceView picks one per box, and which boxes play.
 
 constexpr int kIdleArtCount = 12;
 constexpr ImU32 kIdleTint = IM_COL32(0x9A, 0xA0, 0xA8, 255), kIdleInk = IM_COL32(0xE6, 0xE8, 0xEC, 255);
@@ -672,8 +672,13 @@ void arcade(ImDrawList* dl, int game, ImVec2 a, ImVec2 b, double time, ImU32 col
 }
 
 // The idle animation of an empty LOOP box: its game on a grey screen.
+// The idle screen of an empty LOOP box: its game on a grey screen, or the
+// screen still (art -1).
 void idleArt(ImDrawList* dl, int art, ImVec2 a, ImVec2 b, double time) {
-    screen(dl, a, b, kIdleTint, [&] { arcade(dl, art % kIdleArtCount, ImVec2(a.x + px(4), a.y + px(4)), ImVec2(b.x - px(4), b.y - px(4)), time, kIdleInk); });
+    screen(dl, a, b, kIdleTint, [&] {
+        if (art >= 0)
+            arcade(dl, art % kIdleArtCount, ImVec2(a.x + px(4), a.y + px(4)), ImVec2(b.x - px(4), b.y - px(4)), time, kIdleInk);
+    });
 }
 
 // Screen geometry shared by the modules.
@@ -782,9 +787,18 @@ PerformanceView::PerformanceView() {
     std::array<std::uint8_t, kIdleArtCount> arts{};
     for (std::size_t i = 0; i < arts.size(); ++i)
         arts[i] = static_cast<std::uint8_t>(i);
-    for (auto& channel : idleArt_) {
+    // Each channel on its own: the games of its boxes (all different), and the
+    // two boxes of four that play theirs, never the same pair as the channel before.
+    for (std::size_t c = 0; c < idleArt_.size(); ++c) {
         std::shuffle(arts.begin(), arts.end(), random);
-        std::copy_n(arts.begin(), channel.size(), channel.begin());
+        std::copy_n(arts.begin(), idleArt_[c].size(), idleArt_[c].begin());
+        std::uint8_t plays = 0;
+        do {
+            std::array<int, 4> boxes{0, 1, 2, 3};
+            std::shuffle(boxes.begin(), boxes.end(), random);
+            plays = static_cast<std::uint8_t>((1u << boxes[0]) | (1u << boxes[1]));
+        } while (c > 0 && plays == idlePlays_[c - 1]);
+        idlePlays_[c] = plays;
     }
 }
 
@@ -3542,8 +3556,10 @@ void PerformanceView::drawTouchpad(const Mapping& m, const LiveState& live, floa
         st.locked = st.locked || ls.locked;
         st.length = std::max(st.length, ls.length);
     }
-    if (laneCount == 0) {
-        text(dl, gMedium, px(11), x + w * 0.5f, (boxTop + boxBottom) * 0.5f, T::kDim, "touchpad off", H::Center, V::Middle);
+    if (laneCount == 0) {  // both fingers off: the screen all the same, and why it waits
+        drawLoopPanel(dl, x, w, loopY, boxBottom, LoopStatus{}, m.loops[2].playback, lanes, 0, fingerColors[0], artFor(live.channel, 3), "", "##touchloop",
+                      "fingers", static_cast<int>(LoopSource::Finger1));
+        text(dl, gMedium, px(10), x + w * 0.5f, boxBottom - px(14), alpha(T::kLabel, 0.8f), "touchpad off", H::Center, V::Middle);
         return;
     }
     const int shown = loops[0]->status.state != LoopStatus::State::Empty ? 0 : 1;

@@ -162,6 +162,7 @@ public:
         chainNames_ = names;
     }
     static std::string chainLetter(int chain) { return std::string(1, static_cast<char>('A' + chain)); }
+
     // Edit mode: a cursor on the controls, the lanes and the piano roll of the
     // main view, drawn by the next draw(). moveFocus goes to the nearest one
     // that way; activateFocus clicks it at the next draw (opens its window,
@@ -368,11 +369,15 @@ private:
         bool sounding = true;
     };
     std::deque<RollNote> rollNotes_;
-    // The animation of each empty LOOP box (sticks, triggers, touchpad), per
-    // channel: drawn at random at startup, all different within a channel.
+    // The game of each empty LOOP box (sticks, triggers, touchpad), per
+    // channel, each channel on its own: two boxes of four, drawn at random at
+    // startup (a bit each in idlePlays_), play a game each, two different
+    // games drawn among all of them; the other boxes show their screen still (-1).
     std::array<std::array<std::uint8_t, 4>, 16> idleArt_{};
+    std::array<std::uint8_t, 16> idlePlays_{};
     int artFor(int channel, int box) const {
-        return idleArt_[static_cast<std::size_t>(std::clamp(channel, 0, 15))][static_cast<std::size_t>(box)];
+        const auto c = static_cast<std::size_t>(std::clamp(channel, 0, 15));
+        return (idlePlays_[c] >> box) & 1u ? idleArt_[c][static_cast<std::size_t>(box)] : -1;
     }
     // Stick positions (-1..1) at the moment each axis froze, per channel; a bit
     // of frozenKnown_ per stick axis once recorded.
