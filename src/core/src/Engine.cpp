@@ -198,10 +198,56 @@ void Engine::sendAt(std::uint64_t at, const MidiMessage& message) {
 }
 
 void Engine::emit(const MidiMessage& message, bool fromLoop) {
-    sink_.send(message);
     const int kind = message.bytes[0] & 0xF0;
+    if (fromLoop && kind >= 0x80 && kind < 0xF0) {  // a loop's message: not from a channel muted or out of the solo
+        const int channel = message.bytes[0] & 0x0F;
+        auto& sounding = loopSounding_[static_cast<std::size_t>(channel)];
+        const auto note = static_cast<std::size_t>(message.bytes[1] & 0x7F);
+        const bool noteOff = kind == 0x80 || (kind == 0x90 && message.bytes[2] == 0);
+        if (noteOff && sounding.test(note))
+            sounding.reset(note);
+        else if (silenced(channel))
+            return;
+        else if (kind == 0x90 && !noteOff)
+            sounding.set(note);
+    }
+    sink_.send(message);
     if (observer_ && (kind == 0x90 || kind == 0x80))
         observer_->noteSent(message.bytes[0] & 0x0F, message.bytes[1], kind == 0x90 ? message.bytes[2] : 0, fromLoop);
+}
+
+void Engine::setMuted(int channel, bool on) {
+    if (channel < 0 || channel >= kChannelCount)
+        return;
+    const auto bit = static_cast<std::uint16_t>(1u << channel);
+    muted_ = static_cast<std::uint16_t>(on ? muted_ | bit : muted_ & ~bit);
+    releaseSilenced();
+}
+
+void Engine::setSoloed(int channel, bool on) {
+    if (channel < 0 || channel >= kChannelCount)
+        return;
+    const auto bit = static_cast<std::uint16_t>(1u << channel);
+    soloed_ = static_cast<std::uint16_t>(on ? soloed_ | bit : soloed_ & ~bit);
+    releaseSilenced();
+}
+
+void Engine::setMuteSolo(std::uint16_t muted, std::uint16_t soloed) {
+    muted_ = muted;
+    soloed_ = soloed;
+    releaseSilenced();
+}
+
+// The notes the loops of a channel now silenced still sound end.
+void Engine::releaseSilenced() {
+    for (int channel = 0; channel < kChannelCount; ++channel) {
+        auto& sounding = loopSounding_[static_cast<std::size_t>(channel)];
+        if (!silenced(channel) || sounding.none())
+            continue;
+        for (std::size_t note = 0; note < sounding.size(); ++note)
+            if (sounding.test(note))
+                emit(MidiMessage::noteOff(channel, static_cast<int>(note)), true);
+    }
 }
 
 void Engine::sendNow(const MidiMessage& message) {

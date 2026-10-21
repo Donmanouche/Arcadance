@@ -520,6 +520,10 @@ private:
     std::string bindingName(ActionType type, const char* fallback) const;
     int sessionSlot_ = 0, sessionChannel_ = 0;  // sessionSlot_ kClipSlots: the cursor is in the chain
     int chainCursor_ = 0;  // its step there (kChainSteps: the CHAIN cell)
+    int sessionButton_ = -1;  // the cursor on the stop (0), mute (1) or solo (2) button under the clips; -1: not there
+    void sessionButtonEvent(Engine::SessionEvent e, const LiveState& live);
+    void toggleMute(int channel, const LiveState& live) { runtime_->setMuted(channel, ((live.muted >> channel) & 1u) == 0); }
+    void toggleSolo(int channel, const LiveState& live) { runtime_->setSoloed(channel, ((live.soloed >> channel) & 1u) == 0); }
     std::array<int, kChannelCount> shownChain_{};  // the chain the session screen shows, per channel
     PerformanceView::ChainNames chainNames_;  // kept in the session
     // The cursor in the chain: L3 (`press`), R3 (`clear`), the right stick (`clipSteps` up / down, `repeatSteps` left / right).
@@ -1309,9 +1313,7 @@ void GuiApp::draw() {
         bg->AddRectFilled(ImVec2(x0, pagePos.y), ImVec2(x1, y1),
                           lk == PerformanceView::Look::Classic ? PerformanceView::Theme::kTopBar
                           : lk == PerformanceView::Look::PhosphorGreen ? IM_COL32(4, 7, 11, 255) : IM_COL32(0x1E, 0x21, 0x25, 255));
-        if (lk == PerformanceView::Look::PhosphorGreen) {  // a neon line under the bar, a floor grid in perspective
-            bg->AddLine(ImVec2(x0, y1), ImVec2(x1, y1), IM_COL32(0x3C, 0xD8, 0xFF, 160), 1.5f);
-            bg->AddLine(ImVec2(x0, y1 + 1), ImVec2(x1, y1 + 1), IM_COL32(0x3C, 0xD8, 0xFF, 40), 5.0f);
+        if (lk == PerformanceView::Look::PhosphorGreen) {  // a floor grid in perspective
             const float horizon = pagePos.y + page.y * 0.42f, bottom = pagePos.y + page.y, cx = pagePos.x + page.x * 0.5f;
             for (int k = 1; k < 14; ++k) {
                 const float t = static_cast<float>(k) / 14.0f, y = horizon + (bottom - horizon) * t * t;
@@ -1455,7 +1457,9 @@ void GuiApp::sessionEvent(Engine::SessionEvent e, const LiveState& live) {
         e = E::Menu;
     if (e == E::Menu) {  // the menu of the clip, step or end under the cursor
         using K = PerformanceView::MenuTarget::Kind;
-        if (sessionSlot_ < Engine::kClipSlots)
+        if (sessionButton_ >= 0)
+            openMenu({K::Channel, sessionChannel_}, live, true, {});
+        else if (sessionSlot_ < Engine::kClipSlots)
             openMenu({K::Clip, sessionChannel_, sessionSlot_}, live, true, {});
         else if (chainCursor_ < Engine::kChainSteps)
             openMenu({K::Step, sessionChannel_, chainCursor_}, live, true, {});
@@ -1471,14 +1475,16 @@ void GuiApp::sessionEvent(Engine::SessionEvent e, const LiveState& live) {
         chainEvent(e, live);
         return;
     }
+    if (sessionButton_ >= 0) {  // on the stop, mute and solo buttons
+        sessionButtonEvent(e, live);
+        return;
+    }
     switch (e) {
     case E::Up: moveSessionCursor(sessionChannel_, sessionSlot_ - 1, live); break;
     case E::Down:
-        if (sessionSlot_ == Engine::kClipSlots - 1) {  // past the last clip: into the chain
-            const LiveState::Chains& chains = live.chains[static_cast<std::size_t>(sessionChannel_)];
-            sessionSlot_ = Engine::kClipSlots;
-            chainCursor_ = chains.at >= 0 && chains.playing == shownChain(sessionChannel_) ? chains.at : 0;
-        } else {
+        if (sessionSlot_ == Engine::kClipSlots - 1)  // past the last clip: the stop button
+            sessionButton_ = 0;
+        else {
             moveSessionCursor(sessionChannel_, sessionSlot_ + 1, live);
         }
         break;
@@ -1495,6 +1501,56 @@ void GuiApp::sessionEvent(Engine::SessionEvent e, const LiveState& live) {
     }
 }
 
+// The buttons under a column: left and right go from one to the next (and
+// on to the next channel's), up back to the clips, down into the chain.
+void GuiApp::sessionButtonEvent(Engine::SessionEvent e, const LiveState& live) {
+    using E = Engine::SessionEvent;
+    const int ch = sessionChannel_;
+    switch (e) {
+    case E::Up:
+        sessionButton_ = -1;
+        moveSessionCursor(ch, Engine::kClipSlots - 1, live);
+        break;
+    case E::Down: {
+        const LiveState::Chains& chains = live.chains[static_cast<std::size_t>(ch)];
+        sessionButton_ = -1;
+        sessionSlot_ = Engine::kClipSlots;
+        chainCursor_ = chains.at >= 0 && chains.playing == shownChain(ch) ? chains.at : 0;
+        break;
+    }
+    case E::Left:
+        if (sessionButton_ > 0) {
+            --sessionButton_;
+        } else {
+            moveSessionCursor((ch + kChannelCount - 1) % kChannelCount, sessionSlot_, live);
+            sessionButton_ = 2;
+        }
+        break;
+    case E::Right:
+        if (sessionButton_ < 2) {
+            ++sessionButton_;
+        } else {
+            moveSessionCursor((ch + 1) % kChannelCount, sessionSlot_, live);
+            sessionButton_ = 0;
+        }
+        break;
+    case E::ValueLeft:
+    case E::ValueRight:
+        moveSessionCursor((ch + (e == E::ValueRight ? 1 : kChannelCount - 1)) % kChannelCount, sessionSlot_, live);
+        break;
+    case E::Press:
+    case E::PressRight:
+        if (sessionButton_ == 0)
+            runtime_->stopClip(ch);
+        else if (sessionButton_ == 1)
+            toggleMute(ch, live);
+        else
+            toggleSolo(ch, live);
+        break;
+    default: break;
+    }
+}
+
 void GuiApp::chainEvent(Engine::SessionEvent e, const LiveState& live) {
     using E = Engine::SessionEvent;
     const int ch = sessionChannel_;
@@ -1506,7 +1562,10 @@ void GuiApp::chainEvent(Engine::SessionEvent e, const LiveState& live) {
     const auto k = static_cast<std::size_t>(std::min(chainCursor_, Engine::kChainSteps - 1));
     const int clip = chain.clip[k], repeats = chain.repeats[k];
     switch (e) {
-    case E::Up: moveSessionCursor(ch, Engine::kClipSlots - 1, live); break;  // back to the clips
+    case E::Up:  // back to the buttons under the clips
+        moveSessionCursor(ch, Engine::kClipSlots - 1, live);
+        sessionButton_ = 0;
+        break;
     case E::Left: chainCursor_ = std::max(chainCursor_ - 1, 0); break;
     case E::Right: chainCursor_ = std::min(chainCursor_ + 1, Engine::kChainSteps); break;
     case E::Press:  // Select: start there; on the step playing, go on; on the CHAIN cell, play or stop the chain
@@ -1918,7 +1977,7 @@ namespace {
 enum MenuId : int {
     kLaunch, kStop, kRecordHere, kDuplicate, kAddToChain, kClearClip,
     kStartHere, kRandom, kInsertStep, kDeleteStep, kEmptyStep,
-    kChannelStop, kChainOn, kChainOff, kThenLoop, kThenStop, kThenNext, kPrevChain, kNextChain, kDuplicateChain, kRenameChain, kClearChain,
+    kChannelStop, kChannelMute, kChannelSolo, kChainOn, kChainOff, kThenLoop, kThenStop, kThenNext, kPrevChain, kNextChain, kDuplicateChain, kRenameChain, kClearChain,
     kLock, kUnlock, kClearLoop, kResetShape, kSettings, kEditNotes, kPrevChannel, kNextChannel, kRename,
     kSongPlay, kSongStop, kSongLoop, kSectionRename, kSectionFit, kSectionDuplicate, kSectionInsert, kSectionUp, kSectionDown, kSectionDelete,
     kCellEdit, kCellClear, kCellCopy, kCellPaste,
@@ -1979,6 +2038,8 @@ void GuiApp::openMenu(const PerformanceView::MenuTarget& t, const LiveState& liv
     case K::Channel:
         menu.title = "CHANNEL " + std::to_string(t.channel + 1);
         add("Stop", kChannelStop, ((live.clipsPlaying >> t.channel) & 1u) != 0);
+        add(((live.muted >> t.channel) & 1u) ? "Unmute" : "Mute", kChannelMute);
+        add(((live.soloed >> t.channel) & 1u) ? "Solo off" : "Solo", kChannelSolo);
         if (chains.at >= 0)
             add("Chain off", kChainOff);
         else
@@ -2232,6 +2293,8 @@ void GuiApp::runMenu(const PerformanceView::MenuTarget& t, int id, const LiveSta
         break;
     case kEmptyStep: setChainStep(ch, t.slot, -1, 1); break;
     case kChannelStop: runtime_->stopClip(ch); break;
+    case kChannelMute: toggleMute(ch, live); break;
+    case kChannelSolo: toggleSolo(ch, live); break;
     case kChainOn: runtime_->chainGoTo(ch, shown, 0); break;
     case kChainOff: runtime_->stopChain(ch); break;
     case kThenLoop: runtime_->setChainThen(ch, shown, Engine::kThenLoop); break;
@@ -2524,8 +2587,8 @@ void GuiApp::drawHelpOverlay() {
     std::vector<std::pair<std::vector<std::string>, std::string>> rows;
     const std::string closeHint = "let go of " + mode + " to close";
     if (sessionView_) {
-        rows = {{{"Left stick", "D-pad"}, "move the cursor (down past the clips: the chain)"},
-                {select, "launch or stop the clip; in the chain: start there, or go on; on CHAIN: play or stop it"},
+        rows = {{{"Left stick", "D-pad"}, "move the cursor (down past the clips: stop, mute, solo, then the chain)"},
+                {select, "launch or stop the clip; on stop, M, S: press it; in the chain: start there, or go on; on CHAIN: play or stop it"},
                 {{menu.empty() ? "Menu" : menu}, menu.empty() ? "the menu " + unset : "the menu: duplicate, clear, add to the chain\xE2\x80\xA6"},
                 {{"Right stick"}, "left / right: the channel; in the chain: the clip (up, down), its repeats; on CHAIN: another chain (up, down), what comes after it"},
                 {{rec}, "record into the slot under the cursor"},
@@ -3046,9 +3109,16 @@ void GuiApp::drawPerformance(const LiveState& live) {
     if (sessionView_) {
         // A clip clicked: the cursor goes there, its channel becomes the active
         // one, and Record records there; a clip is launched, an empty slot only chosen.
-        if (const auto act = performance_.drawSession(live, sessionSlot_, chainCursor_)) {
+        const bool onButtons = sessionButton_ >= 0 && sessionSlot_ < Engine::kClipSlots;
+        if (const auto act = performance_.drawSession(live, onButtons ? -1 : sessionSlot_, chainCursor_, onButtons ? sessionButton_ : -1)) {
             using Kind = PerformanceView::SessionAction::Kind;
-            if (act->kind == Kind::ChainSet) {
+            if (act->kind != Kind::Mute && act->kind != Kind::Solo && act->kind != Kind::Stop)
+                sessionButton_ = -1;
+            if (act->kind == Kind::Mute) {
+                runtime_->setMuted(act->channel, act->slot != 0);
+            } else if (act->kind == Kind::Solo) {
+                runtime_->setSoloed(act->channel, act->slot != 0);
+            } else if (act->kind == Kind::ChainSet) {
                 setChainStep(act->channel, act->slot, act->clip, act->repeats);
             } else if (act->kind == Kind::ChainCursor) {
                 sessionSlot_ = Engine::kClipSlots;
@@ -4116,6 +4186,7 @@ void GuiApp::openSession(const std::string& name) {
             shownChain_[static_cast<std::size_t>(c.channel)] = c.index;
     }
     runtime_->loadSessionChains(std::move(session.chains));
+    runtime_->setMuteSolo(session.muted, session.soloed);
     runtime_->stopSong();
     song_ = std::move(session.song);
     songCursor_ = {};
@@ -4129,6 +4200,7 @@ void GuiApp::newSong() {
     runtime_->transportStop();
     runtime_->loadSessionLoops({});
     runtime_->loadSessionChains({});
+    runtime_->setMuteSolo(0, 0);
     shownChain_.fill(0);
     for (auto& names : chainNames_)
         names.fill({});
@@ -4164,6 +4236,8 @@ bool GuiApp::saveSessionAs(const std::string& name) {
     session.tempo = now.clock != ClockMode::Free ? now.tempo : settings_.tempo;
     session.loops = std::move(*loops);
     session.song = song_;
+    session.muted = now.muted;
+    session.soloed = now.soloed;
     for (int ch = 0; ch < kChannelCount; ++ch) {  // the chains that hold something, or are shown
         const auto c = static_cast<std::size_t>(ch);
         for (int n = 0; n < Engine::kChains; ++n) {

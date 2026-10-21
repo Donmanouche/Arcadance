@@ -98,6 +98,7 @@ struct LiveState {
     std::array<Clip, midipad::kChannelCount * midipad::Engine::kClipSlots> clips{};
     std::array<std::int8_t, midipad::kChannelCount> currentClip{}, queuedClip{}, recordSlot{};
     std::uint16_t clipsPlaying = 0;
+    std::uint16_t muted = 0, soloed = 0;  // Engine::setMuted, setSoloed: a bit per channel
     std::array<float, midipad::kChannelCount> clipProgress{};
     // A chain: its steps (clip -1: empty; repeats 0: forever) and what comes
     // after its last step (Engine::kThenLoop, kThenStop or another chain).
@@ -233,6 +234,9 @@ public:
     void playSong(int section);
     void stopSong();
     void setSongLoop(bool on);
+    void setMuted(int channel, bool on);  // Engine::setMuted
+    void setSoloed(int channel, bool on);  // Engine::setSoloed
+    void setMuteSolo(std::uint16_t muted, std::uint16_t soloed);  // Engine::setMuteSolo
     // See Engine::stretchLoop, amplifyLoop and setAxisLoopLength, on the
     // active channel; axis -1: both.
     void stretchLoop(int source, int axis, int steps);
@@ -287,7 +291,7 @@ private:
     struct Command {
         enum class Kind : std::uint8_t {
             SetChannel, Panic, ClearLoop, ToggleLock, ChainStep, ChainThen, ChainGo, ChainStop, ClearClip, CopyClip, ResetShape, LaunchClip, RecordSlot, StretchLoop, AmplifyLoop, AxisLength, PauseLoops, PlayLoops,
-            SaveLoops, LoadLoops, LoadChains, LoadSong, SongPlay, SongStop, SongLoop, EditNotes
+            SaveLoops, LoadLoops, LoadChains, LoadSong, SongPlay, SongStop, SongLoop, Mute, Solo, MuteSolo, EditNotes
         } kind;
         int channel = 0;
         int value = 0;
@@ -348,6 +352,7 @@ private:
     std::atomic<std::uint64_t> sounding_{0};
     std::atomic<std::uint16_t> loopChannels_{0};
     std::atomic<bool> loopsPaused_{false};
+    std::atomic<std::uint16_t> muted_{0}, soloed_{0};
     std::atomic<bool> stretchHeld_{false};
     std::atomic<std::uint8_t> amplitudes_{0};  // bits: left stick, right stick, fingers
     std::atomic<int> key_{-1};  // root * 256 + scale, -1: none

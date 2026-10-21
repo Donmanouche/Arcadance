@@ -97,11 +97,12 @@ public:
     // its arrows or the wheel show another chain (ChainShow), a click plays
     // or stops it. The CHAIN button starts or stops it too.
     struct SessionAction {
-        enum class Kind : std::uint8_t { Launch, Stop, Channel, ChainSet, ChainCursor, ChainGo, ChainStop, ChainShow } kind = Kind::Launch;
+        enum class Kind : std::uint8_t { Launch, Stop, Mute, Solo, Channel, ChainSet, ChainCursor, ChainGo, ChainStop, ChainShow } kind = Kind::Launch;
         int channel = 0, slot = 0;  // ChainSet / ChainCursor / ChainGo: slot is the step; ChainShow: the chain
         int clip = -1, repeats = 1;  // ChainSet
     };
-    std::optional<SessionAction> drawSession(const LiveState& live, int cursorSlot, int chainCursor);
+    // `button`: the cursor on the active channel's stop (0), mute (1) or solo (2) button; -1: not there.
+    std::optional<SessionAction> drawSession(const LiveState& live, int cursorSlot, int chainCursor, int button = -1);
     // The song screen: on top, the whole song at scale, in real time (its
     // sections, a lane per channel, the playhead); under it a row per
     // section (its name, its length; "+ section" after the last) and a

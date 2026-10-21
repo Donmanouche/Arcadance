@@ -64,6 +64,15 @@ Json sessionToJson(const Session& session) {
     j["channel"] = session.channel + 1;
     if (session.tempo > 0)
         j["tempo"] = session.tempo;
+    // The channels muted and soloed, numbered from 1 (none: no field).
+    for (const auto& [name, bits] : {std::pair{"muted", session.muted}, std::pair{"soloed", session.soloed}}) {
+        Json channels = Json::array();
+        for (int c = 0; c < 16; ++c)
+            if ((bits >> c) & 1u)
+                channels.push_back(c + 1);
+        if (!channels.empty())
+            j[name] = std::move(channels);
+    }
     if (session.key)
         j["key"] = Json{{"root", session.key->root}, {"scale", std::string(session.key->type().id)}};
     else
@@ -182,6 +191,11 @@ Session sessionFromJson(const Json& j) {
     s.tempo = readNumber(j, "tempo", "session");
     if (s.tempo != 0 && (s.tempo < 20 || s.tempo > 999))
         fail("session.tempo", "expected 20 to 999 beats a minute");
+    for (const auto& [name, bits] : {std::pair{"muted", &s.muted}, std::pair{"soloed", &s.soloed}})
+        if (j.contains(name) && j[name].is_array())
+            for (const Json& c : j[name])
+                if (c.is_number_integer() && c.get<int>() >= 1 && c.get<int>() <= 16)
+                    *bits = static_cast<std::uint16_t>(*bits | (1u << (c.get<int>() - 1)));
     if (j.contains("key") && j["key"].is_object()) {
         const Json& k = j["key"];
         const int root = readInt(k, "root", 0, 11, 0, "session.key");

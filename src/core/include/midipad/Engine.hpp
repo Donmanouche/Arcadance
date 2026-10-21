@@ -249,6 +249,19 @@ public:
     void stopSong();
     void setSongLoop(bool on) { songLoop_ = on; }
     bool songLoop() const { return songLoop_; }
+
+    // Mute and solo, per channel. A channel muted, or not soloed while
+    // another one is, goes on playing its loops, clips, chains and song in
+    // time but sends none of their messages (what is played live still
+    // sounds); the notes its loops were sounding end at once.
+    void setMuted(int channel, bool on);
+    void setSoloed(int channel, bool on);
+    void setMuteSolo(std::uint16_t muted, std::uint16_t soloed);  // every channel's at once
+    std::uint16_t mutedChannels() const { return muted_; }
+    std::uint16_t soloedChannels() const { return soloed_; }
+    bool silenced(int channel) const {
+        return ((muted_ >> channel) & 1u) != 0 || (soloed_ != 0 && ((soloed_ >> channel) & 1u) == 0);
+    }
     bool songPlaying() const { return songOn_; }
     int songSection() const { return songOn_ ? songSection_ : -1; }
     double songBeat() const;  // in the section playing, beats; below 0 while waiting for its bar
@@ -632,6 +645,9 @@ private:
     };
     Song song_;
     bool songOn_ = false, songLoop_ = false;
+    std::uint16_t muted_ = 0, soloed_ = 0;
+    std::array<std::bitset<128>, 16> loopSounding_{};  // the loops' notes sent and not yet ended, per channel
+    void releaseSilenced();
     int songSection_ = 0;
     double songStart_ = 0;  // where the section playing starts, on songNow()
     std::vector<SongEvent> songEvents_;

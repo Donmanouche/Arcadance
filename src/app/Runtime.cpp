@@ -219,6 +219,9 @@ void Runtime::setSong(midipad::Song song) {
 void Runtime::playSong(int section) { commands_.push({Command::Kind::SongPlay, 0, section}); }
 void Runtime::stopSong() { commands_.push({Command::Kind::SongStop}); }
 void Runtime::setSongLoop(bool on) { commands_.push({Command::Kind::SongLoop, 0, on ? 1 : 0}); }
+void Runtime::setMuted(int channel, bool on) { commands_.push({Command::Kind::Mute, channel, on ? 1 : 0}); }
+void Runtime::setSoloed(int channel, bool on) { commands_.push({Command::Kind::Solo, channel, on ? 1 : 0}); }
+void Runtime::setMuteSolo(std::uint16_t muted, std::uint16_t soloed) { commands_.push({Command::Kind::MuteSolo, 0, muted, -1, soloed}); }
 
 void Runtime::loadSessionChains(std::vector<midipad::SessionChain> chains) {
     {
@@ -281,6 +284,8 @@ LiveState Runtime::live() const {
     s.sounding = sounding_.load(std::memory_order_relaxed);
     s.loopChannels = loopChannels_.load(std::memory_order_relaxed);
     s.loopsPaused = loopsPaused_.load(std::memory_order_relaxed);
+    s.muted = muted_.load(std::memory_order_relaxed);
+    s.soloed = soloed_.load(std::memory_order_relaxed);
     s.stretchHeld = stretchHeld_.load(std::memory_order_relaxed);
     const std::uint8_t amplitudes = amplitudes_.load(std::memory_order_relaxed);
     s.stickAmplitudes = {(amplitudes & 1u) != 0, (amplitudes & 2u) != 0};
@@ -373,6 +378,8 @@ void Runtime::publish(const GamepadInput& gamepad, const Engine& engine) {
     sounding_.store(engine.soundingSlots(), std::memory_order_relaxed);
     loopChannels_.store(engine.channelsWithLoops(), std::memory_order_relaxed);
     loopsPaused_.store(engine.loopsPaused(), std::memory_order_relaxed);
+    muted_.store(engine.mutedChannels(), std::memory_order_relaxed);
+    soloed_.store(engine.soloedChannels(), std::memory_order_relaxed);
     stretchHeld_.store(engine.stretchHeld(), std::memory_order_relaxed);
     amplitudes_.store(static_cast<std::uint8_t>((engine.stickAmplitudes(0) ? 1u : 0u) | (engine.stickAmplitudes(1) ? 2u : 0u) |
                                                 (engine.fingerAmplitudes() ? 4u : 0u)),
@@ -653,6 +660,12 @@ void Runtime::run(std::stop_token stop, Options options, std::shared_ptr<const P
                 engine.stopSong();
             } else if (command->kind == Command::Kind::SongLoop) {
                 engine.setSongLoop(command->value != 0);
+            } else if (command->kind == Command::Kind::Mute) {
+                engine.setMuted(command->channel, command->value != 0);
+            } else if (command->kind == Command::Kind::Solo) {
+                engine.setSoloed(command->channel, command->value != 0);
+            } else if (command->kind == Command::Kind::MuteSolo) {
+                engine.setMuteSolo(static_cast<std::uint16_t>(command->value), static_cast<std::uint16_t>(command->extra));
             } else if (command->kind == Command::Kind::LoadChains) {
                 std::lock_guard lock(sessionMutex_);
                 engine.loadSessionChains(chainsToLoad_);

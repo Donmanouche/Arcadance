@@ -1726,7 +1726,7 @@ void PerformanceView::drawPianoRoll(const Mapping& m, const LiveState& live, flo
 
 // The session screen: a column per channel, a row per clip slot, a stop at
 // the bottom of each column; the clips with what they hold and their state.
-std::optional<PerformanceView::SessionAction> PerformanceView::drawSession(const LiveState& live, int cursorSlot, int chainCursor) {
+std::optional<PerformanceView::SessionAction> PerformanceView::drawSession(const LiveState& live, int cursorSlot, int chainCursor, int button) {
     gMedium = fonts_.medium ? fonts_.medium : ImGui::GetFont();
     gBold = fonts_.bold ? fonts_.bold : gMedium;
     gCondensed = fonts_.condensed ? fonts_.condensed : gBold;
@@ -1889,9 +1889,37 @@ std::optional<PerformanceView::SessionAction> PerformanceView::drawSession(const
                 }
             }
         }
-        // The stop at the bottom: blinking while waiting for the end of the turn.
+        // A channel muted, or out of the solo, sends nothing from its clips: they dim.
         const float sy = origin.y + headH + cellH * kSlots + px(2);
-        const ImVec2 sa(x + px(6), sy), sb(x + colW - px(6), sy + stopH - px(2));
+        const bool muted = ((live.muted >> ch) & 1u) != 0, soloed = ((live.soloed >> ch) & 1u) != 0;
+        if (muted || (live.soloed != 0 && !soloed))
+            dl->AddRectFilled(ImVec2(x + px(3), origin.y + headH), ImVec2(x + colW - px(3), sy - px(2)), IM_COL32(0, 0, 0, muted ? 150 : 95), px(4));
+        // At the bottom: the stop (blinking while waiting for the end of the turn), then M and S.
+        const float msW = px(34), gapB = px(4);
+        const float stopW = colW - px(12) - 2 * (msW + gapB);
+        for (int k = 0; k < 2; ++k) {
+            const bool on = k == 0 ? muted : soloed;
+            const ImU32 tone = k == 0 ? IM_COL32(0xD9, 0xA0, 0x48, 255) : IM_COL32(0x6F, 0xB8, 0xD6, 255);  // amber, blue: muted tones
+            const float bx = x + px(6) + stopW + gapB + static_cast<float>(k) * (msW + gapB);
+            const ImVec2 ba(bx, sy), bb(bx + msW, sy + stopH - px(2));
+            ImGui::SetCursorScreenPos(ba);
+            if (ImGui::InvisibleButton(k == 0 ? "##mute" : "##solo", ImVec2(msW, bb.y - ba.y)))
+                action = SessionAction{k == 0 ? SessionAction::Kind::Mute : SessionAction::Kind::Solo, ch, on ? 0 : 1};
+            const bool hovered = ImGui::IsItemHovered();
+            ImGui::SetItemTooltip(k == 0 ? "Mute: its clips, chains and song play on, silent" : "Solo: only the channels in solo sound");
+            dl->AddRectFilled(ba, bb, on ? alpha(tone, 0.32f) : IM_COL32(0x28, 0x2A, 0x2E, 255), px(5));
+            dl->AddRect(ba, bb, on ? alpha(tone, 0.8f) : hovered ? T::kControlBorder : IM_COL32(0x3A, 0x3E, 0x45, 255), px(5), px(1));
+            text(dl, gBold, px(12), (ba.x + bb.x) * 0.5f, (ba.y + bb.y) * 0.5f, on ? mix(tone, T::kText, 0.45f) : T::kLabel, k == 0 ? "M" : "S", H::Center, V::Middle);
+            if (active && button == k + 1) {
+                dl->AddRect(ImVec2(ba.x - px(3), ba.y - px(3)), ImVec2(bb.x + px(3), bb.y + px(3)), T::kCyan, px(7), px(2.5f));
+                sessionCursorBox_ = {ba, bb};
+            }
+        }
+        const ImVec2 sa(x + px(6), sy), sb(x + px(6) + stopW, sy + stopH - px(2));
+        if (active && button == 0) {
+            dl->AddRect(ImVec2(sa.x - px(3), sa.y - px(3)), ImVec2(sb.x + px(3), sb.y + px(3)), T::kCyan, px(7), px(2.5f));
+            sessionCursorBox_ = {sa, sb};
+        }
         ImGui::SetCursorScreenPos(sa);
         const bool stopClicked = ImGui::InvisibleButton("##stop", ImVec2(sb.x - sa.x, sb.y - sa.y));
         const bool stopHovered = ImGui::IsItemHovered();

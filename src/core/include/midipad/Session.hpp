@@ -71,6 +71,7 @@ struct Session {
     std::vector<SessionLoop> loops;
     std::vector<SessionChain> chains;
     Song song;
+    std::uint16_t muted = 0, soloed = 0;  // a bit per channel (Engine::setMuted, setSoloed)
 };
 
 class SessionError : public std::runtime_error {
