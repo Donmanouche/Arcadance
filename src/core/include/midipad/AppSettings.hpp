@@ -54,6 +54,9 @@ struct AppSettings {
     // On a scaled screen (Wayland), open the window without high pixel
     // density: the compositor stretches it; fewer pixels, a little less sharp.
     bool standardResolution = false;
+    // The look of the window: the classic one, or a phosphor screen's.
+    enum class Theme { Default, PhosphorBlue, PhosphorGreen };
+    Theme theme = Theme::Default;
     // The buttons driving the session and edit screens (Engine::setNavButtons),
     // as Button values; -1: none (select: L3 and R3).
     int navSelect = -1, navMenu = -1, navBack = -1;

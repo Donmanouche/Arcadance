@@ -42,7 +42,8 @@ Arcadance runs on Linux; Windows and macOS versions are planned.
   selection in time and pitch (onto the scale if you like), change their
   length, delete them, shorten or lengthen the loop, all while it plays.
 - **Sessions.** Save every channel's clips, chains, the song, the preset, the
-  tonality and the tempo in one file, and open them again later.
+  tonality and the tempo in one file, and open them again later; **New Song**
+  starts an empty one (after offering to save the one open).
 - **Chords made easy.** Named chords (`Fm9`, `Dbmaj7#11`, `Eb9sus4`…) with octave,
   inversion and doubled bass root; choose a tonality and Arcadance offers only
   the notes and chords of the scale. With voice leading, each chord takes the
@@ -75,15 +76,19 @@ Arcadance runs on Linux; Windows and macOS versions are planned.
   (Select and Menu can share one button); hold the Mode button for a help of
   the screen you are on.
 - **Built for the stage.** One window that plays and edits at the same time,
-  a PANIC button, and a mode without any window.
+  one Play / Stop for the clips and the song, a PANIC button, and a mode
+  without any window.
+- **Three themes.** The default one, or Phosphor Blue and Phosphor Green:
+  lines on black, in the light tint of an 80s monochrome screen.
 
 ## Loops you can see
 
 Each module shows its loops as lanes, one per axis, each with its own length,
 playhead and controller number. Reshape them while they play, from the
-controller (Shift and a stick) or with the mouse wheel. A LOOP panel with
-nothing recorded yet plays a little 80s arcade game on its grey screen
-(Pac-Man, Tetris, Asteroids, Q*bert…), so you see at a glance which ones are free.
+controller (Shift and a stick) or with the mouse wheel. The LOOP panels with
+nothing recorded yet show a grey screen; on two of them, chosen at random for
+each channel, a little 80s arcade game plays (Pac-Man, Tetris, Asteroids,
+Q*bert…), so you see at a glance which ones are free.
 
 ![The LOOP panels: a stick's X stretched, its Y narrowed and in steps; R2 widened](docs/media/lanes.png)
 
@@ -97,7 +102,9 @@ nothing recorded yet plays a little 80s arcade game on its grey screen
 
 Each channel keeps up to **eight clips**, each a full set of its loops (notes,
 sticks, triggers, touchpad). The **session screen** shows them all, a column
-per channel, and plays them live:
+per channel, and plays them live. Each clip shows its name, a light that is
+green while it plays, its notes (or its movement when it has none) and how far
+it is in its turn:
 
 - Open it with a controller button of your choice (the PS button by default),
   the button with four squares in the top bar, or Tab.
@@ -141,8 +148,10 @@ or the SONG button) lays your clips and chains out in time:
   opens, or add a clip or a chain to the song from its menu in the session
   screen. After its repeats an item is silent, or loops on until the next one.
 - The top of the screen shows the whole song at scale, a lane per channel,
-  with a playhead in real time; play it from any section, at the next bar,
-  or loop the section playing.
+  with a playhead in real time. The top bar's ▶ plays the song from the
+  section chosen (on the session screen, it plays the clips); ■ stops it.
+  Select on a section's name plays from there at the next bar; LOOP SECTION
+  loops the section playing.
 - Everything works from the controller (cursor, Select, Menu, the right stick
   for lengths and repeats) and with the mouse (click, drag, wheel).
 
@@ -197,9 +206,9 @@ The window is an animated view built for the stage, which plays while it edits.
   channel, a click renames it).
 - A strip of pads for the buttons (✕ ○ □ △ in PlayStation colours): they flash
   on every press and stay lit while their note or chord sounds.
-- At the top: the ☰ menu (sessions, Options, About), the preset, ▶ / ■ for
-  the loops, the clock and its tempo, TAP, the session and song screens and
-  PANIC.
+- At the top: the ☰ menu (New Song, sessions, Options, Themes, About), the
+  preset, ▶ / ■ for the clips or the song, the clock and its tempo, TAP, the
+  session and song screens and PANIC.
 
 Click a control (a pad, a D-pad direction, a touchpad zone, a stick, a LOOP
 panel) to set it up in a window over the view, and hear the change at once.
@@ -217,6 +226,9 @@ screen: a root and a scale (major, natural, harmonic and melodic minor, the
 modes, pentatonics, blues, whole tone). Arcadance then offers only the notes of
 the scale and, for chords, every chord of the key, degree by degree. Anything
 outside the scale stays possible, and is flagged.
+
+**Themes** (☰ menu): Default, Phosphor Blue or Phosphor Green; your choice is
+remembered.
 
 **Options** (☰ menu): the MIDI output, the clock and the loops' timing, the
 D-pad's response, humanization, the presets folder and the display.

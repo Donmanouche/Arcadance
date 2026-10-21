@@ -393,6 +393,30 @@ folder and the preset is opened.
 In the window: F11 toggles fullscreen, Ctrl+Q quits.
 )";
 
+// A phosphor screen's look: every colour of the frame turned to its brightness,
+// tinted (a little: the grey mostly kept) green or blue, whiter at the top.
+void phosphor(ImDrawData* data, bool blue) {
+    constexpr float kTint = 0.35f;
+    auto remap = [blue](ImU32 c) {
+        const float r = static_cast<float>(c & 0xFF) / 255.0f, g = static_cast<float>((c >> 8) & 0xFF) / 255.0f,
+                    b = static_cast<float>((c >> 16) & 0xFF) / 255.0f;
+        const float mx = std::max({r, g, b});
+        const float lum = 0.3f * r + 0.59f * g + 0.11f * b;
+        const float d = std::pow(std::clamp((std::max(lum, mx * 0.8f) - 0.13f) / 0.87f, 0.0f, 1.0f), 1.15f);  // the darks to black
+        const float w = std::clamp((d - 0.82f) / 0.18f, 0.0f, 1.0f) * 0.7f;
+        const float tr = 0.25f, tg = blue ? 0.78f : 1.0f, tb = blue ? 1.0f : 0.45f;
+        const float grey = d * 0.95f;
+        auto q = [&](float tint) {
+            const float v = grey + ((tint * (1 - w) + w) * d - grey) * kTint;
+            return static_cast<ImU32>(std::clamp(v, 0.0f, 1.0f) * 255.0f + 0.5f);
+        };
+        return q(tr) | (q(tg) << 8) | (q(tb) << 16) | (c & 0xFF000000u);
+    };
+    for (ImDrawList* list : data->CmdLists)
+        for (ImDrawVert& v : list->VtxBuffer)
+            v.col = remap(v.col);
+}
+
 class GuiApp {
 public:
     explicit GuiApp(GuiOptions options) : options_(std::move(options)) {}
@@ -563,6 +587,11 @@ private:
     void log(const std::string& line);
     void showError(const std::string& message);
     void persistSettings();
+    PerformanceView::Look look() const {
+        return settings_.theme == AppSettings::Theme::PhosphorGreen ? PerformanceView::Look::PhosphorGreen
+             : settings_.theme == AppSettings::Theme::PhosphorBlue  ? PerformanceView::Look::PhosphorBlue
+                                                                    : PerformanceView::Look::Classic;
+    }
     void browseFolder(FolderTarget target, const fs::path& start);
     static void SDLCALL onFolderChosen(void* self, const char* const* files, int filter);
 
@@ -908,12 +937,18 @@ void GuiApp::frame() {
         ImGui::GetIO().DeltaTime = 1.0f / static_cast<float>(options_.fps);
     ImGui::GetIO().BackendFlags |= ImGuiBackendFlags_HasGamepad;  // fed by editEvent, never by the backend
     ImGui::NewFrame();
+    PerformanceView::setLook(look());
     draw();
     ImGui::Render();
+    if (look() != PerformanceView::Look::Classic)
+        phosphor(ImGui::GetDrawData(), look() == PerformanceView::Look::PhosphorBlue);
 
     const ImGuiIO& io = ImGui::GetIO();
     SDL_SetRenderScale(renderer_, io.DisplayFramebufferScale.x, io.DisplayFramebufferScale.y);
-    SDL_SetRenderDrawColor(renderer_, 0x1C, 0x1E, 0x21, 255);  // Theme::kBackground, beside the page
+    if (look() != PerformanceView::Look::Classic)  // black beside the page
+        SDL_SetRenderDrawColor(renderer_, 0x02, 0x03, 0x04, 255);
+    else
+        SDL_SetRenderDrawColor(renderer_, 0x1C, 0x1E, 0x21, 255);  // Theme::kBackground, beside the page
     SDL_RenderClear(renderer_);
     ImGui_ImplSDLRenderer3_RenderDrawData(ImGui::GetDrawData(), renderer_);
     SDL_RenderPresent(renderer_);
@@ -1266,9 +1301,26 @@ void GuiApp::draw() {
     const ImVec2 page(kPageW * pageScale_, kPageH * pageScale_);
     const ImVec2 pagePos(viewport->WorkPos.x + std::max(0.0f, (viewport->WorkSize.x - page.x) * 0.5f),
                          viewport->WorkPos.y + std::max(0.0f, (viewport->WorkSize.y - page.y) * 0.5f));
-    ImGui::GetBackgroundDrawList()->AddRectFilled(ImVec2(viewport->WorkPos.x, pagePos.y),
-                                                  ImVec2(viewport->WorkPos.x + viewport->WorkSize.x, pagePos.y + 50.0f * pageScale_),
-                                                  PerformanceView::Theme::kTopBar);
+    {
+        ImDrawList* bg = ImGui::GetBackgroundDrawList();
+        const float y1 = pagePos.y + 50.0f * pageScale_, x0 = viewport->WorkPos.x, x1 = x0 + viewport->WorkSize.x;
+        const PerformanceView::Look lk = look();
+        bg->AddRectFilled(ImVec2(x0, pagePos.y), ImVec2(x1, y1),
+                          lk == PerformanceView::Look::Classic ? PerformanceView::Theme::kTopBar
+                          : lk == PerformanceView::Look::PhosphorGreen ? IM_COL32(4, 7, 11, 255) : IM_COL32(0x1E, 0x21, 0x25, 255));
+        if (lk == PerformanceView::Look::PhosphorGreen) {  // a neon line under the bar, a floor grid in perspective
+            bg->AddLine(ImVec2(x0, y1), ImVec2(x1, y1), IM_COL32(0x3C, 0xD8, 0xFF, 160), 1.5f);
+            bg->AddLine(ImVec2(x0, y1 + 1), ImVec2(x1, y1 + 1), IM_COL32(0x3C, 0xD8, 0xFF, 40), 5.0f);
+            const float horizon = pagePos.y + page.y * 0.42f, bottom = pagePos.y + page.y, cx = pagePos.x + page.x * 0.5f;
+            for (int k = 1; k < 14; ++k) {
+                const float t = static_cast<float>(k) / 14.0f, y = horizon + (bottom - horizon) * t * t;
+                bg->AddLine(ImVec2(x0, y), ImVec2(x1, y), IM_COL32(0x3C, 0xD8, 0xFF, static_cast<int>(10 + 40 * t)), 1.0f);
+            }
+            for (int k = -12; k <= 12; ++k)
+                bg->AddLine(ImVec2(cx + static_cast<float>(k) * page.x * 0.02f, horizon), ImVec2(cx + static_cast<float>(k) * page.x * 0.16f, bottom),
+                            IM_COL32(0x3C, 0xD8, 0xFF, 34), 1.0f);
+        }
+    }
     ImGui::SetNextWindowPos(pagePos);
     ImGui::SetNextWindowSize(page);
     // No background of its own: the clear colour of each frame is the page's
@@ -2543,7 +2595,8 @@ void GuiApp::drawPerformance(const LiveState& live) {
     const ImVec2 winPos = ImGui::GetWindowPos();
     const float winW = ImGui::GetWindowWidth();
     const float barH = px(50);
-    dl->AddRectFilled(winPos, ImVec2(winPos.x + winW, winPos.y + barH), Theme::kTopBar);
+    if (look() == PerformanceView::Look::Classic)  // a phosphor look's bar is on the background
+        dl->AddRectFilled(winPos, ImVec2(winPos.x + winW, winPos.y + barH), Theme::kTopBar);
     ImGui::SetCursorScreenPos(ImVec2(winPos.x + px(8), winPos.y + px(9)));
     ImGui::PushFont(bold, 13.0f);
 
@@ -2589,6 +2642,16 @@ void GuiApp::drawPerformance(const LiveState& live) {
             overlaySpec_.reset();
         }
         ImGui::Separator();
+        if (ImGui::BeginMenu("Themes")) {
+            static constexpr std::pair<AppSettings::Theme, const char*> kThemes[] = {
+                {AppSettings::Theme::Default, "Default"}, {AppSettings::Theme::PhosphorBlue, "Phosphor Blue"}, {AppSettings::Theme::PhosphorGreen, "Phosphor Green"}};
+            for (const auto& [theme, name] : kThemes)
+                if (ImGui::MenuItem(name, nullptr, settings_.theme == theme) && settings_.theme != theme) {
+                    settings_.theme = theme;
+                    persistSettings();
+                }
+            ImGui::EndMenu();
+        }
         if (ImGui::MenuItem("Fullscreen", "F11", (SDL_GetWindowFlags(window_) & SDL_WINDOW_FULLSCREEN) != 0))
             toggleFullscreen();
         if (ImGui::MenuItem("About…"))

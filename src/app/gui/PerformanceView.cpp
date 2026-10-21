@@ -32,6 +32,9 @@ ImFont* gMedium = nullptr;
 ImFont* gBold = nullptr;
 ImFont* gCondensed = nullptr;
 
+// PerformanceView::Look: 0 classic, 1 green phosphor, 2 blue phosphor.
+int gLook = 0;
+
 ImU32 alpha(ImU32 c, float a) {
     const auto base = static_cast<float>((c >> IM_COL32_A_SHIFT) & 0xFF) / 255.0f;
     const auto value = static_cast<ImU32>(std::clamp(a * base, 0.0f, 1.0f) * 255.0f);
@@ -168,10 +171,48 @@ void led(ImDrawList* dl, ImVec2 c, float r, ImU32 col, bool on) {
     dl->AddCircleFilled(c, r, on ? col : shade(col, 0.35f));
 }
 
+// The phosphor looks' neon, before GuiApp tints it.
+constexpr ImU32 kNeon = IM_COL32(0x3C, 0xD8, 0xFF, 255);
+
+// A block of a phosphor look: lines on black, a rule under the title (header 0: none).
+void frame(ImDrawList* dl, ImVec2 a, ImVec2 b, float header, ImU32 accent) {
+    const ImU32 line = IM_COL32(170, 178, 186, 210), dim = IM_COL32(120, 126, 134, 120);
+    const float t = px(1);
+    if (gLook == 1) {  // square, a thin outline
+        dl->AddRectFilled(a, b, IM_COL32(0, 0, 0, 120), px(2));
+        dl->AddRect(a, b, line, px(2), t);
+        if (header > 0)
+            dl->AddLine(ImVec2(a.x, a.y + header), ImVec2(b.x, a.y + header), dim, t);
+        return;
+    }
+    const float c = px(10);  // chamfered corners
+    ImVec2 pts[] = {ImVec2(a.x + c, a.y), ImVec2(b.x - c, a.y), ImVec2(b.x, a.y + c), ImVec2(b.x, b.y - c),
+                    ImVec2(b.x - c, b.y), ImVec2(a.x + c, b.y), ImVec2(a.x, b.y - c), ImVec2(a.x, a.y + c)};
+    dl->AddConvexPolyFilled(pts, 8, IM_COL32(0, 0, 0, 120));
+    dl->AddPolyline(pts, 8, line, t, ImDrawFlags_Closed);
+    if (header > 0) {
+        dl->AddLine(ImVec2(a.x + px(10), a.y + header), ImVec2(b.x - px(10), a.y + header), dim, t);
+        dl->AddLine(ImVec2(a.x + px(10), a.y + header), ImVec2(a.x + px(46), a.y + header), accent, px(2));
+    }
+}
+
+// A module's colour, from its title: the rule under it in a phosphor look.
+ImU32 accentFor(const std::string& title) {
+    if (gLook == 1)
+        return kNeon;
+    return title == "LEFT STICK" ? T::kBlue : title == "RIGHT STICK" ? T::kOrange : title == "TRIGGERS" ? T::kPink
+         : title == "TOUCHPAD" ? T::kCyan : T::kLabel;
+}
+
 // A CRT-like screen: dark glass, content, scanlines and a vignette.
 template <typename Content>
 void screen(ImDrawList* dl, ImVec2 a, ImVec2 b, ImU32 tint, Content&& content) {
-    dl->AddRectFilled(ImVec2(a.x - 3, a.y - 3), ImVec2(b.x + 3, b.y + 3), IM_COL32(0x12, 0x13, 0x15, 255), px(7));
+    if (gLook == 0)  // a bezel; a phosphor look outlines the glass instead
+        dl->AddRectFilled(ImVec2(a.x - 3, a.y - 3), ImVec2(b.x + 3, b.y + 3), IM_COL32(0x12, 0x13, 0x15, 255), px(7));
+    else if (gLook == 1)
+        dl->AddRect(ImVec2(a.x - 2, a.y - 2), ImVec2(b.x + 2, b.y + 2), alpha(mix(tint, kNeon, 0.5f), 0.45f), px(4), px(1));
+    else
+        dl->AddRect(ImVec2(a.x - 1, a.y - 1), ImVec2(b.x + 1, b.y + 1), IM_COL32(0x3A, 0x3E, 0x45, 255), px(5), px(1));
     dl->AddRectFilledMultiColor(a, b, shade(tint, 0.10f), shade(tint, 0.10f), shade(tint, 0.24f), shade(tint, 0.24f));
     dl->PushClipRect(a, b, true);
     content();
@@ -181,7 +222,8 @@ void screen(ImDrawList* dl, ImVec2 a, ImVec2 b, ImU32 tint, Content&& content) {
     dl->AddRectFilledMultiColor(a, ImVec2(b.x, a.y + v), IM_COL32(0, 0, 0, 110), IM_COL32(0, 0, 0, 110), 0, 0);
     dl->AddRectFilledMultiColor(ImVec2(a.x, b.y - v), b, 0, 0, IM_COL32(0, 0, 0, 110), IM_COL32(0, 0, 0, 110));
     dl->PopClipRect();
-    dl->AddRect(a, b, IM_COL32(0, 0, 0, 220), px(4), 1.5f);
+    if (gLook == 0)
+        dl->AddRect(a, b, IM_COL32(0, 0, 0, 220), px(4), 1.5f);
 }
 
 // A screen off (an empty clip slot): dark grey glass.
@@ -262,10 +304,15 @@ std::optional<Button> freezeButton(const Mapping& m, std::uint8_t axes) {
 float panel(ImDrawList* dl, float x, float y, float w, float h, const char* title, bool active) {
     const float header = px(36);
     const float r = px(6);
-    dl->AddRectFilled(ImVec2(x, y), ImVec2(x + w, y + h), T::kPanel, r);
-    dl->AddRectFilled(ImVec2(x, y), ImVec2(x + w, y + header), T::kPanelHeader, r, ImDrawFlags_RoundCornersTop);
-    dl->AddRect(ImVec2(x, y), ImVec2(x + w, y + h), T::kBorder, r, px(1));
-    text(dl, gBold, px(14), x + px(12), y + header * 0.5f, T::kText, title, H::Left, V::Middle);
+    if (gLook == 0) {
+        dl->AddRectFilled(ImVec2(x, y), ImVec2(x + w, y + h), T::kPanel, r);
+        dl->AddRectFilled(ImVec2(x, y), ImVec2(x + w, y + header), T::kPanelHeader, r, ImDrawFlags_RoundCornersTop);
+        dl->AddRect(ImVec2(x, y), ImVec2(x + w, y + h), T::kBorder, r, px(1));
+        text(dl, gBold, px(14), x + px(12), y + header * 0.5f, T::kText, title, H::Left, V::Middle);
+    } else {
+        frame(dl, ImVec2(x, y), ImVec2(x + w, y + h), header, accentFor(title));
+        text(dl, gBold, px(gLook == 1 ? 13.5f : 12.5f), x + px(12), y + header * 0.5f, gLook == 1 ? IM_COL32(0xB8, 0xEC, 0xFF, 255) : T::kLabel, title, H::Left, V::Middle);
+    }
     led(dl, ImVec2(x + w - px(16), y + header * 0.5f), px(5), T::kGreen, active);
     if (!active)
         dl->AddCircleFilled(ImVec2(x + w - px(16), y + header * 0.5f), px(5), T::kDim);
@@ -782,6 +829,8 @@ void shiftModeBadge(ImDrawList* dl, ImVec2 a, ImVec2 b, bool amplitudes, ImU32 c
 std::string loopBeatsText(double beats, int beatsPerBar) { return beatsText(beats, beatsPerBar); }
 std::string loopDurationText(double seconds) { return durationText(seconds); }
 
+void PerformanceView::setLook(Look look) { gLook = static_cast<int>(look); }
+
 PerformanceView::PerformanceView() {
     std::mt19937 random(std::random_device{}());
     std::array<std::uint8_t, kIdleArtCount> arts{};
@@ -1138,8 +1187,12 @@ void PerformanceView::drawPianoRoll(const Mapping& m, const LiveState& live, flo
     const ImU32 kMauve = IM_COL32(0xC4, 0x7C, 0xFF, 255);  // selected notes, in the editor
     const ImU32 kLive = IM_COL32(0xEB, 0xEE, 0xF2, 255);
     // No title bar: the roll fills its block, its state shows top right.
-    dl->AddRectFilled(ImVec2(x, y), ImVec2(x + w, y + h), T::kPanel, px(8));
-    dl->AddRect(ImVec2(x, y), ImVec2(x + w, y + h), T::kBorder, px(8), px(1));
+    if (gLook) {
+        frame(dl, ImVec2(x, y), ImVec2(x + w, y + h), 0, kNeon);
+    } else {
+        dl->AddRectFilled(ImVec2(x, y), ImVec2(x + w, y + h), T::kPanel, px(8));
+        dl->AddRect(ImVec2(x, y), ImVec2(x + w, y + h), T::kBorder, px(8), px(1));
+    }
 
     char seconds[16];
     std::snprintf(seconds, sizeof seconds, "%.1f s", static_cast<double>(st.length) / Engine::kLoopRateHz);
@@ -1701,9 +1754,13 @@ std::optional<PerformanceView::SessionAction> PerformanceView::drawSession(const
         const ImU32 chColor = kChannelColors[ch % 8];
         const float x = origin.x + static_cast<float>(col) * (colW + gap);
         const bool playing = (live.clipsPlaying >> ch) & 1u;
-        dl->AddRectFilled(ImVec2(x, origin.y), ImVec2(x + colW, origin.y + gridH), T::kPanel, px(8));
-        dl->AddRectFilled(ImVec2(x, origin.y), ImVec2(x + colW, origin.y + headH), T::kPanelHeader, px(8), ImDrawFlags_RoundCornersTop);
-        dl->AddRect(ImVec2(x, origin.y), ImVec2(x + colW, origin.y + gridH), T::kBorder, px(8), px(1));
+        if (gLook) {
+            frame(dl, ImVec2(x, origin.y), ImVec2(x + colW, origin.y + gridH), headH, gLook == 1 ? kNeon : chColor);
+        } else {
+            dl->AddRectFilled(ImVec2(x, origin.y), ImVec2(x + colW, origin.y + gridH), T::kPanel, px(8));
+            dl->AddRectFilled(ImVec2(x, origin.y), ImVec2(x + colW, origin.y + headH), T::kPanelHeader, px(8), ImDrawFlags_RoundCornersTop);
+            dl->AddRect(ImVec2(x, origin.y), ImVec2(x + colW, origin.y + gridH), T::kBorder, px(8), px(1));
+        }
         // Header, as a module's: the channel, a LED while it plays; the active one underlined. A click chooses it.
         const bool active = ch == live.channel;
         text(dl, gBold, px(12.5f), x + px(12), origin.y + px(17), active ? T::kText : T::kLabel, fit(gBold, px(12.5f), channelTitle(ch), colW - px(64)), H::Left,
@@ -1948,9 +2005,13 @@ std::optional<PerformanceView::SessionAction> PerformanceView::drawChainStrip(Im
     const bool runs = anyRuns && chains.playing == shownChain;  // the chain shown plays
     const bool nextHere = chains.next >= 0 && (chains.nextChain >= 0 ? chains.nextChain == shownChain : runs);
     const bool blink = std::fmod(time_, 0.8) < 0.45;
-    dl->AddRectFilled(at, ImVec2(at.x + w, at.y + h), T::kPanel, px(8));
-    dl->AddRectFilled(at, ImVec2(at.x + w, at.y + px(29)), T::kPanelHeader, px(8), ImDrawFlags_RoundCornersTop);
-    dl->AddRect(at, ImVec2(at.x + w, at.y + h), T::kBorder, px(8), px(1));
+    if (gLook) {
+        frame(dl, at, ImVec2(at.x + w, at.y + h), px(29), gLook == 1 ? kNeon : chColor);
+    } else {
+        dl->AddRectFilled(at, ImVec2(at.x + w, at.y + h), T::kPanel, px(8));
+        dl->AddRectFilled(at, ImVec2(at.x + w, at.y + px(29)), T::kPanelHeader, px(8), ImDrawFlags_RoundCornersTop);
+        dl->AddRect(at, ImVec2(at.x + w, at.y + h), T::kBorder, px(8), px(1));
+    }
     const float hy = at.y + px(15);
     text(dl, gBold, px(11), at.x + px(12), hy, T::kText, "CHAIN", H::Left, V::Middle);
     const float titleX = at.x + px(16) + textWidth(gBold, px(11), "CHAIN");
@@ -2289,9 +2350,13 @@ std::optional<PerformanceView::SongAction> PerformanceView::drawSong(const LiveS
 
     // --- The whole song, at scale ---
     const float topH = px(196);
-    dl->AddRectFilled(origin, ImVec2(origin.x + width, origin.y + topH), T::kPanel, px(8));
-    dl->AddRectFilled(origin, ImVec2(origin.x + width, origin.y + px(38)), T::kPanelHeader, px(8), ImDrawFlags_RoundCornersTop);
-    dl->AddRect(origin, ImVec2(origin.x + width, origin.y + topH), T::kBorder, px(8), px(1));
+    if (gLook) {
+        frame(dl, origin, ImVec2(origin.x + width, origin.y + topH), px(38), gLook == 1 ? kNeon : kSongScreen);
+    } else {
+        dl->AddRectFilled(origin, ImVec2(origin.x + width, origin.y + topH), T::kPanel, px(8));
+        dl->AddRectFilled(origin, ImVec2(origin.x + width, origin.y + px(38)), T::kPanelHeader, px(8), ImDrawFlags_RoundCornersTop);
+        dl->AddRect(origin, ImVec2(origin.x + width, origin.y + topH), T::kBorder, px(8), px(1));
+    }
     // The song at scale on a screen, as the modules show what they do.
     screen(dl, ImVec2(origin.x + px(8), origin.y + px(38)), ImVec2(origin.x + width - px(8), origin.y + topH - px(6)), kSongScreen, [] {});
     const float hy = origin.y + px(19);
@@ -2381,9 +2446,13 @@ std::optional<PerformanceView::SongAction> PerformanceView::drawSong(const LiveS
     // --- The sections, a row each; a column per channel ---
     const float editorH = px(205), gy0 = origin.y + topH + px(6), gy1 = origin.y + height - editorH - px(6);
     const float nameW = px(160), headH = px(35), rowH = px(70), gap = px(6);
-    dl->AddRectFilled(ImVec2(origin.x, gy0), ImVec2(origin.x + width, gy1), T::kPanel, px(8));
-    dl->AddRectFilled(ImVec2(origin.x, gy0), ImVec2(origin.x + width, gy0 + headH), T::kPanelHeader, px(8), ImDrawFlags_RoundCornersTop);
-    dl->AddRect(ImVec2(origin.x, gy0), ImVec2(origin.x + width, gy1), T::kBorder, px(8), px(1));
+    if (gLook) {
+        frame(dl, ImVec2(origin.x, gy0), ImVec2(origin.x + width, gy1), headH, gLook == 1 ? kNeon : kSongScreen);
+    } else {
+        dl->AddRectFilled(ImVec2(origin.x, gy0), ImVec2(origin.x + width, gy1), T::kPanel, px(8));
+        dl->AddRectFilled(ImVec2(origin.x, gy0), ImVec2(origin.x + width, gy0 + headH), T::kPanelHeader, px(8), ImDrawFlags_RoundCornersTop);
+        dl->AddRect(ImVec2(origin.x, gy0), ImVec2(origin.x + width, gy1), T::kBorder, px(8), px(1));
+    }
     const float cx0 = origin.x + px(8) + nameW + gap, colW = (origin.x + width - px(8) - cx0 - gap * (kColumns - 1)) / kColumns;
     for (int k = 0; k < kColumns; ++k) {
         const int ch = songFirst_ + k;
@@ -2533,8 +2602,12 @@ std::optional<PerformanceView::SongAction> PerformanceView::drawSong(const LiveS
 
     // --- The editor of the cell under the cursor ---
     const float ey0 = origin.y + height - editorH, ey1 = origin.y + height;
-    dl->AddRectFilled(ImVec2(origin.x, ey0), ImVec2(origin.x + width, ey1), T::kPanel, px(8));
-    dl->AddRectFilled(ImVec2(origin.x, ey0), ImVec2(origin.x + width, ey0 + px(37)), T::kPanelHeader, px(8), ImDrawFlags_RoundCornersTop);
+    if (gLook) {
+        frame(dl, ImVec2(origin.x, ey0), ImVec2(origin.x + width, ey1), px(37), gLook == 1 ? kNeon : kSongScreen);
+    } else {
+        dl->AddRectFilled(ImVec2(origin.x, ey0), ImVec2(origin.x + width, ey1), T::kPanel, px(8));
+        dl->AddRectFilled(ImVec2(origin.x, ey0), ImVec2(origin.x + width, ey0 + px(37)), T::kPanelHeader, px(8), ImDrawFlags_RoundCornersTop);
+    }
     dl->AddRect(ImVec2(origin.x, ey0), ImVec2(origin.x + width, ey1), cursor.editing ? T::kCyan : T::kBorder, px(8), px(cursor.editing ? 2.0f : 1.0f));
     if (cursor.col < 0 || cursor.row >= sections) {  // no cell chosen: an empty editor
         ImGui::PopID();
@@ -2714,6 +2787,10 @@ bool PerformanceView::selected(const NoteInterval& n) const {
 
 // A block without a title bar, like the piano roll's.
 void plainBlock(ImDrawList* dl, float x, float y, float w, float h) {
+    if (gLook) {
+        frame(dl, ImVec2(x, y), ImVec2(x + w, y + h), 0, kNeon);
+        return;
+    }
     dl->AddRectFilled(ImVec2(x, y), ImVec2(x + w, y + h), T::kPanel, px(8));
     dl->AddRect(ImVec2(x, y), ImVec2(x + w, y + h), T::kBorder, px(8), px(1));
 }
@@ -3646,8 +3723,12 @@ void PerformanceView::drawButtons(const Mapping& m, const LiveState& live, float
     // No title bar either: the pads, their names and what they play.
     (void)any;
     const float top = y;
-    dl->AddRectFilled(ImVec2(x, y), ImVec2(x + w, y + h), T::kPanel, px(8));
-    dl->AddRect(ImVec2(x, y), ImVec2(x + w, y + h), T::kBorder, px(8), px(1));
+    if (gLook) {
+        frame(dl, ImVec2(x, y), ImVec2(x + w, y + h), 0, kNeon);
+    } else {
+        dl->AddRectFilled(ImVec2(x, y), ImVec2(x + w, y + h), T::kPanel, px(8));
+        dl->AddRect(ImVec2(x, y), ImVec2(x + w, y + h), T::kBorder, px(8), px(1));
+    }
 
     struct Pad {
         Button button;

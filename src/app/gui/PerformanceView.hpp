@@ -48,6 +48,11 @@ public:
         static constexpr ImU32 kCyan = IM_COL32(0x78, 0xDC, 0xFF, 255);
     };
 
+    // The look of the frames and screens: the classic one, or a phosphor
+    // screen's (lines on black; GuiApp then tints every colour).
+    enum class Look { Classic, PhosphorGreen, PhosphorBlue };
+    static void setLook(Look look);
+
     // The fonts of the view; null ones fall back to the default font.
     struct Fonts {
         ImFont* medium = nullptr;

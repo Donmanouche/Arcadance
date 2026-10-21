@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.25)
-project(Arcadance VERSION 0.241 LANGUAGES CXX)
+project(Arcadance VERSION 0.242 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
