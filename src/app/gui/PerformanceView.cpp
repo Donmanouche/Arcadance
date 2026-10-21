@@ -176,8 +176,8 @@ constexpr ImU32 kNeon = IM_COL32(0x3C, 0xD8, 0xFF, 255);
 
 // A block of a phosphor look: lines on black, a rule under the title (header 0: none).
 void frame(ImDrawList* dl, ImVec2 a, ImVec2 b, float header, ImU32 accent) {
-    const ImU32 line = IM_COL32(170, 178, 186, 210), dim = IM_COL32(120, 126, 134, 120);
-    const float t = px(1);
+    const ImU32 line = IM_COL32(235, 240, 245, 245), dim = IM_COL32(175, 182, 190, 190);
+    const float t = px(1.4f);
     if (gLook == 1) {  // square, a thin outline
         dl->AddRectFilled(a, b, IM_COL32(0, 0, 0, 120), px(2));
         dl->AddRect(a, b, line, px(2), t);
@@ -2468,7 +2468,7 @@ std::optional<PerformanceView::SongAction> PerformanceView::drawSong(const LiveS
             action = SongAction{SongAction::Kind::Cursor, std::max(cursor.row, 0), songFirst_ == 0 ? kColumns : 0};
         text(dl, gMedium, px(14.25f), a.x, gy0 + px(18), ImGui::IsItemHovered() ? T::kText : T::kDim, other, H::Left, V::Middle);
     }
-    const int visible = std::max(static_cast<int>((gy1 - gy0 - headH - px(6)) / (rowH + px(4))), 1);
+    const int visible = std::max(static_cast<int>((gy1 - gy0 - headH - px(11)) / (rowH + px(4))), 1);
     if (cursor.row < songScroll_)
         songScroll_ = cursor.row;
     if (cursor.row >= songScroll_ + visible)
@@ -2479,7 +2479,7 @@ std::optional<PerformanceView::SongAction> PerformanceView::drawSong(const LiveS
         songScroll_ = std::clamp(songScroll_ - (io.MouseWheel > 0 ? 1 : -1), 0, std::max(sections + 1 - visible, 0));
     dl->PushClipRect(clipA, clipB, true);
     for (int r = songScroll_; r <= sections && r < songScroll_ + visible; ++r) {
-        const float y = gy0 + headH + static_cast<float>(r - songScroll_) * (rowH + px(4));
+        const float y = gy0 + headH + px(5) + static_cast<float>(r - songScroll_) * (rowH + px(4));  // room for the cursor's frame
         const ImVec2 na(origin.x + px(8), y), nb(origin.x + px(8) + nameW, y + rowH);
         ImGui::PushID(r);
         if (r == sections) {  // + section

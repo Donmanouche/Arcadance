@@ -402,7 +402,8 @@ void phosphor(ImDrawData* data, bool blue) {
                     b = static_cast<float>((c >> 16) & 0xFF) / 255.0f;
         const float mx = std::max({r, g, b});
         const float lum = 0.3f * r + 0.59f * g + 0.11f * b;
-        const float d = std::pow(std::clamp((std::max(lum, mx * 0.8f) - 0.13f) / 0.87f, 0.0f, 1.0f), 1.15f);  // the darks to black
+        // The darkest to black, the middle tones lifted: lines, grids and small text stay readable.
+        const float d = std::pow(std::clamp((std::max(lum, mx * 0.8f) - 0.10f) / 0.75f, 0.0f, 1.0f), 0.8f);
         const float w = std::clamp((d - 0.82f) / 0.18f, 0.0f, 1.0f) * 0.7f;
         const float tr = 0.25f, tg = blue ? 0.78f : 1.0f, tb = blue ? 1.0f : 0.45f;
         const float grey = d * 0.95f;
