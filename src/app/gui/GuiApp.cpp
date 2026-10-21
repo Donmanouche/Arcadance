@@ -437,6 +437,9 @@ private:
     void addToSong(int channel, midipad::SongItem::Kind kind, int index, const LiveState& live);  // from the session screen
     std::string songTargetName() const;  // the section addToSong puts it in
     void addSongSection(int at);
+    // Play from a section (its name, its menu): a jump while the song plays,
+    // else the song plays from there, what played stopped first.
+    void playSongFrom(int section, const LiveState& live);
     bool songView_ = false;
     midipad::Song song_;
     PerformanceView::SongCursor songCursor_;
@@ -1659,6 +1662,16 @@ void GuiApp::addToSong(int channel, midipad::SongItem::Kind kind, int index, con
     log("Added to the song, in " + songTargetName() + ".");
 }
 
+void GuiApp::playSongFrom(int section, const LiveState& live) {
+    if (live.song.playing) {
+        runtime_->playSong(section);
+        return;
+    }
+    if (live.loopChannels != 0 && !live.loopsPaused)
+        runtime_->transportStop();
+    runtime_->transportPlay(section);
+}
+
 void GuiApp::addSongSection(int at) {
     at = std::clamp(at, 0, static_cast<int>(song_.sections.size()));
     midipad::SongSection section;
@@ -1683,7 +1696,7 @@ void GuiApp::songAction(const PerformanceView::SongAction& a, const LiveState& l
         break;
     case K::Play:
         c.row = a.row;
-        runtime_->playSong(a.row);
+        playSongFrom(a.row, live);
         break;
     case K::Stop: runtime_->stopSong(); break;
     case K::Loop: runtime_->setSongLoop(a.value != 0); break;
@@ -2232,7 +2245,7 @@ void GuiApp::runMenu(const PerformanceView::MenuTarget& t, int id, const LiveSta
     case kItemChange: openSongPick(t.slot, t.channel, t.axis, live, menuFromController_, menuAt_); break;
     case kSongPlay:
         songCursor_.row = t.slot;
-        runtime_->playSong(t.slot);
+        playSongFrom(t.slot, live);
         break;
     case kSongStop: runtime_->stopSong(); break;
     case kSongLoop: runtime_->setSongLoop(!live.song.loop); break;
@@ -2720,9 +2733,12 @@ void GuiApp::drawPerformance(const LiveState& live) {
         ImGui::SetCursorScreenPos(p);
         ImGui::Dummy(ImVec2(w, h));
 
-        // Play and Stop every channel's loops: Play lit green while they play.
-        const bool anyLoop = live.loopChannels != 0;
-        const bool loopsPlaying = anyLoop && !live.loopsPaused;
+        // Play and Stop, the same for the song and the clips: Play plays the
+        // song in the song screen, the clips elsewhere, and nothing while
+        // something plays; Stop stops whatever plays. Play lit green while
+        // something plays.
+        const bool anyLoop = live.loopChannels != 0 || live.song.playing;
+        const bool loopsPlaying = (live.loopChannels != 0 && !live.loopsPaused) || live.song.playing;
         auto transport = [&](const char* id, bool play) {
             ImGui::SameLine(0, play ? px(14) : px(6));
             const ImVec2 q = ImGui::GetCursorScreenPos();
@@ -2746,12 +2762,15 @@ void GuiApp::drawPerformance(const LiveState& live) {
             }
             return clicked;
         };
+        const int songSection = songView_ && !song_.sections.empty() ? std::clamp(songCursor_.row, 0, static_cast<int>(song_.sections.size()) - 1) : -1;
+        runtime_->setTransportSong(songSection);  // for a Link session starting
         if (transport("##loopsplay", true))
-            runtime_->playLoops();
-        ImGui::SetItemTooltip("Plays every channel's loops again, from their start");
+            runtime_->transportPlay(songSection);
+        ImGui::SetItemTooltip(songView_ ? "Plays the song from the section under the cursor (nothing while something plays)"
+                                        : "Plays every channel's clips again, from their start (nothing while something plays)");
         if (transport("##loopsstop", false))
-            runtime_->pauseLoops();
-        ImGui::SetItemTooltip("Stops every channel's loops, keeping them");
+            runtime_->transportStop();
+        ImGui::SetItemTooltip("Stops what plays: the song, or every channel's loops, keeping them");
 
         // The clock: FREE, or its tempo (the wheel turns it, a double-click
         // types it, TAP taps it) and the beats of the bar; a click elsewhere

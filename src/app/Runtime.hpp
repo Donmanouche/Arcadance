@@ -238,8 +238,12 @@ public:
     void stretchLoop(int source, int axis, int steps);
     void amplifyLoop(int source, int axis, int steps);
     void setAxisLoopLength(int source, int axis, int length);
-    void pauseLoops();  // every channel's
-    void playLoops();
+    // The transport (Engine::transportPlay, transportStop): Play the song
+    // from `section` (>= 0) or the clips (-1). setTransportSong: what the
+    // Play of a Link session starting plays (the song screen's section, -1 the clips).
+    void transportPlay(int section);
+    void transportStop();
+    void setTransportSong(int section) { transportSong_.store(section, std::memory_order_relaxed); }
     void setReportMidi(bool on) { reportMidi_.store(on, std::memory_order_relaxed); }
     void setReportButtons(bool on) { reportButtons_.store(on, std::memory_order_relaxed); }
     void setDpadSettle(int pressMs, int releaseMs) {
@@ -321,6 +325,7 @@ private:
     std::optional<std::promise<std::vector<midipad::SessionLoop>>> loopsWanted_;
     std::vector<midipad::SessionLoop> loopsToLoad_;
     std::vector<midipad::SessionChain> chainsToLoad_;
+    std::atomic<int> transportSong_{-1};
     std::optional<midipad::Song> songToLoad_;
     struct NoteEdit {
         std::vector<midipad::LoopNoteRef> notes;

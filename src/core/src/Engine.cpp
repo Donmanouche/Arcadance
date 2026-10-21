@@ -2177,6 +2177,40 @@ void Engine::playLoops() {
     }
 }
 
+bool Engine::playing() const {
+    if (songOn_)
+        return true;
+    if (loopsPaused_)
+        return false;
+    return std::any_of(clipPlaying_.begin(), clipPlaying_.end(), [](bool on) { return on; });
+}
+
+bool Engine::transportPlay(int section) {
+    if (playing())
+        return false;
+    if (section >= 0 && !song_.sections.empty()) {
+        for (int ch = 0; ch < kChannelCount; ++ch) {  // the song alone, from silence; what played comes back with the clips
+            if (clipPlaying_[static_cast<std::size_t>(ch)])
+                songResume_ = static_cast<std::uint16_t>(songResume_ | (1u << ch));
+            songStopChannel(ch);
+        }
+        loopsPaused_ = false;
+        playSong(section);
+        return true;
+    }
+    for (int ch = 0; ch < kChannelCount; ++ch)
+        if ((songResume_ >> ch) & 1u)
+            clipPlaying_[static_cast<std::size_t>(ch)] = currentHasLoops(ch);
+    songResume_ = 0;
+    playLoops();
+    return true;
+}
+
+void Engine::transportStop() {
+    stopSong();
+    pauseLoops();
+}
+
 void Engine::startClipLoops(int channel) {
     for (int track = 0; track < kTrackCount; ++track) {
         const int source = sourceOfTrack(track);
@@ -2664,6 +2698,7 @@ void Engine::playSong(int section) {
             for (const SongSection& s : song_.sections)
                 if (!s.cells[static_cast<std::size_t>(ch)].empty()) {
                     songStopChannel(ch);
+                    songResume_ = static_cast<std::uint16_t>(songResume_ | (1u << ch));
                     break;
                 }
     songOn_ = true;

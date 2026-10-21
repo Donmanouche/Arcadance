@@ -414,6 +414,14 @@ public:
     void pauseLoops();
     void playLoops();
     bool loopsPaused() const { return loopsPaused_; }
+    // The transport (Play / Stop), the same for the song and the clips. Play
+    // does nothing while something plays (false); otherwise it plays the song
+    // from `section` (>= 0, every channel from silence), or the clips (-1:
+    // every channel's current clip from its start, those the song played or
+    // stopped too). Stop stops whatever plays: the song, and the loops paused.
+    bool transportPlay(int section);
+    void transportStop();
+    bool playing() const;  // the song, or a clip, plays
     // Session files. The loops of every channel that play, as they are (their
     // stretch, amplitude and sync included), and back: loading one replaces
     // every loop and plays them (synced ones on the beat clock again).
@@ -631,6 +639,7 @@ private:
     double freeBeat_ = 0;  // a beat count that runs without a clock, at its tempo
     std::uint64_t freeAt_ = 0;
     double songNow() const { return clock_.on ? beatAt(now_) : freeBeat_; }
+    std::uint16_t songResume_ = 0;  // channels the clips' Play starts again: those the song played or stopped
     void enterSection(int section, double start);
     void runSong();
     void songStopChannel(int channel);

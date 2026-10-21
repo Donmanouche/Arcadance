@@ -262,9 +262,9 @@ void Runtime::setNoteLoopLength(int samples) {
     commands_.push({Command::Kind::EditNotes});
 }
 
-void Runtime::pauseLoops() { commands_.push({Command::Kind::PauseLoops}); }
+void Runtime::transportStop() { commands_.push({Command::Kind::PauseLoops}); }
 
-void Runtime::playLoops() { commands_.push({Command::Kind::PlayLoops}); }
+void Runtime::transportPlay(int section) { commands_.push({Command::Kind::PlayLoops, 0, section}); }
 
 LiveState Runtime::live() const {
     LiveState s;
@@ -659,23 +659,26 @@ void Runtime::run(std::stop_token stop, Options options, std::shared_ptr<const P
                 chainsToLoad_.clear();
             } else if (command->kind == Command::Kind::PauseLoops || command->kind == Command::Kind::PlayLoops) {
                 const bool play = command->kind == Command::Kind::PlayLoops;
-                // The loops at once, whatever the session does: they play even
-                // while it is stopped, so asking it to stop may change nothing.
-                if (play)
-                    engine.playLoops();
-                else
-                    engine.pauseLoops();
-                if (clock_.load(std::memory_order_relaxed) == ClockMode::Internal && midiClockOut_.load(std::memory_order_relaxed)) {
-                    // External devices: Start from the beat's start, or Stop.
-                    if (play) {
-                        internalBeat = 0;
-                        internalAt = start;
-                        clockPulse = -1;
-                        tap.sendClock(MidiMessage::realtime(0xFA));
-                    } else {
-                        tap.sendClock(MidiMessage::realtime(0xFC));
-                    }
+                // At once, whatever the session does: they play even while it is
+                // stopped, so asking it to stop may change nothing. Play while
+                // something plays does nothing, for the devices and Link either.
+                if (play && engine.playing())
+                    continue;
+                const bool internal = clock_.load(std::memory_order_relaxed) == ClockMode::Internal;
+                if (play && internal) {
+                    // The internal clock starts again from beat 0, before what plays
+                    // takes its place on it: the song starts at once, on its first bar.
+                    internalBeat = 0;
+                    internalAt = start;
+                    clockPulse = -1;
+                    engine.setBeatClock({true, internalTempo_.load(std::memory_order_relaxed), 0});
                 }
+                if (play)
+                    engine.transportPlay(command->value);
+                else
+                    engine.transportStop();
+                if (internal && midiClockOut_.load(std::memory_order_relaxed))  // external devices: Start from the beat's start, or Stop
+                    tap.sendClock(MidiMessage::realtime(play ? 0xFA : 0xFC));
                 if (clock_.load(std::memory_order_relaxed) == ClockMode::Link && startStopSync_.load(std::memory_order_relaxed)) {
                     // And the session, for the other apps; MidiPad is already there.
                     auto state = link_->link.captureAudioSessionState();
@@ -714,9 +717,9 @@ void Runtime::run(std::stop_token stop, Options options, std::shared_ptr<const P
             const bool playing = state.isPlaying();
             if (startStopSync_.load(std::memory_order_relaxed) && linkPlayingKnown && playing != linkPlaying) {
                 if (playing)
-                    engine.playLoops();
+                    engine.transportPlay(transportSong_.load(std::memory_order_relaxed));
                 else
-                    engine.pauseLoops();
+                    engine.transportStop();
             }
             linkPlaying = playing;
             linkPlayingKnown = true;

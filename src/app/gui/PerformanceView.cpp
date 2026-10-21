@@ -2325,22 +2325,10 @@ std::optional<PerformanceView::SongAction> PerformanceView::drawSong(const LiveS
     std::string summary = std::to_string(sections) + (sections == 1 ? " section" : " sections") + "  \xC2\xB7  " + std::to_string(startOf.back()) +
                           " bars  \xC2\xB7  " + clock(startOf.back() * secondsPerBar);
     text(dl, gMedium, px(10.5f), origin.x + px(56), hy, T::kDim, summary, H::Left, V::Middle);
-    // Play / stop, and loop the section.
-    const float bw = px(76), lw = px(118), by0 = origin.y + px(5), by1 = origin.y + px(27);
-    const float loopX = origin.x + width - px(10) - lw, playX = loopX - px(8) - bw;
+    // Loop the section (Play and Stop are the top bar's).
+    const float lw = px(118), by0 = origin.y + px(5), by1 = origin.y + px(27);
+    const float loopX = origin.x + width - px(10) - lw;
     ImGui::PushID("song");
-    ImGui::SetCursorScreenPos(ImVec2(playX, by0));
-    if (ImGui::InvisibleButton("##play", ImVec2(bw, by1 - by0)) && sections > 0)
-        action = playing ? SongAction{SongAction::Kind::Stop} : SongAction{SongAction::Kind::Play, std::clamp(cursor.row, 0, sections - 1)};
-    ImGui::SetItemTooltip(playing ? "Stops the song and its channels" : "Plays the song from the section under the cursor (at the next bar with a clock)");
-    const bool playHovered = ImGui::IsItemHovered();
-    dl->AddRectFilled(ImVec2(playX, by0), ImVec2(playX + bw, by1), playing ? alpha(T::kGreen, 0.22f) : T::kControl, px(5));
-    dl->AddRect(ImVec2(playX, by0), ImVec2(playX + bw, by1), playing ? T::kGreen : playHovered ? T::kControlBorder : T::kBorder, px(5), px(1));
-    if (playing)
-        dl->AddRectFilled(ImVec2(playX + px(9), hy - px(4)), ImVec2(playX + px(17), hy + px(4)), T::kText, px(1));
-    else
-        dl->AddTriangleFilled(ImVec2(playX + px(9), hy - px(5)), ImVec2(playX + px(9), hy + px(5)), ImVec2(playX + px(17), hy), T::kGreen);
-    text(dl, gBold, px(9.5f), playX + px(23), hy, T::kText, playing ? "STOP" : "PLAY", H::Left, V::Middle);
     ImGui::SetCursorScreenPos(ImVec2(loopX, by0));
     if (ImGui::InvisibleButton("##loop", ImVec2(lw, by1 - by0)))
         action = SongAction{SongAction::Kind::Loop, 0, -1, 0, live.song.loop ? 0 : 1};
@@ -2357,7 +2345,7 @@ std::optional<PerformanceView::SongAction> PerformanceView::drawSong(const LiveS
             state += "  \xC2\xB7  bar " + std::to_string(static_cast<int>(live.song.beat / bar) + 1) + " of " +
                      std::to_string(barsOf[static_cast<std::size_t>(live.song.section)]);
         state += "  \xC2\xB7  " + clock(playBars * secondsPerBar) + " / " + clock(startOf.back() * secondsPerBar);
-        text(dl, gMedium, px(10.5f), playX - px(10), hy, T::kGreen, state, H::Right, V::Middle);
+        text(dl, gMedium, px(10.5f), loopX - px(10), hy, T::kGreen, state, H::Right, V::Middle);
     }
     // The sections, at scale; a lane per channel shown, where it plays.
     const float sx0 = origin.x + px(76), sx1 = origin.x + width - px(12), sy0 = origin.y + px(34), sy1 = sy0 + px(22);
