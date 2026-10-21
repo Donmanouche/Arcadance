@@ -528,12 +528,14 @@ private:
     void drawErrorDialog();
     void drawOutputDialog();
     void drawOpenSessionDialog();
+    void drawNewSongDialog();
     void drawAboutDialog();
 
     // Sessions: every channel's loops, the preset and the tonality, in a file.
     std::vector<std::string> sessionNames() const;
     fs::path sessionPath(const std::string& name) const { return sessionsDir_ / (name + kSessionExtension); }
     void openSession(const std::string& name);
+    void newSong();  // an empty session: no clip, chain or section; the preset and tonality stay
     void saveSession();
     bool saveSessionAs(const std::string& name);
 
@@ -636,6 +638,7 @@ private:
     fs::path sessionsDir_;
     std::optional<std::string> sessionName_;  // the session opened or saved last
     bool openSessionDialog_ = false;
+    bool openNewSongDialog_ = false;
     std::vector<std::string> sessionList_;
     int sessionChoice_ = -1;
     std::string deleteSessionName_;
@@ -2559,6 +2562,8 @@ void GuiApp::drawPerformance(const LiveState& live) {
     if (menuOpen) {
         ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(px(12), px(14)));
         ImGui::PushFont(medium, 15.0f);
+        if (ImGui::MenuItem("New Song"))
+            openNewSongDialog_ = true;
         if (ImGui::MenuItem("Open…")) {
             sessionList_ = sessionNames();
             sessionChoice_ = -1;
@@ -4055,6 +4060,21 @@ void GuiApp::openSession(const std::string& name) {
     log("Session \"" + name + "\" opened.");
 }
 
+void GuiApp::newSong() {
+    runtime_->stopSong();
+    runtime_->transportStop();
+    runtime_->loadSessionLoops({});
+    runtime_->loadSessionChains({});
+    shownChain_.fill(0);
+    for (auto& names : chainNames_)
+        names.fill({});
+    song_ = {};
+    songCursor_ = {};
+    songEdited();
+    sessionName_.reset();
+    log("New song.");
+}
+
 void GuiApp::saveSession() {
     if (!sessionName_) {
         nameDialog_ = NameDialog::SessionSaveAs;
@@ -4246,6 +4266,7 @@ void GuiApp::drawDialogs() {
     drawErrorDialog();
     drawOutputDialog();
     drawOpenSessionDialog();
+    drawNewSongDialog();
     drawAboutDialog();
 }
 
@@ -4352,8 +4373,11 @@ void GuiApp::drawNameDialog() {
             std::error_code ec;
             if (fs::exists(sessionPath(nameInput_), ec) && !replacing)
                 replaceName_ = nameInput_;  // asks first
-            else if (saveSessionAs(nameInput_))
+            else if (saveSessionAs(nameInput_)) {
                 ImGui::CloseCurrentPopup();
+                if (afterSave_)
+                    std::exchange(afterSave_, nullptr)();
+            }
         } else if (library_->contains(nameInput_)) {
             nameError_ = "A preset already has this name.";
         } else if (nameDialog_ == NameDialog::New) {
@@ -4378,6 +4402,36 @@ void GuiApp::drawNameDialog() {
         afterSave_ = nullptr;
         ImGui::CloseCurrentPopup();
     }
+    endDialog();
+}
+
+void GuiApp::drawNewSongDialog() {
+    constexpr const char* kTitle = "New song";
+    if (openNewSongDialog_) {
+        ImGui::OpenPopup(kTitle);
+        openNewSongDialog_ = false;
+    }
+    if (!beginDialog(kTitle))
+        return;
+    ImGui::Text("Save the session \"%s\" before starting a new song?", sessionName_.value_or("Untitled").c_str());
+    ImGui::TextColored(kHintColor, "The new song starts empty: no clip, chain or section.\nThe preset and the tonality stay.");
+    const int button = dialogButtons({"Save", "Don't save", "Cancel"});
+    if (button == 0) {
+        ImGui::CloseCurrentPopup();
+        if (sessionName_) {
+            if (saveSessionAs(*sessionName_))
+                newSong();
+        } else {
+            afterSave_ = [this] { newSong(); };
+            saveSession();  // asks for a name, then runs afterSave_
+        }
+    }
+    if (button == 1) {
+        ImGui::CloseCurrentPopup();
+        newSong();
+    }
+    if (button == 2 || ImGui::IsKeyPressed(ImGuiKey_Escape))
+        ImGui::CloseCurrentPopup();
     endDialog();
 }
 

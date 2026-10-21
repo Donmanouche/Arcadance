@@ -1685,8 +1685,6 @@ std::optional<PerformanceView::SessionAction> PerformanceView::drawSession(const
     constexpr int kColumns = 8, kSlots = Engine::kClipSlots;
     static constexpr ImU32 kChannelColors[] = {T::kBlue, T::kPink, T::kGreen, T::kOrange, IM_COL32(0xB0, 0x8C, 0xFF, 255),
                                                T::kCyan, IM_COL32(0xFF, 0xD6, 0x40, 255), IM_COL32(0xFF, 0x78, 0x5A, 255)};
-    // The modules' colours, for what a clip holds: notes, left stick, right stick, triggers, touchpad.
-    static constexpr ImU32 kModuleColors[] = {IM_COL32(0xEC, 0xEE, 0xF2, 255), T::kBlue, T::kOrange, T::kPink, T::kCyan};
     const float gap = px(6), colW = (width - gap * (kColumns - 1)) / kColumns;
     const float stripH = px(104);  // the chain, under the grid
     const float headH = px(34), stopH = px(28);
@@ -1782,71 +1780,45 @@ std::optional<PerformanceView::SessionAction> PerformanceView::drawSession(const
                                     : hovered      ? T::kControlBorder
                                                    : 0;
                 screen(dl, a, b, chColor, [&] {
-                dl->AddRectFilled(ImVec2(a.x + px(2), a.y + px(4)), ImVec2(a.x + px(5), b.y - px(4)), chColor, px(1));
-                const bool hasNotes = clip.sources & (1u << static_cast<int>(LoopSource::Notes));
-                const bool hasCurves = clip.sources & ~(1u << static_cast<int>(LoopSource::Notes));
-                const float px0 = a.x + px(10), px1 = b.x - px(6);
-                const float ny0 = a.y + px(21), ny1 = hasCurves ? a.y + px(38) : b.y - px(8);
-                const float cy0 = hasNotes ? a.y + px(38) : a.y + px(22), cy1 = b.y - px(6);
-                if (hasNotes && clip.noteCount > 0) {
-                    int lo = 127, hi = 0;
-                    for (int i = 0; i < clip.noteCount; ++i) {
-                        lo = std::min<int>(lo, clip.notes[static_cast<std::size_t>(i)][2]);
-                        hi = std::max<int>(hi, clip.notes[static_cast<std::size_t>(i)][2]);
-                    }
-                    for (int i = 0; i < clip.noteCount; ++i) {
-                        const auto& n = clip.notes[static_cast<std::size_t>(i)];
-                        const float nx0 = px0 + (px1 - px0) * static_cast<float>(n[0]) / 255.0f;
-                        const float nx1 = std::max(px0 + (px1 - px0) * static_cast<float>(n[1]) / 255.0f, nx0 + px(2));
-                        const float t = hi > lo ? static_cast<float>(n[2] - lo) / static_cast<float>(hi - lo) : 0.5f;
-                        const float ny = ny1 - px(2) - t * (ny1 - ny0 - px(2));
-                        dl->AddRectFilled(ImVec2(nx0, ny), ImVec2(nx1, ny + px(2)), alpha(kModuleColors[0], 0.85f));
-                    }
-                }
-                static constexpr int kCurveBits[4] = {1 << 0, 1 << 1, 1 << 4, (1 << 2) | (1 << 3)};
-                for (int m = 0; m < 4; ++m) {
-                    if (!(clip.sources & kCurveBits[m]))
-                        continue;
-                    ImVec2 pts[LiveState::Clip::kCurvePoints];
-                    for (int i = 0; i < LiveState::Clip::kCurvePoints; ++i) {
-                        const float t = static_cast<float>(i) / static_cast<float>(LiveState::Clip::kCurvePoints - 1);
-                        const float v = static_cast<float>(clip.curves[static_cast<std::size_t>(m)][static_cast<std::size_t>(i)]) / 255.0f;
-                        pts[i] = ImVec2(px0 + t * (px1 - px0), cy1 - v * (cy1 - cy0));
-                    }
-                    dl->AddPolyline(pts, LiveState::Clip::kCurvePoints, kModuleColors[1 + m], px(1.4f));
-                }
-                // Its name, and what it holds.
-                text(dl, gBold, px(10), a.x + px(10), a.y + px(11), T::kText, "Clip " + std::to_string(slot + 1), H::Left, V::Middle);
-                float bx = a.x + px(50);
-                static constexpr const char* kLetters[] = {"", "L", "R", "T", "P"};
-                for (int m = 0; m < 5; ++m) {
-                    const bool has = m == 0 ? hasNotes : (clip.sources & (m == 4 ? kCurveBits[3] : kCurveBits[m - 1])) != 0;
-                    if (!has || bx > b.x - px(30))
-                        continue;
-                    const ImU32 mc = kModuleColors[m];
-                    const ImVec2 ba(bx, a.y + px(5)), bb(bx + px(11), a.y + px(17));
-                    dl->AddRectFilled(ba, bb, alpha(mc, 0.18f), px(3));
-                    dl->AddRect(ba, bb, alpha(mc, 0.8f), px(3), px(1));
-                    if (m == 0) {  // a note sign
-                        dl->AddCircleFilled(ImVec2(bx + px(4.5f), a.y + px(13.2f)), px(2), mc);
-                        dl->AddLine(ImVec2(bx + px(6.3f), a.y + px(7)), ImVec2(bx + px(6.3f), a.y + px(13.2f)), mc, px(1));
-                        dl->AddLine(ImVec2(bx + px(6.3f), a.y + px(7)), ImVec2(bx + px(8.8f), a.y + px(8.5f)), mc, px(1));
+                    // Its name and a green LED (lit playing or recording, blinking
+                    // waiting to start), its notes below, else one of its curves.
+                    dl->AddRectFilled(ImVec2(a.x + px(2), a.y + px(4)), ImVec2(a.x + px(5), b.y - px(4)), chColor, px(1));
+                    text(dl, gBold, px(12.5f), a.x + px(11), a.y + px(13), T::kText, "Clip " + std::to_string(slot + 1), H::Left, V::Middle);
+                    led(dl, ImVec2(b.x - px(12), a.y + px(13)), px(4.5f), T::kGreen, clipPlays || clip.recording || (queued && blink));
+                    const float x0 = a.x + px(11), x1 = b.x - px(9), y0 = a.y + px(26), y1 = b.y - px(8), th = px(3);
+                    if ((clip.sources & (1u << static_cast<int>(LoopSource::Notes))) && clip.noteCount > 0) {
+                        int lo = 127, hi = 0;
+                        for (int i = 0; i < clip.noteCount; ++i) {
+                            lo = std::min<int>(lo, clip.notes[static_cast<std::size_t>(i)][2]);
+                            hi = std::max<int>(hi, clip.notes[static_cast<std::size_t>(i)][2]);
+                        }
+                        for (int i = 0; i < clip.noteCount; ++i) {
+                            const auto& n = clip.notes[static_cast<std::size_t>(i)];
+                            const float nx0 = x0 + (x1 - x0) * static_cast<float>(n[0]) / 255.0f;
+                            const float nx1 = std::max(x0 + (x1 - x0) * static_cast<float>(n[1]) / 255.0f, nx0 + px(3));
+                            const float t = hi > lo ? static_cast<float>(n[2] - lo) / static_cast<float>(hi - lo) : 0.5f;
+                            const float ny = y1 - th - t * (y1 - y0 - th);
+                            dl->AddRectFilled(ImVec2(nx0, ny), ImVec2(nx1, ny + th), IM_COL32(0xF0, 0xF2, 0xF5, 242), th * 0.4f);
+                        }
                     } else {
-                        text(dl, gBold, px(7.5f), bx + px(5.5f), a.y + px(11), mc, kLetters[m], H::Center, V::Middle);
+                        for (const auto& curve : clip.curves) {
+                            if (std::all_of(curve.begin(), curve.end(), [](std::uint8_t v) { return v == 0; }))
+                                continue;
+                            ImVec2 pts[LiveState::Clip::kCurvePoints];
+                            for (int i = 0; i < LiveState::Clip::kCurvePoints; ++i) {
+                                const float t = static_cast<float>(i) / static_cast<float>(LiveState::Clip::kCurvePoints - 1);
+                                pts[i] = ImVec2(x0 + t * (x1 - x0), y1 - static_cast<float>(curve[static_cast<std::size_t>(i)]) / 255.0f * (y1 - y0));
+                            }
+                            dl->AddPolyline(pts, LiveState::Clip::kCurvePoints, mix(chColor, IM_COL32(255, 255, 255, 255), 0.35f), px(2));
+                            break;
+                        }
                     }
-                    bx += px(13);
-                }
-                // Its state: playing (and how far in its turn), next, recording.
-                const ImVec2 tri0(b.x - px(16), a.y + px(6)), tri1(b.x - px(16), a.y + px(16)), tri2(b.x - px(7), a.y + px(11));
-                if (clip.recording) {
-                    dl->AddCircleFilled(ImVec2(b.x - px(11), a.y + px(11)), px(5), T::kRed);
-                } else if (clipPlays) {
-                    dl->AddTriangleFilled(tri0, tri1, tri2, T::kGreen);
-                    const float p = std::clamp(live.clipProgress[c], 0.0f, 1.0f);
-                    dl->AddRectFilled(ImVec2(a.x + px(2), b.y - px(4)), ImVec2(a.x + px(2) + (b.x - a.x - px(4)) * p, b.y - px(2)), T::kGreen);
-                } else if (queued) {
-                    dl->AddTriangle(tri0, tri1, tri2, alpha(T::kGreen, blink ? 1.0f : 0.35f), px(1.2f));
-                }
+                    if (clipPlays) {  // how far in its turn
+                        const float p = std::clamp(live.clipProgress[c], 0.0f, 1.0f);
+                        const ImVec2 ta(a.x + px(9), b.y - px(7)), tb(b.x - px(9), b.y - px(3.5f));  // a dark track under it
+                        dl->AddRectFilled(ta, tb, IM_COL32(0, 0, 0, 170), px(2));
+                        dl->AddRectFilled(ta, ImVec2(ta.x + (tb.x - ta.x) * p, tb.y), T::kGreen, px(2));
+                    }
                 });
                 if (outline)
                     dl->AddRect(a, b, outline, px(4), px(clip.recording || clipPlays || queued ? 2.0f : 1.0f));
@@ -2150,7 +2122,9 @@ std::optional<PerformanceView::SessionAction> PerformanceView::drawChainStrip(Im
             text(dl, gBold, size, (ca.x + cb.x) * 0.5f, (ca.y + cb.y) * 0.5f, T::kText, label, H::Center, V::Middle);
             if (playsNow) {  // how far in its turn
                 const float p = std::clamp(live.clipProgress[c], 0.0f, 1.0f);
-                dl->AddRectFilled(ImVec2(x0 + px(6), y1 - px(5)), ImVec2(x0 + px(6) + (stepW - px(12)) * p, y1 - px(3)), T::kGreen);
+                const ImVec2 ta(x0 + px(6), y1 - px(6.5f)), tb(x0 + stepW - px(6), y1 - px(3));  // a dark track under it
+                dl->AddRectFilled(ta, tb, IM_COL32(0, 0, 0, 170), px(2));
+                dl->AddRectFilled(ta, ImVec2(ta.x + (tb.x - ta.x) * p, tb.y), T::kGreen, px(2));
                 dl->AddTriangleFilled(ImVec2(x1 - px(16), y1 - px(18)), ImVec2(x1 - px(16), y1 - px(8)), ImVec2(x1 - px(8), y1 - px(13)), T::kGreen);
             }
             });
@@ -2314,19 +2288,19 @@ std::optional<PerformanceView::SongAction> PerformanceView::drawSong(const LiveS
     };
 
     // --- The whole song, at scale ---
-    const float topH = px(150);
+    const float topH = px(196);
     dl->AddRectFilled(origin, ImVec2(origin.x + width, origin.y + topH), T::kPanel, px(8));
-    dl->AddRectFilled(origin, ImVec2(origin.x + width, origin.y + px(31)), T::kPanelHeader, px(8), ImDrawFlags_RoundCornersTop);
+    dl->AddRectFilled(origin, ImVec2(origin.x + width, origin.y + px(38)), T::kPanelHeader, px(8), ImDrawFlags_RoundCornersTop);
     dl->AddRect(origin, ImVec2(origin.x + width, origin.y + topH), T::kBorder, px(8), px(1));
     // The song at scale on a screen, as the modules show what they do.
-    screen(dl, ImVec2(origin.x + px(8), origin.y + px(31)), ImVec2(origin.x + width - px(8), origin.y + topH - px(6)), kSongScreen, [] {});
-    const float hy = origin.y + px(16);
-    text(dl, gBold, px(11), origin.x + px(12), hy, T::kText, "SONG", H::Left, V::Middle);
+    screen(dl, ImVec2(origin.x + px(8), origin.y + px(38)), ImVec2(origin.x + width - px(8), origin.y + topH - px(6)), kSongScreen, [] {});
+    const float hy = origin.y + px(19);
+    text(dl, gBold, px(16.5f), origin.x + px(12), hy, T::kText, "SONG", H::Left, V::Middle);
     std::string summary = std::to_string(sections) + (sections == 1 ? " section" : " sections") + "  \xC2\xB7  " + std::to_string(startOf.back()) +
                           " bars  \xC2\xB7  " + clock(startOf.back() * secondsPerBar);
-    text(dl, gMedium, px(10.5f), origin.x + px(56), hy, T::kDim, summary, H::Left, V::Middle);
+    text(dl, gMedium, px(15.75f), origin.x + px(72), hy, T::kDim, summary, H::Left, V::Middle);
     // Loop the section (Play and Stop are the top bar's).
-    const float lw = px(118), by0 = origin.y + px(5), by1 = origin.y + px(27);
+    const float lw = px(160), by0 = origin.y + px(5), by1 = origin.y + px(33);
     const float loopX = origin.x + width - px(10) - lw;
     ImGui::PushID("song");
     ImGui::SetCursorScreenPos(ImVec2(loopX, by0));
@@ -2335,7 +2309,7 @@ std::optional<PerformanceView::SongAction> PerformanceView::drawSong(const LiveS
     ImGui::SetItemTooltip("The section playing plays again and again (jump to another with Select on its name)");
     dl->AddRectFilled(ImVec2(loopX, by0), ImVec2(loopX + lw, by1), live.song.loop ? alpha(T::kCyan, 0.2f) : T::kControl, px(5));
     dl->AddRect(ImVec2(loopX, by0), ImVec2(loopX + lw, by1), live.song.loop ? T::kCyan : T::kBorder, px(5), px(1));
-    text(dl, gBold, px(9.5f), loopX + lw * 0.5f, hy, live.song.loop ? T::kText : T::kLabel, "LOOP SECTION", H::Center, V::Middle);
+    text(dl, gBold, px(14.25f), loopX + lw * 0.5f, hy, live.song.loop ? T::kText : T::kLabel, "LOOP SECTION", H::Center, V::Middle);
     if (playing) {
         const SongSection& sec = song.sections[static_cast<std::size_t>(live.song.section)];
         std::string state = (sec.name.empty() ? "SECTION " + std::to_string(live.song.section + 1) : sec.name);
@@ -2345,10 +2319,10 @@ std::optional<PerformanceView::SongAction> PerformanceView::drawSong(const LiveS
             state += "  \xC2\xB7  bar " + std::to_string(static_cast<int>(live.song.beat / bar) + 1) + " of " +
                      std::to_string(barsOf[static_cast<std::size_t>(live.song.section)]);
         state += "  \xC2\xB7  " + clock(playBars * secondsPerBar) + " / " + clock(startOf.back() * secondsPerBar);
-        text(dl, gMedium, px(10.5f), loopX - px(10), hy, T::kGreen, state, H::Right, V::Middle);
+        text(dl, gMedium, px(15.75f), loopX - px(10), hy, T::kGreen, state, H::Right, V::Middle);
     }
     // The sections, at scale; a lane per channel shown, where it plays.
-    const float sx0 = origin.x + px(76), sx1 = origin.x + width - px(12), sy0 = origin.y + px(34), sy1 = sy0 + px(22);
+    const float sx0 = origin.x + px(100), sx1 = origin.x + width - px(12), sy0 = origin.y + px(45), sy1 = sy0 + px(28);
     auto xOf = [&](double bars) { return sx0 + static_cast<float>(bars / totalBars) * (sx1 - sx0); };
     for (int s = 0; s < sections; ++s) {
         const SongSection& sec = song.sections[static_cast<std::size_t>(s)];
@@ -2359,7 +2333,7 @@ std::optional<PerformanceView::SongAction> PerformanceView::drawSong(const LiveS
         dl->AddRect(a, b, now ? T::kGreen : s == cursor.row ? T::kCyan : alpha(col, 0.9f), px(4), px(now || s == cursor.row ? 2.0f : 1.0f));
         const std::string label = (sec.name.empty() ? "SECTION " + std::to_string(s + 1) : sec.name) + "  " + std::to_string(barsOf[static_cast<std::size_t>(s)]);
         if (b.x - a.x > px(24))
-            text(dl, gBold, px(9), a.x + px(5), (sy0 + sy1) * 0.5f, T::kText, fit(gBold, px(9), label, b.x - a.x - px(8)), H::Left, V::Middle);
+            text(dl, gBold, px(13.5f), a.x + px(5), (sy0 + sy1) * 0.5f, T::kText, fit(gBold, px(13.5f), label, b.x - a.x - px(8)), H::Left, V::Middle);
         ImGui::PushID(s);
         ImGui::SetCursorScreenPos(a);
         if (ImGui::InvisibleButton("##sec", ImVec2(std::max(b.x - a.x, 1.0f), sy1 - sy0)))
@@ -2370,14 +2344,14 @@ std::optional<PerformanceView::SongAction> PerformanceView::drawSong(const LiveS
         ImGui::PopID();
     }
     if (sections == 0)
-        text(dl, gMedium, px(10.5f), sx0, (sy0 + sy1) * 0.5f, T::kDim, "No section yet: add one below (+ section)", H::Left, V::Middle);
-    const float laneH = px(9), ly0 = sy1 + px(7);
+        text(dl, gMedium, px(15.75f), sx0, (sy0 + sy1) * 0.5f, T::kDim, "No section yet: add one below (+ section)", H::Left, V::Middle);
+    const float laneH = px(11.5f), ly0 = sy1 + px(7);
     for (int k = 0; k < kColumns; ++k) {
         const int ch = songFirst_ + k;
         const auto c = static_cast<std::size_t>(ch);
         const float y = ly0 + static_cast<float>(k) * (laneH + px(2));
         const ImU32 chColor = kChannelColors[ch % 8];
-        text(dl, gBold, px(8), origin.x + px(12), y + laneH * 0.5f, chColor, fit(gBold, px(8), channelTitle(ch), px(60)), H::Left, V::Middle);
+        text(dl, gBold, px(12), origin.x + px(12), y + laneH * 0.5f, chColor, fit(gBold, px(12), channelTitle(ch), px(82)), H::Left, V::Middle);
         dl->AddRectFilled(ImVec2(sx0, y), ImVec2(sx1, y + laneH), IM_COL32(0, 0, 0, 70), px(2));
         for (int s = 0; s < sections; ++s) {
             const auto& items = song.sections[static_cast<std::size_t>(s)].cells[c];
@@ -2405,8 +2379,8 @@ std::optional<PerformanceView::SongAction> PerformanceView::drawSong(const LiveS
     }
 
     // --- The sections, a row each; a column per channel ---
-    const float editorH = px(168), gy0 = origin.y + topH + px(6), gy1 = origin.y + height - editorH - px(6);
-    const float nameW = px(128), headH = px(26), rowH = px(60), gap = px(6);
+    const float editorH = px(205), gy0 = origin.y + topH + px(6), gy1 = origin.y + height - editorH - px(6);
+    const float nameW = px(160), headH = px(35), rowH = px(70), gap = px(6);
     dl->AddRectFilled(ImVec2(origin.x, gy0), ImVec2(origin.x + width, gy1), T::kPanel, px(8));
     dl->AddRectFilled(ImVec2(origin.x, gy0), ImVec2(origin.x + width, gy0 + headH), T::kPanelHeader, px(8), ImDrawFlags_RoundCornersTop);
     dl->AddRect(ImVec2(origin.x, gy0), ImVec2(origin.x + width, gy1), T::kBorder, px(8), px(1));
@@ -2414,16 +2388,16 @@ std::optional<PerformanceView::SongAction> PerformanceView::drawSong(const LiveS
     for (int k = 0; k < kColumns; ++k) {
         const int ch = songFirst_ + k;
         const float x = cx0 + static_cast<float>(k) * (colW + gap);
-        text(dl, gBold, px(10), x + px(4), gy0 + px(14), kChannelColors[ch % 8], fit(gBold, px(10), channelTitle(ch), colW - px(8)), H::Left, V::Middle);
+        text(dl, gBold, px(15), x + px(4), gy0 + px(18), kChannelColors[ch % 8], fit(gBold, px(15), channelTitle(ch), colW - px(8)), H::Left, V::Middle);
     }
     {  // the other eight channels
         const std::string other = songFirst_ == 0 ? "Channels 9\xE2\x80\x93" "16 \xE2\x80\xBA" : "\xE2\x80\xB9 Channels 1\xE2\x80\x93" "8";
-        const float tw = textWidth(gMedium, px(9.5f), other);
-        const ImVec2 a(origin.x + px(10), gy0 + px(6));
+        const float tw = textWidth(gMedium, px(14.25f), other);
+        const ImVec2 a(origin.x + px(10), gy0 + px(7));
         ImGui::SetCursorScreenPos(a);
-        if (ImGui::InvisibleButton("##page", ImVec2(tw + px(6), px(16))))
+        if (ImGui::InvisibleButton("##page", ImVec2(tw + px(6), px(22))))
             action = SongAction{SongAction::Kind::Cursor, std::max(cursor.row, 0), songFirst_ == 0 ? kColumns : 0};
-        text(dl, gMedium, px(9.5f), a.x, gy0 + px(14), ImGui::IsItemHovered() ? T::kText : T::kDim, other, H::Left, V::Middle);
+        text(dl, gMedium, px(14.25f), a.x, gy0 + px(18), ImGui::IsItemHovered() ? T::kText : T::kDim, other, H::Left, V::Middle);
     }
     const int visible = std::max(static_cast<int>((gy1 - gy0 - headH - px(6)) / (rowH + px(4))), 1);
     if (cursor.row < songScroll_)
@@ -2444,14 +2418,14 @@ std::optional<PerformanceView::SongAction> PerformanceView::drawSong(const LiveS
             for (float t = 0; t < nameW; t += px(8))
                 dl->AddLine(ImVec2(na.x + t, na.y), ImVec2(std::min(na.x + t + px(4), nb.x), na.y), dash, px(1));
             for (float t = 0; t < nameW; t += px(8))
-                dl->AddLine(ImVec2(na.x + t, na.y + px(36)), ImVec2(std::min(na.x + t + px(4), nb.x), na.y + px(36)), dash, px(1));
-            text(dl, gMedium, px(10.5f), (na.x + nb.x) * 0.5f, na.y + px(18), T::kLabel, "+ section", H::Center, V::Middle);
+                dl->AddLine(ImVec2(na.x + t, na.y + px(46)), ImVec2(std::min(na.x + t + px(4), nb.x), na.y + px(46)), dash, px(1));
+            text(dl, gMedium, px(15.75f), (na.x + nb.x) * 0.5f, na.y + px(23), T::kLabel, "+ section", H::Center, V::Middle);
             ImGui::SetCursorScreenPos(na);
-            if (ImGui::InvisibleButton("##add", ImVec2(nameW, px(36))))
+            if (ImGui::InvisibleButton("##add", ImVec2(nameW, px(46))))
                 action = SongAction{SongAction::Kind::AddSection, r};
             if (cursor.row == r) {
-                dl->AddRect(ImVec2(na.x - px(3), na.y - px(3)), ImVec2(nb.x + px(3), na.y + px(39)), T::kCyan, px(8), px(2.5f));
-                sessionCursorBox_ = {na, ImVec2(nb.x, na.y + px(36))};
+                dl->AddRect(ImVec2(na.x - px(3), na.y - px(3)), ImVec2(nb.x + px(3), na.y + px(49)), T::kCyan, px(8), px(2.5f));
+                sessionCursorBox_ = {na, ImVec2(nb.x, na.y + px(46))};
             }
             ImGui::PopID();
             break;
@@ -2464,11 +2438,11 @@ std::optional<PerformanceView::SongAction> PerformanceView::drawSong(const LiveS
         if (now)
             dl->AddRect(na, nb, T::kGreen, px(4), px(2));
         dl->AddRectFilled(ImVec2(na.x + px(2), na.y + px(7)), ImVec2(na.x + px(5), nb.y - px(7)), kSectionColors[r % 7], px(1));
-        text(dl, gBold, px(11), na.x + px(12), na.y + px(15), T::kText, fit(gBold, px(11), sec.name.empty() ? "SECTION " + std::to_string(r + 1) : sec.name, nameW - px(36)),
+        text(dl, gBold, px(16.5f), na.x + px(12), na.y + px(17), T::kText, fit(gBold, px(16.5f), sec.name.empty() ? "SECTION " + std::to_string(r + 1) : sec.name, nameW - px(36)),
              H::Left, V::Middle);
-        text(dl, gMedium, px(10), na.x + px(12), na.y + px(33), T::kLabel, std::to_string(bars) + (bars == 1 ? " bar" : " bars"), H::Left, V::Middle);
-        text(dl, gMedium, px(8.5f), na.x + px(12), na.y + px(48), T::kDim, sec.fit ? "= longest" : "fixed", H::Left, V::Middle);
-        const ImVec2 pc(nb.x - px(16), na.y + px(15));
+        text(dl, gMedium, px(15), na.x + px(12), na.y + px(38), T::kLabel, std::to_string(bars) + (bars == 1 ? " bar" : " bars"), H::Left, V::Middle);
+        text(dl, gMedium, px(12.75f), na.x + px(12), na.y + px(55), T::kDim, sec.fit ? "= longest" : "fixed", H::Left, V::Middle);
+        const ImVec2 pc(nb.x - px(18), na.y + px(17));
         ImGui::SetCursorScreenPos(ImVec2(na.x, na.y));
         const bool nameClicked = ImGui::InvisibleButton("##name", ImVec2(nameW, rowH));
         const bool nameHovered = ImGui::IsItemHovered();
@@ -2529,10 +2503,10 @@ std::optional<PerformanceView::SongAction> PerformanceView::drawSong(const LiveS
                                 alpha(col, 0.7f), px(1.5f));
                 if (st[i] + len > bars + 1e-6 && next >= bars)
                     dl->AddLine(ImVec2(ix1 + px(2), a.y + px(4)), ImVec2(ix1 + px(2), b.y - px(4)), T::kRed, px(2));
-                const std::string short_ = (it.kind == SongItem::Kind::Clip ? std::to_string(it.index + 1) : chainLetter(it.index)) +
-                                           (it.repeats > 1 ? "\xC3\x97" + std::to_string(it.repeats) : std::string());
+                const std::string short_ = (it.kind == SongItem::Kind::Clip ? "Clip " + std::to_string(it.index + 1) : "Chain " + chainLetter(it.index)) +
+                                           (it.repeats > 1 ? " \xC3\x97" + std::to_string(it.repeats) : std::string());
                 if (x1 - x0 > px(14))
-                    text(dl, gBold, px(9), x0 + px(4), a.y + px(17), T::kText, fit(gBold, px(9), short_, x1 - x0 - px(6)), H::Left, V::Middle);
+                    text(dl, gBold, px(13.5f), x0 + px(5), a.y + px(21), T::kText, fit(gBold, px(13.5f), short_, x1 - x0 - px(6)), H::Left, V::Middle);
             }
             if (now && !items.empty()) {  // the playhead in the section
                 const float px_ = ix0 + static_cast<float>(std::clamp(live.song.beat / bar, 0.0, static_cast<double>(bars))) * barW;
@@ -2560,17 +2534,9 @@ std::optional<PerformanceView::SongAction> PerformanceView::drawSong(const LiveS
     // --- The editor of the cell under the cursor ---
     const float ey0 = origin.y + height - editorH, ey1 = origin.y + height;
     dl->AddRectFilled(ImVec2(origin.x, ey0), ImVec2(origin.x + width, ey1), T::kPanel, px(8));
-    dl->AddRectFilled(ImVec2(origin.x, ey0), ImVec2(origin.x + width, ey0 + px(29)), T::kPanelHeader, px(8), ImDrawFlags_RoundCornersTop);
+    dl->AddRectFilled(ImVec2(origin.x, ey0), ImVec2(origin.x + width, ey0 + px(37)), T::kPanelHeader, px(8), ImDrawFlags_RoundCornersTop);
     dl->AddRect(ImVec2(origin.x, ey0), ImVec2(origin.x + width, ey1), cursor.editing ? T::kCyan : T::kBorder, px(8), px(cursor.editing ? 2.0f : 1.0f));
-    if (cursor.col < 0 || cursor.row >= sections) {
-        static constexpr const char* kHelp[] = {
-            "Sections, a row each: Select on a name plays from there; on a cell, edits it below. Menu: its menu (rename, length, duplicate, move...).",
-            "The right stick on a name: its length (up / down a bar, left / right four).",
-            "In a cell, each channel plays clips and chains on the bars of the section; after its repeats an item is silent, or loops on to the next.",
-            "Mode: back to the main screen (from the session screen, Mode comes here).",
-        };
-        for (int k = 0; k < 4; ++k)
-            text(dl, gMedium, px(10.5f), origin.x + px(14), ey0 + px(22) + static_cast<float>(k) * px(22), k == 0 ? T::kLabel : T::kDim, kHelp[k], H::Left, V::Middle);
+    if (cursor.col < 0 || cursor.row >= sections) {  // no cell chosen: an empty editor
         ImGui::PopID();
         return action;
     }
@@ -2581,8 +2547,8 @@ std::optional<PerformanceView::SongAction> PerformanceView::drawSong(const LiveS
     const ImU32 chColor = kChannelColors[ch % 8];
     {
         const std::string title = (sec.name.empty() ? "SECTION " + std::to_string(r + 1) : sec.name);
-        text(dl, gBold, px(11), origin.x + px(12), ey0 + px(15), T::kText, title, H::Left, V::Middle);
-        text(dl, gBold, px(11), origin.x + px(20) + textWidth(gBold, px(11), title), ey0 + px(15), chColor,
+        text(dl, gBold, px(16.5f), origin.x + px(12), ey0 + px(19), T::kText, title, H::Left, V::Middle);
+        text(dl, gBold, px(16.5f), origin.x + px(20) + textWidth(gBold, px(16.5f), title), ey0 + px(19), chColor,
              "\xC2\xB7  " + channelTitle(ch) + "  \xC2\xB7  " + std::to_string(bars) + " bars", H::Left, V::Middle);
         double used = 0;
         const auto st = songItemBars(live, ch, items);
@@ -2594,19 +2560,19 @@ std::optional<PerformanceView::SongAction> PerformanceView::drawSong(const LiveS
         }
         char buf[64];
         std::snprintf(buf, sizeof buf, "%.1f of %d bars played", std::min(used, static_cast<double>(bars)), bars);
-        text(dl, gMedium, px(10), origin.x + width - px(12), ey0 + px(15), T::kDim, buf, H::Right, V::Middle);
+        text(dl, gMedium, px(15), origin.x + width - px(12), ey0 + px(19), T::kDim, buf, H::Right, V::Middle);
     }
-    screen(dl, ImVec2(origin.x + px(8), ey0 + px(29)), ImVec2(origin.x + width - px(8), ey1 - px(22)), kSongScreen, [] {});  // the cell's timeline, on a screen
+    screen(dl, ImVec2(origin.x + px(8), ey0 + px(37)), ImVec2(origin.x + width - px(8), ey1 - px(28)), kSongScreen, [] {});  // the cell's timeline, on a screen
     const float ex0 = origin.x + px(14), ex1 = origin.x + width - px(60), barW = (ex1 - ex0) / static_cast<float>(bars);
-    const float ry = ey0 + px(32);
+    const float ry = ey0 + px(42);
     const int every = bars <= 16 ? 1 : bars <= 32 ? 2 : bars <= 64 ? 4 : 8;
     for (int k = 0; k <= bars; ++k) {
         const float x = ex0 + static_cast<float>(k) * barW;
         dl->AddLine(ImVec2(x, ry), ImVec2(x, ry + px(k % every == 0 ? 7 : 4)), T::kDim, px(1));
         if (k < bars && k % every == 0)
-            text(dl, gMedium, px(8.5f), x + px(3), ry + px(10), T::kDim, std::to_string(k + 1), H::Left, V::Middle);
+            text(dl, gMedium, px(12.75f), x + px(3), ry + px(14), T::kDim, std::to_string(k + 1), H::Left, V::Middle);
     }
-    const float iy0 = ry + px(20), iy1 = ey1 - px(28);
+    const float iy0 = ry + px(27), iy1 = ey1 - px(34);
     float lastEnd = ex0;
     const auto starts = songItemBars(live, ch, items);
     for (std::size_t i = 0; i < items.size(); ++i) {
@@ -2660,8 +2626,8 @@ std::optional<PerformanceView::SongAction> PerformanceView::drawSong(const LiveS
         }
         if (selected)
             sessionCursorBox_ = {a, b};
-        text(dl, gBold, px(10.5f), a.x + px(8), a.y + px(14), rest ? T::kLabel : T::kText,
-             fit(gBold, px(10.5f), itemLabel(ch, it) + (it.repeats > 1 && !rest ? "  \xC3\x97" + std::to_string(it.repeats) : ""), b.x - a.x - px(12)),
+        text(dl, gBold, px(15.75f), a.x + px(8), a.y + px(19), rest ? T::kLabel : T::kText,
+             fit(gBold, px(15.75f), itemLabel(ch, it) + (it.repeats > 1 && !rest ? "  \xC3\x97" + std::to_string(it.repeats) : ""), b.x - a.x - px(12)),
              H::Left, V::Middle);
         char sub[64];
         if (rest)
@@ -2670,24 +2636,24 @@ std::optional<PerformanceView::SongAction> PerformanceView::drawSong(const LiveS
             std::snprintf(sub, sizeof sub, "right after  \xC2\xB7  %.1f bars%s", len, open ? " \xC2\xB7 \xE2\x88\x9E" : "");
         else
             std::snprintf(sub, sizeof sub, "bar %d  \xC2\xB7  %.1f bars%s", it.bar + 1, len, open ? " \xC2\xB7 \xE2\x88\x9E" : "");
-        text(dl, gMedium, px(9), a.x + px(8), a.y + px(31), T::kLabel, fit(gMedium, px(9), sub, b.x - a.x - px(12)), H::Left, V::Middle);
+        text(dl, gMedium, px(13.5f), a.x + px(8), a.y + px(42), T::kLabel, fit(gMedium, px(13.5f), sub, b.x - a.x - px(12)), H::Left, V::Middle);
         if (len <= 0)
-            text(dl, gMedium, px(9), a.x + px(8), a.y + px(47), T::kRed, "empty", H::Left, V::Middle);
+            text(dl, gMedium, px(13.5f), a.x + px(8), a.y + px(62), T::kRed, "empty", H::Left, V::Middle);
         if ((it.loop || open) && next > end) {  // on to the next item
             const float lx1 = ex0 + static_cast<float>(std::min(next, static_cast<double>(bars))) * barW - px(2);
             dl->AddLine(ImVec2(b.x, (a.y + b.y) * 0.5f), ImVec2(lx1 + shift, (a.y + b.y) * 0.5f), alpha(col, 0.8f), px(2));
-            text(dl, gMedium, px(8.5f), b.x + px(5), (a.y + b.y) * 0.5f - px(9), alpha(col, 0.9f), "loop", H::Left, V::Middle);
+            text(dl, gMedium, px(12.75f), b.x + px(5), (a.y + b.y) * 0.5f - px(12), alpha(col, 0.9f), "loop", H::Left, V::Middle);
         }
         lastEnd = std::max(lastEnd, x1);
     }
     {  // + : a new item after the last
         const bool selected = cursor.editing && cursor.item == static_cast<int>(items.size());
-        const float ax0 = std::min(lastEnd + px(6), ex1 + px(4)), ax1 = ax0 + px(36);
+        const float ax0 = std::min(lastEnd + px(6), ex1 + px(4)), ax1 = ax0 + px(42);
         const ImU32 dash = selected ? T::kCyan : IM_COL32(0x5A, 0x5F, 0x67, 255);
         dl->AddRect(ImVec2(ax0, iy0), ImVec2(ax1, iy1), dash, px(5), px(selected ? 2.5f : 1.0f));
         if (selected)
             sessionCursorBox_ = {ImVec2(ax0, iy0), ImVec2(ax1, iy1)};
-        text(dl, gBold, px(16), (ax0 + ax1) * 0.5f, (iy0 + iy1) * 0.5f, selected ? T::kCyan : T::kDim, "+", H::Center, V::Middle);
+        text(dl, gBold, px(24), (ax0 + ax1) * 0.5f, (iy0 + iy1) * 0.5f, selected ? T::kCyan : T::kDim, "+", H::Center, V::Middle);
         ImGui::SetCursorScreenPos(ImVec2(ax0, iy0));
         if (ImGui::InvisibleButton("##additem", ImVec2(ax1 - ax0, iy1 - iy0)))
             action = SongAction{SongAction::Kind::AddItem, r, ch};
@@ -2697,7 +2663,7 @@ std::optional<PerformanceView::SongAction> PerformanceView::drawSong(const LiveS
         const float x = ex0 + static_cast<float>(std::min(live.song.beat / bar, static_cast<double>(bars))) * barW;
         dl->AddLine(ImVec2(x, ry), ImVec2(x, iy1 + px(2)), T::kGreen, px(1.6f));
     }
-    text(dl, gMedium, px(9), origin.x + px(14), ey1 - px(12), T::kDim,
+    text(dl, gMedium, px(13.5f), origin.x + px(14), ey1 - px(15), T::kDim,
          cursor.editing ? "Left stick: item to item   Select on +: add a clip, a chain or a silence   Right stick: up / down the clip or chain (a silence: a bar), left / right its repeats (a beat)   Menu: change, move, loop, delete   Back: done"
                         : "Select: edit this cell, then + adds a clip, a chain or a silence   Menu: its menu (clear, copy, paste)",
          H::Left, V::Middle);
