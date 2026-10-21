@@ -394,9 +394,9 @@ In the window: F11 toggles fullscreen, Ctrl+Q quits.
 )";
 
 // A phosphor screen's look: every colour of the frame turned to its brightness,
-// tinted (a little: the grey mostly kept) green or blue, whiter at the top.
+// tinted green or blue (60 %: some grey kept), whiter at the top.
 void phosphor(ImDrawData* data, bool blue) {
-    constexpr float kTint = 0.35f;
+    constexpr float kTint = 0.6f;
     auto remap = [blue](ImU32 c) {
         const float r = static_cast<float>(c & 0xFF) / 255.0f, g = static_cast<float>((c >> 8) & 0xFF) / 255.0f,
                     b = static_cast<float>((c >> 16) & 0xFF) / 255.0f;
