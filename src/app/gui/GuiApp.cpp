@@ -478,6 +478,7 @@ private:
         std::string label;
         int id = 0;
         bool enabled = true;
+        bool checked = false;  // a check mark after it
     };
     struct ContextMenu {
         PerformanceView::MenuTarget target;
@@ -508,6 +509,12 @@ private:
     NavConflict navConflict(int button) const;
     void toggleEdit(const LiveState& live);
     void openMenu(const PerformanceView::MenuTarget& target, const LiveState& live, bool fromController, ImVec2 at);
+    // The modulation menu of a loop (MenuTarget::ModPick): what it modulates, how deep, which way, as set
+    // there (modEdit_: the runtime answers a frame later). `step` 1: a click or Select (the depth up,
+    // after 100 % back to 10 %), 2 / -2: the depth up or down.
+    midipad::LoopModulation modEdit_;
+    void fillModMenu(ContextMenu& menu, const LiveState& live) const;
+    void changeModulation(int id, int step, const LiveState& live);
     void runMenu(const PerformanceView::MenuTarget& target, int id, const LiveState& live);
     void menuEvent(Engine::SessionEvent e, const LiveState& live);
     void editEvent(Engine::SessionEvent e, const LiveState& live);
@@ -980,6 +987,8 @@ void GuiApp::update() {
     runtime_->setKey(settings_.key);
     if (const auto clear = editor_.takeClearLoopRequest())
         runtime_->clearLoop(clear->source, clear->axis);
+    if (const auto mod = editor_.takeModulationRequest())  // a loop's modulation, set in a control's window
+        runtime_->setLoopModulation(mod->source, mod->axis, mod->modulation);
     if (const auto length = editor_.takeAxisLengthRequest())  // an axis loop's end dragged in a control's window
         runtime_->setAxisLoopLength(length->source, length->axis, length->length);
     while (runtime_->popReport()) {
@@ -1983,8 +1992,13 @@ enum MenuId : int {
     kCellEdit, kCellClear, kCellCopy, kCellPaste,
     kRestBarMore, kRestBarLess, kRestBeatMore, kRestBeatLess,
     kItemChange, kItemGlue, kItemLeft, kItemRight, kItemLoop, kItemKind, kItemDuplicate, kItemDelete, kAddToSong,
-    kPick = 1000  // + the clip (0-7) or 8 + the chain: what a song item plays
+    kModPick, kModStop, kModSendCc, kModDepth, kModDirection,
+    kPick = 1000,  // + the clip (0-7) or 8 + the chain: what a song item plays
+    kModTarget = 2000  // + the movement track a loop modulates
 };
+
+// The entries of the modulation menu that leave it open, to go on setting it.
+bool keepsModMenu(int id) { return id == kModDepth || id == kModDirection || (id >= kModTarget && id < kModTarget + Engine::kNoteTrack); }
 
 }  // namespace
 
@@ -2084,9 +2098,17 @@ void GuiApp::openMenu(const PerformanceView::MenuTarget& t, const LiveState& liv
             add("Lock", kLock, plays);
         add(lane ? "Clear" + axis : "Clear", kClearLoop, st.state != LoopStatus::State::Empty);
         add("Back to 1x \xC2\xB7 100%", kResetShape, plays);
+        if (lane && source != static_cast<int>(LoopSource::Notes)) {  // modulating another loop's amplitude
+            add("Modulate the amplitude of\xE2\x80\xA6", kModPick, plays);
+            add("Stop modulating", kModStop, st.modTarget >= 0);
+            add(st.modSendsCc ? "Send its CC: on" : "Send its CC: off", kModSendCc, st.modTarget >= 0);
+        }
         add("Settings\xE2\x80\xA6", kSettings);
         break;
     }
+    case K::ModPick:
+        fillModMenu(menu, live);
+        break;
     case K::NoteLoop: {
         const LoopStatus& st = live.loops[static_cast<std::size_t>(LoopSource::Notes)].status;
         menu.title = "NOTE LOOP";
@@ -2211,6 +2233,54 @@ void GuiApp::openMenu(const PerformanceView::MenuTarget& t, const LiveState& liv
     while (menu.selected < static_cast<int>(menu.items.size()) - 1 && !menu.items[static_cast<std::size_t>(menu.selected)].enabled)
         ++menu.selected;
     menu_ = std::move(menu);
+}
+
+void GuiApp::fillModMenu(ContextMenu& menu, const LiveState& live) const {
+    const PerformanceView::MenuTarget& t = menu.target;
+    const int self = Engine::trackOf(t.source, t.axis);
+    std::string name = PerformanceView::trackName(self);
+    for (char& ch : name)
+        ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
+    menu.title = name + " MODULATES\nthe amplitude of";
+    menu.items.clear();
+    auto statusOf = [&](int track) -> const LoopStatus& {
+        return live.loops[static_cast<std::size_t>(Engine::sourceOfTrack(track))].lanes[static_cast<std::size_t>(Engine::axisOfTrack(track))].status;
+    };
+    for (int track = 0; track < Engine::kNoteTrack; ++track) {
+        if (track == self)
+            continue;
+        // Not a loop leading back to this one.
+        bool cycle = false;
+        for (int at = track, hops = 0; at >= 0 && hops < Engine::kNoteTrack && !cycle; ++hops) {
+            at = at == self ? modEdit_.target : statusOf(at).modTarget;
+            cycle = at == self;
+        }
+        const bool plays = statusOf(track).state == LoopStatus::State::Playing;
+        menu.items.push_back({PerformanceView::trackName(track), kModTarget + track, plays && !cycle, modEdit_.target == track});
+    }
+    const bool on = modEdit_.target >= 0;
+    menu.items.push_back({"Depth: \xE2\x80\xB9 " + std::to_string(modEdit_.depth) + " % \xE2\x80\xBA", kModDepth, on});
+    menu.items.push_back({modEdit_.inverted ? "Direction: inverted" : "Direction: normal", kModDirection, on});
+}
+
+void GuiApp::changeModulation(int id, int step, const LiveState& live) {
+    if (!menu_ || menu_->target.kind != PerformanceView::MenuTarget::Kind::ModPick)
+        return;
+    LoopModulation& m = modEdit_;
+    if (id >= kModTarget) {  // the loop chosen; chosen again, none
+        const int track = id - kModTarget;
+        m.target = m.target == track ? -1 : track;
+        if (m.target < 0)
+            m = {};
+    } else if (id == kModDepth) {
+        m.depth = step == 1 ? (m.depth >= 100 ? 10 : m.depth + 10) : std::clamp(m.depth + (step > 0 ? 10 : -10), 10, 100);
+    } else if (id == kModDirection) {
+        m.inverted = !m.inverted;
+    }
+    runtime_->setLoopModulation(menu_->target.source, menu_->target.axis, m);
+    const int selected = menu_->selected;
+    fillModMenu(*menu_, live);
+    menu_->selected = std::clamp(selected, 0, static_cast<int>(menu_->items.size()) - 1);
 }
 
 void GuiApp::runMenu(const PerformanceView::MenuTarget& t, int id, const LiveState& live) {
@@ -2343,6 +2413,18 @@ void GuiApp::runMenu(const PerformanceView::MenuTarget& t, int id, const LiveSta
         if (loopTarget)
             runtime_->clearLoop(t.source, axis);
         break;
+    case kModPick: {  // the menu of what it modulates, from what it does now
+        const LoopStatus& st = live.loops[static_cast<std::size_t>(t.source)].lanes[static_cast<std::size_t>(t.axis & 1)].status;
+        modEdit_ = {st.modTarget, st.modTarget >= 0 ? st.modDepth : 100, st.modInverted, st.modSendsCc};
+        openMenu({K::ModPick, ch, 0, t.source, t.axis & 1}, live, menuFromController_, menuAt_);
+        break;
+    }
+    case kModStop: runtime_->setLoopModulation(t.source, t.axis & 1, {}); break;
+    case kModSendCc: {
+        const LoopStatus& st = live.loops[static_cast<std::size_t>(t.source)].lanes[static_cast<std::size_t>(t.axis & 1)].status;
+        runtime_->setLoopModulation(t.source, t.axis & 1, {st.modTarget, st.modDepth, st.modInverted, !st.modSendsCc});
+        break;
+    }
     case kResetShape:
         for (int a = 0; a < 2; ++a)
             if (axis < 0 || axis == a)
@@ -2502,10 +2584,17 @@ void GuiApp::menuEvent(Engine::SessionEvent e, const LiveState& live) {
     case E::ValueDown: move(1); break;
     case E::Up:
     case E::ValueUp: move(-1); break;
+    case E::ValueLeft:
+    case E::ValueRight:  // the depth, down or up
+        if (menu_->items[static_cast<std::size_t>(menu_->selected)].id == kModDepth)
+            changeModulation(kModDepth, e == E::ValueRight ? 2 : -2, live);
+        break;
     case E::Press: {
         const MenuEntry entry = menu_->items[static_cast<std::size_t>(menu_->selected)];
         const PerformanceView::MenuTarget target = menu_->target;
-        if (entry.enabled) {
+        if (entry.enabled && keepsModMenu(entry.id)) {
+            changeModulation(entry.id, 1, live);
+        } else if (entry.enabled) {
             menuFromController_ = true;
             menuAt_ = menu_->at;
             menu_.reset();
@@ -2552,11 +2641,22 @@ void GuiApp::drawContextMenu(const LiveState& live) {
         std::optional<int> chosen;
         for (int k = 0; k < static_cast<int>(menu_->items.size()); ++k) {
             const MenuEntry& item = menu_->items[static_cast<std::size_t>(k)];
-            if (ImGui::Selectable(item.label.c_str(), menu_->fromController && k == menu_->selected, item.enabled ? 0 : ImGuiSelectableFlags_Disabled))
+            const ImGuiSelectableFlags flags = (item.enabled ? 0 : ImGuiSelectableFlags_Disabled) | (keepsModMenu(item.id) ? ImGuiSelectableFlags_NoAutoClosePopups : 0);
+            if (ImGui::Selectable(item.label.c_str(), menu_->fromController && k == menu_->selected, flags))
                 chosen = item.id;
+            if (item.checked) {  // drawn: the font has no check mark
+                const ImVec2 r = ImGui::GetItemRectMin();
+                const float sz = ImGui::GetFontSize();
+                const float x = r.x + ImGui::CalcTextSize(item.label.c_str()).x + sz * 0.6f, y = r.y + sz * 0.5f;
+                ImDrawList* dl = ImGui::GetWindowDrawList();
+                dl->AddLine(ImVec2(x, y), ImVec2(x + sz * 0.25f, y + sz * 0.25f), PerformanceView::Theme::kGreen, sz * 0.12f);
+                dl->AddLine(ImVec2(x + sz * 0.25f, y + sz * 0.25f), ImVec2(x + sz * 0.7f, y - sz * 0.3f), PerformanceView::Theme::kGreen, sz * 0.12f);
+            }
         }
         ImGui::EndPopup();
-        if (chosen) {
+        if (chosen && keepsModMenu(*chosen)) {
+            changeModulation(*chosen, 1, live);
+        } else if (chosen) {
             const PerformanceView::MenuTarget target = menu_->target;
             menuFromController_ = menu_->fromController;
             menuAt_ = ImGui::GetIO().MousePos;

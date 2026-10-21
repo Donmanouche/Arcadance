@@ -1412,7 +1412,8 @@ void Engine::playMovementLoop(std::size_t index, LoopPlayback playback, const do
     const float target = static_cast<float>(loop.amplitude) / 100.0f;
     const float ease = 0.1f * std::max(1.0f, std::max(target, loop.amplitudeNow) / 2.0f);
     loop.amplitudeNow += std::clamp(target - loop.amplitudeNow, -ease, ease);
-    auto send = [&](float v) { sendLoopValue(index, stepped(index, shapeAmplitude(v, loop.middleX, loop.amplitudeNow))); };
+    const float amplitude = loop.amplitudeNow * modulationFactor(index);
+    auto send = [&](float v) { sendLoopValue(index, stepped(index, shapeAmplitude(v, loop.middleX, amplitude))); };
     double step = 1.0 / stretchFactor(loop.stretch);
     if (syncedPhase) {
         // Synced: the clock gives the point; the step is how far it moved since.
@@ -1512,6 +1513,11 @@ void Engine::sendLoopValue(std::size_t index, float p) {
         a = axis == 0 ? &f.x : &f.y;
         if (axis == 1)
             p = 1.0f - p;  // the touchpad's Y grows downwards, its CC upwards
+    }
+    loop.modValue = p;
+    if (loop.modulation.target >= 0 && !loop.modulation.sendsCc) {  // it only modulates
+        loopShaping_[index] = -1.0f;
+        return;
     }
     // An axis set to Velocity or Transpose plays its loop as that, not as a CC.
     const bool shapes = a->enabled && (a->mode == AxisMode::Velocity || a->mode == AxisMode::Transpose);
@@ -2046,8 +2052,81 @@ LoopStatus Engine::loopStatus(int channel, int source, int axis) const {
     const Loop& loop = loops_[loopIndex(channel, track)];
     const bool waiting = waiting_[static_cast<std::size_t>(track)] && holdChannel_ == channel;
     const bool overdub = track == kNoteTrack && overdubChannel_ == channel;
-    return {loop.state, waiting, overdub, loop.length, loop.position, loop.direction, channel, loop.stretch, loop.amplitude,
-            loop.syncBeats > 0 ? loop.syncBeats * stretchFactor(loop.stretch) : 0.0, loop.locked};
+    LoopStatus s{loop.state, waiting, overdub, loop.length, loop.position, loop.direction, channel, loop.stretch, loop.amplitude,
+                 loop.syncBeats > 0 ? loop.syncBeats * stretchFactor(loop.stretch) : 0.0, loop.locked};
+    fillModulation(s, loopIndex(channel, track));
+    return s;
+}
+
+void Engine::fillModulation(LoopStatus& status, std::size_t index) const {
+    if (trackOfLoop(index) == kNoteTrack)
+        return;
+    const LoopModulation& m = loops_[index].modulation;
+    status.modTarget = m.target;
+    status.modDepth = m.depth;
+    status.modInverted = m.inverted;
+    status.modSendsCc = m.sendsCc;
+    status.modFactor = modulationFactor(index, &status.modSource);
+    if (status.modSource >= 0)
+        status.modSourceDepth = loops_[slotIndex(channelOfLoop(index), slotOfLoop(index), status.modSource)].modulation.depth;
+}
+
+// The loop of the same clip modulating this one, playing: 1 - depth * (1 - its value).
+float Engine::modulationFactor(std::size_t index, int* source) const {
+    const int track = trackOfLoop(index);
+    const int channel = channelOfLoop(index), slot = slotOfLoop(index);
+    for (int t = 0; t < kNoteTrack; ++t) {
+        const Loop& from = loops_[slotIndex(channel, slot, t)];
+        if (t == track || from.modulation.target != track)
+            continue;
+        if (source)
+            *source = t;
+        if (from.state != LoopStatus::State::Playing)
+            return 1.0f;
+        const float v = from.modulation.inverted ? 1.0f - from.modValue : from.modValue;
+        return 1.0f - static_cast<float>(std::clamp(from.modulation.depth, 0, 100)) / 100.0f * (1.0f - std::clamp(v, 0.0f, 1.0f));
+    }
+    if (source)
+        *source = -1;
+    return 1.0f;
+}
+
+bool Engine::setLoopModulation(int channel, int source, int axis, const LoopModulation& modulation) {
+    if (source < 0 || source >= kLoopSourceCount || source == static_cast<int>(LoopSource::Notes))
+        return false;
+    channel = std::clamp(channel, 0, kChannelCount - 1);
+    const int track = trackOf(source, axis);
+    const int slot = currentSlot_[static_cast<std::size_t>(channel)];
+    Loop& loop = loops_[slotIndex(channel, slot, track)];
+    LoopModulation m = modulation;
+    m.depth = std::clamp(m.depth, 0, 100);
+    if (m.target >= kNoteTrack || m.target == track)
+        return false;
+    if (m.target >= 0) {
+        // Never a loop leading back to this one.
+        for (int t = m.target, hops = 0; t >= 0 && hops < kNoteTrack; ++hops) {
+            t = loops_[slotIndex(channel, slot, t)].modulation.target;
+            if (t == track)
+                return false;
+        }
+        // The target leaves the loop that modulated it.
+        for (int t = 0; t < kNoteTrack; ++t) {
+            Loop& other = loops_[slotIndex(channel, slot, t)];
+            if (t != track && other.modulation.target == m.target)
+                other.modulation = {};
+        }
+    } else {
+        m = {};  // no target: it sends its CC again
+    }
+    loop.modulation = m;
+    loop.sentX = -1;  // sending again (or not): from scratch
+    return true;
+}
+
+LoopModulation Engine::loopModulation(int channel, int source, int axis) const {
+    if (source < 0 || source >= kLoopSourceCount || source == static_cast<int>(LoopSource::Notes))
+        return {};
+    return loops_[loopIndex(std::clamp(channel, 0, kChannelCount - 1), trackOf(source, axis))].modulation;
 }
 
 bool Engine::loopLocked(int channel, int source) const {
@@ -2132,6 +2211,7 @@ void Engine::clearTrack(std::size_t index) {
     loop.amplitudeNow = 1;
     loopShaping_[index] = -1.0f;
     loop.locked = false;
+    loop.modulation = {};
     const int track = trackOfLoop(index);
     if (track == kNoteTrack && overdubChannel_ == channelOfLoop(index))
         overdubChannel_ = -1;
@@ -2290,9 +2370,12 @@ LoopStatus Engine::clipLoopStatus(int channel, int slot, int source, int axis) c
     channel = std::clamp(channel, 0, kChannelCount - 1);
     slot = std::clamp(slot, 0, kClipSlots - 1);
     source = std::clamp(source, 0, kLoopSourceCount - 1);
-    const Loop& loop = loops_[slotIndex(channel, slot, trackOf(source, axis))];
-    return {loop.state, false, false, loop.length, loop.position, loop.direction, channel, loop.stretch, loop.amplitude,
-            loop.syncBeats > 0 ? loop.syncBeats * stretchFactor(loop.stretch) : 0.0, loop.locked};
+    const std::size_t index = slotIndex(channel, slot, trackOf(source, axis));
+    const Loop& loop = loops_[index];
+    LoopStatus s{loop.state, false, false, loop.length, loop.position, loop.direction, channel, loop.stretch, loop.amplitude,
+                 loop.syncBeats > 0 ? loop.syncBeats * stretchFactor(loop.stretch) : 0.0, loop.locked};
+    fillModulation(s, index);
+    return s;
 }
 
 bool Engine::clipTurns(int channel, double& turns) const {
@@ -2876,6 +2959,7 @@ std::vector<SessionLoop> Engine::sessionLoops() const {
                     l.axis = axisOfTrack(track);
                     l.stretch = loop.stretch;
                     l.amplitude = loop.amplitude;
+                    l.modulation = loop.modulation;
                     l.x.assign(loop.x.begin(), loop.x.begin() + loop.length);
                 }
                 out.push_back(std::move(l));
@@ -2932,6 +3016,10 @@ void Engine::loadSessionLoops(const std::vector<SessionLoop>& loops) {
                 loop.stretch = std::clamp(l.stretch, kMinStretch, kMaxStretch);
                 loop.amplitude = std::clamp(l.amplitude, 0, kMaxAmplitude);
                 loop.amplitudeNow = static_cast<float>(loop.amplitude) / 100.0f;
+                if (l.modulation.target >= 0 && l.modulation.target < kNoteTrack && l.modulation.target != track) {
+                    loop.modulation = l.modulation;
+                    loop.modulation.depth = std::clamp(loop.modulation.depth, 0, 100);
+                }
             }
             loop.length = l.length;
             loop.syncBeats = l.syncBeats;

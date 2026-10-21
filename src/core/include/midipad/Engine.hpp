@@ -59,6 +59,14 @@ struct LoopStatus {
     int amplitude = 100;   // movement loops: percent of the recorded swing, around its middle
     double beats = 0;      // synced to the beat clock: its length in beats (stretched); 0: free
     bool locked = false;   // see Engine::toggleLoopLock
+    // Movement loops (Engine::setLoopModulation): the track whose amplitude
+    // this one modulates (-1: none), how deep, which way, whether it still
+    // sends its own CC; the track modulating this one (-1: none) and the
+    // factor its amplitude takes from it now.
+    int modTarget = -1, modDepth = 100;
+    bool modInverted = false, modSendsCc = true;
+    int modSource = -1, modSourceDepth = 0;
+    float modFactor = 1;
 };
 
 // Turns controller events into MIDI according to the active preset.
@@ -249,6 +257,19 @@ public:
     void stopSong();
     void setSongLoop(bool on) { songLoop_ = on; }
     bool songLoop() const { return songLoop_; }
+
+    // A movement loop of the active channel's current clip modulating the
+    // amplitude of another one of the clip: the target's swing is its
+    // amplitude times 1 - depth * (1 - v), v the value this loop plays now
+    // in [0, 1] (1 - v inverted), so each keeps its own length and the
+    // modulation turns at its own pace. A target has one modulating loop at
+    // a time (setting a second takes it from the first); a loop modulates
+    // one target, never itself nor a loop that leads back to it (refused:
+    // false). The routing belongs to the clip (copied, saved in sessions);
+    // clearing the loop removes it, recording it again keeps it. Without a
+    // target the loop sends its CC again.
+    bool setLoopModulation(int channel, int source, int axis, const LoopModulation& modulation);
+    LoopModulation loopModulation(int channel, int source, int axis) const;
 
     // Mute and solo, per channel. A channel muted, or not soloed while
     // another one is, goes on playing its loops, clips, chains and song in
@@ -587,6 +608,8 @@ private:
         int sentX = -1;
         bool locked = false;
         double turns = 0;  // free: how many times round since it started
+        LoopModulation modulation;  // of another loop's amplitude (setLoopModulation)
+        float modValue = 0.5f;      // the value it played last, [0, 1], for the loop it modulates
     };
     static constexpr std::uint16_t kLifted = 0xFFFF;
     static void findMiddle(Loop& loop);  // a movement loop's middle, from its samples
@@ -606,6 +629,8 @@ private:
         return slotIndex(channel, currentSlot_[static_cast<std::size_t>(channel)], track);
     }
     void clearTrack(std::size_t index);
+    float modulationFactor(std::size_t index, int* source = nullptr) const;  // the amplitude a loop takes from the one modulating it
+    void fillModulation(LoopStatus& status, std::size_t index) const;
     // Where a track's control is now, [0, 1]; false for a lifted finger (or the notes).
     bool trackPosition(int track, float& v) const;
     // Is that axis enabled in the mapping of `channel` (and a finger in axis mode)?

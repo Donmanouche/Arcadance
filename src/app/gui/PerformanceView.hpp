@@ -52,6 +52,12 @@ public:
     // screen's (lines on black; GuiApp then tints every colour).
     enum class Look { Classic, PhosphorGreen, PhosphorBlue };
     static void setLook(Look look);
+    // A movement track's name (Engine::trackOf): Left stick X ... R2.
+    static const char* trackName(int track) {
+        static constexpr const char* kNames[] = {"Left stick X", "Left stick Y", "Right stick X", "Right stick Y", "Finger 1 X",
+                                                 "Finger 1 Y",   "Finger 2 X",   "Finger 2 Y",    "L2",            "R2"};
+        return track >= 0 && track < 10 ? kNames[track] : "";
+    }
 
     // The fonts of the view; null ones fall back to the default font.
     struct Fonts {
@@ -142,7 +148,7 @@ public:
     // the item), the clips and chains of a channel to put in a song cell
     // (SongPick: `axis` the item they replace, -1 a new one after the last).
     struct MenuTarget {
-        enum class Kind : std::uint8_t { Lane, Panel, NoteLoop, Control, Clip, Step, Channel, ChannelBlock, Chain, Section, SongCell, SongItem, SongPick } kind =
+        enum class Kind : std::uint8_t { Lane, Panel, NoteLoop, Control, Clip, Step, Channel, ChannelBlock, Chain, Section, SongCell, SongItem, SongPick, ModPick } kind =
             Kind::Control;
         int channel = 0, slot = 0, source = 0, axis = -1;
         std::string spec;

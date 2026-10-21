@@ -55,6 +55,9 @@ std::vector<std::uint16_t> readSamples(const Json& loop, const char* key, int le
     return out;
 }
 
+// The movement tracks (Engine::trackOf), as a modulation names its target.
+constexpr const char* kTrackNames[] = {"left_x", "left_y", "right_x", "right_y", "finger1_x", "finger1_y", "finger2_x", "finger2_y", "l2", "r2"};
+
 }  // namespace
 
 Json sessionToJson(const Session& session) {
@@ -104,6 +107,9 @@ Json sessionToJson(const Session& session) {
         } else {
             o["stretch"] = l.stretch;
             o["amplitude"] = l.amplitude;
+            if (l.modulation.target >= 0 && l.modulation.target < 10)
+                o["modulates"] = {{"target", kTrackNames[l.modulation.target]}, {"depth", l.modulation.depth},
+                                  {"inverted", l.modulation.inverted}, {"sends_cc", l.modulation.sendsCc}};
             if (l.axis >= 0) {  // one axis
                 o["axis"] = l.axis == 0 ? "x" : "y";
                 o["samples"] = l.x;
@@ -256,6 +262,15 @@ Session sessionFromJson(const Json& j) {
             } else {
                 l.stretch = readInt(o, "stretch", -38, 198, 0, where);
                 l.amplitude = readInt(o, "amplitude", 0, 800, 100, where);
+                if (o.contains("modulates") && o["modulates"].is_object()) {  // unknown targets are left out
+                    const Json& m = o["modulates"];
+                    for (int t = 0; t < 10; ++t)
+                        if (m.contains("target") && m["target"] == kTrackNames[t])
+                            l.modulation.target = t;
+                    l.modulation.depth = readInt(m, "depth", 0, 100, 100, where + ".modulates");
+                    l.modulation.inverted = m.contains("inverted") && m["inverted"].is_boolean() && m["inverted"].get<bool>();
+                    l.modulation.sendsCc = !m.contains("sends_cc") || !m["sends_cc"].is_boolean() || m["sends_cc"].get<bool>();
+                }
                 if (o.contains("axis")) {
                     if (!o["axis"].is_string() || (o["axis"] != "x" && o["axis"] != "y"))
                         fail(where + ".axis", "expected \"x\" or \"y\"");

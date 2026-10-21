@@ -241,6 +241,8 @@ public:
     // active channel; axis -1: both.
     void stretchLoop(int source, int axis, int steps);
     void amplifyLoop(int source, int axis, int steps);
+    // Engine::setLoopModulation, on the active channel.
+    void setLoopModulation(int source, int axis, const midipad::LoopModulation& modulation);
     void setAxisLoopLength(int source, int axis, int length);
     // The transport (Engine::transportPlay, transportStop): Play the song
     // from `section` (>= 0) or the clips (-1). setTransportSong: what the
@@ -291,7 +293,7 @@ private:
     struct Command {
         enum class Kind : std::uint8_t {
             SetChannel, Panic, ClearLoop, ToggleLock, ChainStep, ChainThen, ChainGo, ChainStop, ClearClip, CopyClip, ResetShape, LaunchClip, RecordSlot, StretchLoop, AmplifyLoop, AxisLength, PauseLoops, PlayLoops,
-            SaveLoops, LoadLoops, LoadChains, LoadSong, SongPlay, SongStop, SongLoop, Mute, Solo, MuteSolo, EditNotes
+            SaveLoops, LoadLoops, LoadChains, LoadSong, SongPlay, SongStop, SongLoop, Mute, Solo, MuteSolo, Modulation, EditNotes
         } kind;
         int channel = 0;
         int value = 0;

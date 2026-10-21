@@ -28,6 +28,12 @@ public:
         int source = 0, axis = -1;
     };
     std::optional<ClearLoop> takeClearLoopRequest() { return std::exchange(clearLoopRequest_, std::nullopt); }
+    // A loop's modulation set in the window, once (Engine::setLoopModulation, on the active channel).
+    struct Modulation {
+        int source = 0, axis = 0;
+        midipad::LoopModulation modulation;
+    };
+    std::optional<Modulation> takeModulationRequest() { return std::exchange(modulationRequest_, std::nullopt); }
     // An axis loop's end dragged in the control's window: its new length, once
     // (Engine::setAxisLoopLength, on the active channel).
     struct AxisLength {
@@ -68,6 +74,8 @@ private:
     std::vector<midipad::KeyChord> chords_;
     std::uint16_t humanizeChannels_ = 0;
     std::optional<ClearLoop> clearLoopRequest_;
+    std::optional<Modulation> modulationRequest_;
+    void drawModulationForm(int source, const LiveState& live);
     std::optional<AxisLength> axisLength_;
     std::string layerSpec_;    // the control whose layers were shown last
     bool shiftLayer_ = false;  // its Shift layer was

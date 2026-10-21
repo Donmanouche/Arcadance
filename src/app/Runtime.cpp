@@ -181,6 +181,10 @@ void Runtime::stretchLoop(int source, int axis, int steps) { commands_.push({Com
 
 void Runtime::amplifyLoop(int source, int axis, int steps) { commands_.push({Command::Kind::AmplifyLoop, source, steps, axis}); }
 
+void Runtime::setLoopModulation(int source, int axis, const midipad::LoopModulation& m) {
+    commands_.push({Command::Kind::Modulation, source, m.target, axis, m.depth | (m.inverted ? 0x100 : 0) | (m.sendsCc ? 0x200 : 0)});
+}
+
 void Runtime::setAxisLoopLength(int source, int axis, int length) {
     commands_.push({Command::Kind::AxisLength, source, length, axis});
 }
@@ -664,6 +668,10 @@ void Runtime::run(std::stop_token stop, Options options, std::shared_ptr<const P
                 engine.setMuted(command->channel, command->value != 0);
             } else if (command->kind == Command::Kind::Solo) {
                 engine.setSoloed(command->channel, command->value != 0);
+            } else if (command->kind == Command::Kind::Modulation) {
+                const int e = command->extra;
+                engine.setLoopModulation(engine.channel(), command->channel, command->axis,
+                                         {command->value, e & 0xFF, (e & 0x100) != 0, (e & 0x200) != 0});
             } else if (command->kind == Command::Kind::MuteSolo) {
                 engine.setMuteSolo(static_cast<std::uint16_t>(command->value), static_cast<std::uint16_t>(command->extra));
             } else if (command->kind == Command::Kind::LoadChains) {

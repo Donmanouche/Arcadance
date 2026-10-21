@@ -15,6 +15,16 @@
 
 namespace midipad {
 
+// A movement loop modulating the amplitude of another loop of its clip
+// (Engine::setLoopModulation). `target` is a movement track
+// (Engine::trackOf), -1 for none.
+struct LoopModulation {
+    int target = -1;
+    int depth = 100;  // percent: at 100 the target closes in to nothing when this loop is at its lowest
+    bool inverted = false;  // widest when this loop is at its lowest
+    bool sendsCc = true;    // this loop still sends its own CC (or shapes the notes)
+};
+
 // One recorded loop of a session, as the engine plays it.
 struct SessionLoop {
     int channel = 0;  // 0-15
@@ -24,6 +34,7 @@ struct SessionLoop {
     int axis = -1;  // a movement loop's: 0 X, 1 Y, its samples in x; -1 (older files): both, in x and y
     int length = 0;  // samples, at Engine::kLoopRateHz
     int stretch = 0, amplitude = 100;  // movement loops
+    LoopModulation modulation;         // movement loops: of another one's amplitude
     double syncBeats = 0, anchorBeat = 0;  // synced to the beat clock: its beats and where it starts; 0: free
     bool locked = false;  // Record keeps it (Engine::toggleLoopLock)
     // Movement loops: X and Y per sample, [0, 1] as 0-65534, 0xFFFF where the

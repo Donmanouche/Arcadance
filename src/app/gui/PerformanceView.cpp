@@ -171,6 +171,16 @@ void led(ImDrawList* dl, ImVec2 c, float r, ImU32 col, bool on) {
     dl->AddCircleFilled(c, r, on ? col : shade(col, 0.35f));
 }
 
+// A movement track's colour (its module's) and short name, for the badges of a modulation.
+ImU32 trackColor(int track) {
+    static constexpr ImU32 kColors[] = {T::kBlue, T::kOrange, T::kCyan, T::kOrange, T::kPink};
+    return kColors[std::clamp(track / 2, 0, 4)];
+}
+const char* trackShortName(int track) {
+    static constexpr const char* kNames[] = {"LEFT X", "LEFT Y", "RIGHT X", "RIGHT Y", "F1 X", "F1 Y", "F2 X", "F2 Y", "L2", "R2"};
+    return track >= 0 && track < 10 ? kNames[track] : "";
+}
+
 // The phosphor looks' neon, before GuiApp tints it.
 constexpr ImU32 kNeon = IM_COL32(0x3C, 0xD8, 0xFF, 255);
 
@@ -3206,7 +3216,9 @@ void PerformanceView::drawLane(ImDrawList* dl, ImVec2 a, ImVec2 b, const LaneLoo
             hi = std::max(hi, static_cast<float>(lane.v[static_cast<std::size_t>(i)]) / 255.0f);
         }
     const float centre = lo <= hi ? (lo + hi) * 0.5f : 0.5f;
-    const float amp = playing ? static_cast<float>(st.amplitude) / 100.0f : 1.0f;
+    // Its amplitude, times what the loop modulating it gives now.
+    const bool modulated = playing && st.modSource >= 0;
+    const float amp = playing ? static_cast<float>(st.amplitude) / 100.0f * (modulated ? st.modFactor : 1.0f) : 1.0f;
     const bool steps = playing && lane.stepSamples > 0;
     const float levels = static_cast<float>(std::clamp(look.steps.levels, 2, 128) - 1);
     auto value = [&](int i, float scale, bool stepped) {
@@ -3257,6 +3269,17 @@ void PerformanceView::drawLane(ImDrawList* dl, ImVec2 a, ImVec2 b, const LaneLoo
             polyline(1.0f, alpha(look.color, 0.22f), px(1.3f));
         polyline(amp, look.color, px(1.8f));
     }
+    if (modulated) {  // the band the loop modulating it leaves it now, dashed in that loop's colour
+        const ImU32 tone = alpha(trackColor(st.modSource), 0.8f);
+        for (float v : {lo, hi}) {
+            float e = Engine::shapeAmplitude(v, centre, amp);
+            if (look.flip)
+                e = 1.0f - e;
+            const float y = yOf(look.invert ? 1.0f - e : e);
+            for (float x = lx0; x < lx1; x += px(7))
+                dl->AddLine(ImVec2(x, y), ImVec2(std::min(x + px(4), lx1), y), tone, px(1.2f));
+        }
+    }
     if (recording) {
         dl->AddLine(ImVec2(lx1, a.y + px(2)), ImVec2(lx1, b.y - px(2)), alpha(T::kRed, 0.8f), px(1.3f));
     } else if (playing) {
@@ -3291,8 +3314,22 @@ void PerformanceView::drawLane(ImDrawList* dl, ImVec2 a, ImVec2 b, const LaneLoo
             ImGui::SetTooltip("Clear %s's loop", look.name);
         }
     }
+    // A modulation: bottom left, the loop modulating it (and how deep), or the one it modulates.
+    if (playing && b.y - a.y >= px(30) && (st.modSource >= 0 || st.modTarget >= 0)) {
+        const bool target = st.modSource >= 0;
+        const std::string badge = target ? std::string(trackShortName(st.modSource)) + " \xE2\x80\xBA AMP " + std::to_string(st.modSourceDepth) + "%"
+                                         : "\xE2\x80\xBA " + std::string(trackShortName(st.modTarget));
+        const ImU32 tone = trackColor(target ? st.modSource : st.modTarget);
+        const float bw = textWidth(gBold, small, badge) + px(10);
+        const ImVec2 pa(a.x + px(4), b.y - small - px(7)), pb(a.x + px(4) + bw, b.y - px(3));
+        dl->AddRectFilled(pa, pb, IM_COL32(0x14, 0x16, 0x19, 220), px(6));
+        dl->AddRect(pa, pb, alpha(tone, 0.8f), px(6), px(1));
+        text(dl, gBold, small, (pa.x + pb.x) * 0.5f, (pa.y + pb.y) * 0.5f, mix(tone, T::kText, 0.4f), badge, H::Center, V::Middle);
+    }
     if (b.y - a.y >= px(30)) {
-        const std::string cc = look.cc == kLaneVelocity ? "VEL" : look.cc == kLaneTranspose ? "TR" : "CC " + std::to_string(look.cc);
+        std::string cc = look.cc == kLaneVelocity ? "VEL" : look.cc == kLaneTranspose ? "TR" : "CC " + std::to_string(look.cc);
+        if (playing && st.modTarget >= 0 && !st.modSendsCc)
+            cc = "MOD";  // it only modulates
         const float ccW = textWidth(gCondensed, small, cc) + px(10);
         const ImVec2 pa(b.x - px(4) - ccW, b.y - small - px(7)), pb(b.x - px(4), b.y - px(3));
         dl->AddRectFilled(pa, pb, IM_COL32(0x14, 0x16, 0x19, 200), px(6));

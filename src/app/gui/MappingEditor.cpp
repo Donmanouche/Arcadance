@@ -399,6 +399,74 @@ bool MappingEditor::drawControl(const std::string& spec, Mapping& m, const LiveS
     return changed;
 }
 
+// Each axis loop of the source playing: the loop whose amplitude it
+// modulates (Engine::setLoopModulation), how deep, which way, and whether it
+// still sends its own CC. Kept in the clip, not in the preset.
+void MappingEditor::drawModulationForm(int source, const LiveState& live) {
+    auto statusOf = [&](int track) -> const LoopStatus& {
+        return live.loops[static_cast<std::size_t>(Engine::sourceOfTrack(track))].lanes[static_cast<std::size_t>(Engine::axisOfTrack(track))].status;
+    };
+    bool any = false;
+    for (int axis = 0; axis < 2; ++axis)
+        any = any || statusOf(Engine::trackOf(source, axis)).state == LoopStatus::State::Playing;
+    if (!any)
+        return;
+    ImGui::SeparatorText("Modulation");
+    const bool triggers = source == static_cast<int>(LoopSource::Triggers);
+    const float column = ImGui::GetFontSize() * 7.5f;
+    for (int axis = 0; axis < 2; ++axis) {
+        const int self = Engine::trackOf(source, axis);
+        const LoopStatus& st = statusOf(self);
+        if (st.state != LoopStatus::State::Playing)
+            continue;
+        ImGui::PushID(axis);
+        LoopModulation m{st.modTarget, st.modTarget >= 0 ? st.modDepth : 100, st.modInverted, st.modSendsCc};
+        bool changed = false;
+        ImGui::AlignTextToFramePadding();
+        ImGui::Text("%s modulates", triggers ? (axis == 0 ? "L2" : "R2") : (axis == 0 ? "X" : "Y"));
+        ImGui::SameLine(column);
+        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 9);
+        if (ImGui::BeginCombo("##target", m.target >= 0 ? PerformanceView::trackName(m.target) : "\xE2\x80\x94")) {
+            if (ImGui::Selectable("\xE2\x80\x94", m.target < 0) && m.target >= 0) {
+                m = {};
+                changed = true;
+            }
+            for (int track = 0; track < Engine::kNoteTrack; ++track) {
+                if (track == self)
+                    continue;
+                bool cycle = false;  // never a loop leading back to this one
+                for (int at = track, hops = 0; at >= 0 && hops < Engine::kNoteTrack && !cycle; ++hops) {
+                    at = statusOf(at).modTarget;
+                    cycle = at == self;
+                }
+                const bool plays = statusOf(track).state == LoopStatus::State::Playing;
+                if (ImGui::Selectable(PerformanceView::trackName(track), m.target == track, plays && !cycle ? 0 : ImGuiSelectableFlags_Disabled) &&
+                    m.target != track) {
+                    m.target = track;
+                    changed = true;
+                }
+            }
+            ImGui::EndCombo();
+        }
+        if (m.target >= 0) {
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(ImGui::GetFontSize() * 7);
+            changed |= ImGui::SliderInt("##depth", &m.depth, 0, 100, "depth %d %%", ImGuiSliderFlags_AlwaysClamp);
+            ImGui::SameLine();
+            changed |= ImGui::Checkbox("inverted", &m.inverted);
+            ImGui::SameLine();
+            changed |= ImGui::Checkbox("sends its CC", &m.sendsCc);
+        }
+        if (changed)
+            modulationRequest_ = Modulation{source, axis, m};
+        ImGui::PopID();
+    }
+    ImGui::PushStyleColor(ImGuiCol_Text, kHintColor);
+    ImGui::TextWrapped("The amplitude of the loop chosen follows this one: high, it swings as wide as its AMP; low, it closes in on "
+                       "its centre. Each loop keeps its own length. Kept in the clip, with its loops.");
+    ImGui::PopStyleColor();
+}
+
 // The loop a Loop record button captures from a stick or finger (a
 // LoopSource): how it plays, and on which CCs, beside the source's own.
 bool MappingEditor::drawLoopForm(int source, Mapping& m, const LiveState& live) {
@@ -503,6 +571,7 @@ bool MappingEditor::drawLoopForm(int source, Mapping& m, const LiveState& live) 
     }
     drawAxisLanes(source, m, live);
     changed |= drawStepsForm(source, m);
+    drawModulationForm(source, live);
     // Clear one axis' loop, or both.
     const char* names[2] = {triggers ? "Clear L2" : "Clear X", triggers ? "Clear R2" : "Clear Y"};
     for (int axis = 0; axis < 2; ++axis) {
