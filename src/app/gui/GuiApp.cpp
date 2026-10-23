@@ -751,7 +751,7 @@ bool GuiApp::init() {
             openOutputDialog_ = true;
         }
     } else {
-        outputDialogReason_ = "Choose where Arcadance sends its MIDI.";
+        outputDialogReason_ = "Where Arcadance sends its MIDI.";
         openOutputDialog_ = true;
     }
     if (!output_) {
@@ -1950,14 +1950,21 @@ void GuiApp::songEvent(Engine::SessionEvent e, const LiveState& live) {
         if (c.row == sections)
             c.col = -1;
         break;
-    case E::Left:
-        if (c.row < sections)
-            c.col = std::max(c.col - 1, -1);
+    case E::Left:  // among the channels shown; left of the first (or of the names), the last
+    case E::Right: {  // right of the last, the names, then the first
+        const std::vector<int> shown = PerformanceView::songChannels(live, song_);
+        if (c.row >= sections || shown.empty()) {
+            c.col = -1;
+            break;
+        }
+        const auto it = std::find(shown.begin(), shown.end(), c.col);
+        const int at = it == shown.end() ? -1 : static_cast<int>(it - shown.begin()), last = static_cast<int>(shown.size()) - 1;
+        if (e == E::Left)
+            c.col = at <= 0 ? shown.back() : shown[static_cast<std::size_t>(at - 1)];
+        else
+            c.col = at < 0 ? shown.front() : at == last ? -1 : shown[static_cast<std::size_t>(at + 1)];
         break;
-    case E::Right:
-        if (c.row < sections)
-            c.col = std::min(c.col + 1, kChannelCount - 1);
-        break;
+    }
     case E::Press:
         if (c.row == sections)
             addSongSection(sections);
@@ -2049,11 +2056,15 @@ void GuiApp::openMenu(const PerformanceView::MenuTarget& t, const LiveState& liv
         add("Empty it", kEmptyStep, has);
         break;
     }
-    case K::Channel:
+    case K::Channel:  // slot 1: from the song screen, without what belongs to the session screen
         menu.title = "CHANNEL " + std::to_string(t.channel + 1);
-        add("Stop", kChannelStop, ((live.clipsPlaying >> t.channel) & 1u) != 0);
+        if (t.slot != 1)
+            add("Stop", kChannelStop, ((live.clipsPlaying >> t.channel) & 1u) != 0);
         add(((live.muted >> t.channel) & 1u) ? "Unmute" : "Mute", kChannelMute);
         add(((live.soloed >> t.channel) & 1u) ? "Solo off" : "Solo", kChannelSolo);
+        add("Rename\xE2\x80\xA6", kRename);
+        if (t.slot == 1)
+            break;
         if (chains.at >= 0)
             add("Chain off", kChainOff);
         else
@@ -2159,6 +2170,7 @@ void GuiApp::openMenu(const PerformanceView::MenuTarget& t, const LiveState& liv
         add("Clear", kCellClear, !items->empty());
         add("Copy", kCellCopy, !items->empty());
         add("Paste", kCellPaste, !songClipboard_.empty());
+        add("Rename the channel\xE2\x80\xA6", kRename);
         break;
     }
     case K::SongPick: {
@@ -3258,6 +3270,13 @@ void GuiApp::drawPerformance(const LiveState& live) {
         openMenu(request->target, live, false, request->at);
     if (const auto channel = performance_.takeChannelRequest())  // the CHANNEL block's arrows or wheel
         runtime_->setChannel(*channel);
+    if (const auto renamed = performance_.takeRenameRequest()) {  // a channel's name double-clicked
+        renameChannel_ = *renamed;
+        renameChain_ = -1;
+        renameSection_ = -1;
+        renameInput_ = preset_.channelNames[static_cast<std::size_t>(*renamed)];
+        openRename_ = true;
+    }
     if (const auto clear = performance_.takeClearRequest())  // the x of a lane
         runtime_->clearLoop(clear->source, clear->axis);
     if (const auto stretch = performance_.takeStretchRequest())  // Shift + wheel over a LOOP panel
@@ -3416,10 +3435,6 @@ void GuiApp::drawOptionsOverlay() {
 
         // MIDI interface: every output, the current one selected.
         beginCard("##cardmidi", "MIDI INTERFACE", Theme::kBlue);
-        ImGui::PushFont(medium, 12.0f);
-        ImGui::TextColored(color(Theme::kLabel), "Where Arcadance sends its MIDI. Some programs only see the VirMIDI ports.");
-        ImGui::PopFont();
-        ImGui::Spacing();
         {  // the output drop-down
             struct Choice {
                 std::string port;  // empty: the virtual port
@@ -3520,7 +3535,7 @@ void GuiApp::drawOptionsOverlay() {
                 }
                 if (ports_.empty()) {
                     ImGui::PushFont(medium, 12.0f);
-                    ImGui::TextColored(color(Theme::kLabel), "  No MIDI port found: create VirMIDI ports below.");
+                    ImGui::TextColored(color(Theme::kLabel), "  No MIDI port found.");
                     ImGui::PopFont();
                 }
                 ImGui::EndPopup();
@@ -3563,15 +3578,6 @@ void GuiApp::drawOptionsOverlay() {
         beginCard("##cardsync", "SYNC", Theme::kGreen);
         {
             const LiveState live = runtime_->live();
-            ImGui::PushFont(medium, 12.0f);
-            ImGui::TextColored(color(Theme::kLabel),
-                               settings_.clock == AppSettings::Clock::Link
-                                   ? "Ableton Link shares tempo and beat with your DAW and other apps on this network."
-                               : settings_.clock == AppSettings::Clock::Internal
-                                   ? "Internal clock: Arcadance's own tempo and beat, no network needed."
-                                   : "Free: Arcadance keeps no beat. Choose a clock to play loops in time.");
-            ImGui::PopFont();
-            ImGui::Spacing();
             ImGui::PushFont(medium, 13.0f);
             bool changed = false;
             const float clockRowY = ImGui::GetCursorPosY();
@@ -3631,13 +3637,6 @@ void GuiApp::drawOptionsOverlay() {
                 changed = true;
             }
             ImGui::PopFont();
-            ImGui::PushFont(medium, 12.0f);
-            ImGui::TextColored(color(Theme::kLabel), "With a clock, a loop takes a whole number of these, starts on the\n"
-                                                     "beat and follows the tempo; its notes go on the quantize grid as\n"
-                                                     "they are recorded (what you hear live is never delayed). With Link,\n"
-                                                     "Play and Stop follow the session. With the internal clock, MIDI clock\n"
-                                                     "out sends 24 pulses a beat, Start with Play and Stop with Stop.");
-            ImGui::PopFont();
             if (changed) {
                 applySync();
                 persistSettings();
@@ -3647,12 +3646,6 @@ void GuiApp::drawOptionsOverlay() {
 
         // D-pad: how long a direction must hold before it plays.
         beginCard("##carddpad", "D-PAD", Theme::kRed);
-        ImGui::PushFont(medium, 12.0f);
-        ImGui::TextColored(color(Theme::kLabel),
-                           "A new direction plays once held this long, so the one crossed while\n"
-                           "pressing or releasing a diagonal stays silent. 0: at once.");
-        ImGui::PopFont();
-        ImGui::Spacing();
         ImGui::PushFont(medium, 13.0f);
         auto settleSlider = [&](const char* label, const char* id, int& ms) {
             ImGui::AlignTextToFramePadding();
@@ -3672,12 +3665,6 @@ void GuiApp::drawOptionsOverlay() {
 
         // Humanization: which channels, and how much.
         beginCard("##cardhumanize", "HUMANIZE", IM_COL32(0xB0, 0x8C, 0xFF, 255));
-        ImGui::PushFont(medium, 12.0f);
-        ImGui::TextColored(color(Theme::kLabel),
-                           "Random velocity and timing for the notes and chords of the chosen channels;\n"
-                           "each note of a chord varies on its own. A mapping can opt out.");
-        ImGui::PopFont();
-        ImGui::Spacing();
         ImGui::PushFont(medium, 13.0f);
         Humanize& h = settings_.humanize;
         bool humanizeChanged = false;
@@ -3784,10 +3771,6 @@ void GuiApp::drawOptionsOverlay() {
 
         // Display: how many frames a second the window draws.
         beginCard("##carddisplay", "DISPLAY", Theme::kCyan);
-        ImGui::PushFont(medium, 12.0f);
-        ImGui::TextColored(color(Theme::kLabel), "Lower rates use less GPU; MIDI and the controller are not affected.");
-        ImGui::PopFont();
-        ImGui::Spacing();
         ImGui::PushFont(medium, 13.0f);
         {
             rowLabel("Frame rate");
@@ -3804,13 +3787,9 @@ void GuiApp::drawOptionsOverlay() {
             if (ImGui::Checkbox("Render at standard resolution", &settings_.standardResolution))
                 persistSettings();
             ImGui::SetItemTooltip("On a scaled screen (125 %%, 200 %%...): fewer pixels to draw, a little less sharp");
-            const char* driver = SDL_GetCurrentVideoDriver();
             if (settings_.standardResolution != standardResolution_) {
                 ImGui::SameLine();
                 ImGui::TextColored(color(Theme::kLabel), "(at the next start)");
-            } else if (!driver || std::strcmp(driver, "wayland") != 0 || SDL_GetWindowDisplayScale(window_) <= 1.01f) {
-                ImGui::SameLine();
-                ImGui::TextColored(color(Theme::kLabel), "(no effect on this screen)");
             }
         }
         ImGui::PopFont();
@@ -3818,12 +3797,6 @@ void GuiApp::drawOptionsOverlay() {
 
         // Edit menu: the buttons that drive the session screen and the edit mode.
         beginCard("##cardeditmenu", "EDIT MENU", Theme::kCyan);
-        ImGui::PushFont(medium, 12.0f);
-        ImGui::TextColored(color(Theme::kLabel), "The buttons of the session screen and the edit mode. There, they do this instead");
-        ImGui::TextColored(color(Theme::kLabel), "of what the preset gives them; on the main screen they play as usual. Select and");
-        ImGui::TextColored(color(Theme::kLabel), "Menu may be one button: a press opens the menu, the same button then chooses.");
-        ImGui::PopFont();
-        ImGui::Spacing();
         ImGui::PushFont(medium, 13.0f);
         {
             static constexpr Button kChoices[] = {Button::South, Button::East, Button::West, Button::North, Button::LeftStick,
@@ -4037,7 +4010,6 @@ void GuiApp::drawMappingOverlay(const LiveState& live) {
                 ImGui::PopFont();
                 if (beginDialog("Use the base mapping")) {
                     ImGui::Text("Channel %d's own mapping is removed; it then plays channel 1's.", live.channel + 1);
-                    ImGui::TextColored(kHintColor, "Revert brings it back until you save the preset.");
                     const int button = dialogButtons({"Remove", "Cancel"});
                     if (button == 0) {
                         backToBase = true;
@@ -4068,7 +4040,6 @@ void GuiApp::drawMappingOverlay(const LiveState& live) {
                                firstControl->type == ActionType::Shift        ? "Shift"
                                : firstControl->type == ActionType::LoopRecord ? "Loop record"
                                                                               : "Mode");
-            ImGui::TextColored(kHintColor, "Change it on channel 1.");
             ImGui::Spacing();
         }
         ImGui::BeginDisabled(channelOneControl);
@@ -4086,16 +4057,9 @@ void GuiApp::drawMappingOverlay(const LiveState& live) {
                 ImGui::TextColored(ImVec4(0.55f, 0.75f, 1.0f, 1.0f), "%s %s", pitchName(settings_.key->root).c_str(),
                                    std::string(settings_.key->type().label).c_str());
             else
-                ImGui::TextColored(kHintColor, "(no tonality: choose one on the SCALE screen)");
-            ImGui::SameLine();
-            ImGui::TextColored(kHintColor, settings_.notesInScale && settings_.key ? "  up and down go by degrees of the scale"
-                                                                                   : "  up and down go by semitones");
+                ImGui::TextColored(kHintColor, "(no tonality)");
             performance_.setScaleMoves(settings_.notesInScale);
             performance_.drawNoteEditor(target, live, em * 56, em * 24);
-            ImGui::TextColored(kHintColor, "Drag: move a note or the selection  \xC2\xB7  Drag on empty space: select  \xC2\xB7  "
-                                           "Ctrl + click: add  \xC2\xB7  Double-click: a chord  \xC2\xB7  Ctrl + wheel: zoom");
-            ImGui::TextColored(kHintColor, "Drag the end of a selected note: its length  \xC2\xB7  Drag the right edge: the loop's length  \xC2\xB7  "
-                                           "Right-click or Delete: delete");
             ImGui::Spacing();
         }
         if (editor_.drawControl(spec, target, live, settings_.key)) {
@@ -4375,7 +4339,7 @@ void GuiApp::drawOpenSessionDialog() {
         return;
     bool open = false;
     if (sessionList_.empty()) {
-        ImGui::TextUnformatted("No session saved yet: \u2630 \u203a Save as\u2026 saves the loops playing now.");
+        ImGui::TextUnformatted("No session saved yet.");
     } else {
         if (ImGui::BeginChild("##sessions", ImVec2(ImGui::GetFontSize() * 26, 0),
                               ImGuiChildFlags_AutoResizeY | ImGuiChildFlags_Borders)) {
@@ -4395,7 +4359,7 @@ void GuiApp::drawOpenSessionDialog() {
             }
         }
         ImGui::EndChild();
-        ImGui::TextColored(kHintColor, "Opening one replaces every loop, the preset and the tonality.\nRight-click a session to delete it.");
+        ImGui::TextColored(kHintColor, "Opening one replaces every loop, the preset and the tonality.");
     }
     const int button = dialogButtons({"Open", "Cancel"});
     if ((button == 0 || open) && sessionChoice_ >= 0) {
@@ -4779,15 +4743,10 @@ void GuiApp::drawOutputDialog() {
         ImGui::Separator();
         ImGui::Spacing();
     }
-    ImGui::PushStyleColor(ImGuiCol_Text, kHintColor);
-    ImGui::TextWrapped("Some programs do not see the virtual port \"%s\": choose a VirMIDI port, "
-                       "then in your program the input shown on the right.",
-                       settings_.virtualPortName.c_str());
-    ImGui::PopStyleColor();
 
     ImGui::BeginChild("ports", ImVec2(0, ImGui::GetTextLineHeightWithSpacing() * 9), ImGuiChildFlags_Borders);
     if (ports_.empty())
-        ImGui::TextDisabled("No MIDI port found: create VirMIDI ports above.");
+        ImGui::TextDisabled("No MIDI port found.");
     for (const auto& port : ports_) {
         const std::string name = rawMidiName(port);
         const std::string text = name.empty() ? port : port + "      -> seen as " + name + "/…";

@@ -195,11 +195,6 @@ bool MappingEditor::drawAxisForm(const char* id, AxisBinding& a, float position,
     modeRadio("Program change##mode", AxisMode::Program);
     modeRadio("Velocity##mode", AxisMode::Velocity);
     modeRadio("Transpose##mode", AxisMode::Transpose);
-    auto hint = [](const char* text) {
-        ImGui::PushStyleColor(ImGuiCol_Text, kHintColor);
-        ImGui::TextWrapped("%s", text);
-        ImGui::PopStyleColor();
-    };
     switch (a.mode) {
     case AxisMode::Program:
         changed |= inputProgram("From", a.min);
@@ -207,8 +202,6 @@ bool MappingEditor::drawAxisForm(const char* id, AxisBinding& a, float position,
         changed |= inputProgram("To", a.max);
         changed |= ImGui::Checkbox("Invert", &a.invert);
         changed |= inputBankSelect(a.bankMsb, a.bankLsb);
-        hint("The travel picks a program in this range, in the bank set above; it is sent once the control stays on "
-             "it a moment, never when it springs back to rest.");
         break;
     case AxisMode::Velocity: {
         changed |= ImGui::Checkbox("Invert", &a.invert);
@@ -223,13 +216,6 @@ bool MappingEditor::drawAxisForm(const char* id, AxisBinding& a, float position,
                 changed = true;
             }
         }
-        hint(trigger ? "Pressed, the trigger raises the velocity of the notes then played, from their mapping's "
-                       "velocity up to 127 at the end of its travel."
-                     : "Away from the middle, the velocity of the notes then played rises from their mapping's "
-                       "velocity up to 127 one way, and falls down to 1 the other way. A stick at rest changes "
-                       "nothing; a finger keeps its last value once lifted. A loop of this axis does the same.");
-        hint("On the note loop, each note goes louder or softer from the velocity it was recorded with, so the accents "
-             "you played stay. Record this axis's movement and it becomes an accent pattern on the note loop.");
         break;
     }
     case AxisMode::Transpose: {
@@ -253,11 +239,6 @@ bool MappingEditor::drawAxisForm(const char* id, AxisBinding& a, float position,
             changed = true;
         }
         changed |= ImGui::Checkbox("Invert", &a.invert);
-        hint(trigger ? "Pressed, the trigger transposes up to this many semitones, by degrees of the scale when a "
-                       "tonality is chosen. Notes take it when they start."
-                     : "Away from the middle, it transposes down or up to these many semitones, by degrees of the "
-                       "scale when a tonality is chosen. Notes take it when they start; the note loop is the active "
-                       "channel's. A stick at rest changes nothing; a finger keeps its last value once lifted.");
         break;
     }
     case AxisMode::Cc:
@@ -292,9 +273,6 @@ bool MappingEditor::drawFingerForm(int finger, FingerBinding& f, const LiveState
         ImGui::SeparatorText("Y (bottom -> top)");
         changed |= drawAxisForm("y", f.y, live1.down ? 1.0f - live1.y : 0.0f);
     } else if (f.mode == TouchMode::Zones) {
-        ImGui::PushStyleColor(ImGuiCol_Text, kHintColor);
-        ImGui::TextWrapped("Click a zone in the touchpad module to choose what it plays.");
-        ImGui::PopStyleColor();
     }
     ImGui::PopID();
     return changed;
@@ -378,10 +356,6 @@ bool MappingEditor::drawControl(const std::string& spec, Mapping& m, const LiveS
                                     newControl && shiftLayer_ ? ImGuiTabItemFlags_SetSelected : 0)) {
                 if (!newControl)
                     shiftLayer_ = true;
-                ImGui::PushStyleColor(ImGuiCol_Text, kHintColor);
-                ImGui::TextWrapped("While a Shift button is held (or latched), this control plays what you set here; "
-                                   "with No action, it plays its normal mapping.");
-                ImGui::PopStyleColor();
                 ImGui::Spacing();
                 changed |= drawTriggerEditor(*shifted);
                 if (shifted->type == ActionType::Shift) {  // no Shift inside the Shift layer
@@ -461,10 +435,6 @@ void MappingEditor::drawModulationForm(int source, const LiveState& live) {
             modulationRequest_ = Modulation{source, axis, m};
         ImGui::PopID();
     }
-    ImGui::PushStyleColor(ImGuiCol_Text, kHintColor);
-    ImGui::TextWrapped("The amplitude of the loop chosen follows this one: high, it swings as wide as its AMP; low, it closes in on "
-                       "its centre. Each loop keeps its own length. Kept in the clip, with its loops.");
-    ImGui::PopStyleColor();
 }
 
 // The loop a Loop record button captures from a stick or finger (a
@@ -489,11 +459,6 @@ bool MappingEditor::drawLoopForm(int source, Mapping& m, const LiveState& live) 
         }
     }
     if (source == static_cast<int>(LoopSource::Notes)) {
-        ImGui::PushStyleColor(ImGuiCol_Text, kHintColor);
-        ImGui::TextWrapped("Hold Record and play notes or chords (buttons, D-pad, triggers as buttons): they loop on "
-                           "the channel where they were played. What still sounds is cut when the loop starts over. "
-                           "The touchpad pads have their own loops.");
-        ImGui::PopStyleColor();
         if (ImGui::Button("Clear the loop"))
             clearLoopRequest_ = ClearLoop{source, -1};
         ImGui::PopID();
@@ -505,10 +470,8 @@ bool MappingEditor::drawLoopForm(int source, Mapping& m, const LiveState& live) 
     const FingerBinding* f = finger ? &m.fingers[static_cast<std::size_t>(source - 2)] : nullptr;
     if (finger && f->mode != TouchMode::Axis) {
         ImGui::PushStyleColor(ImGuiCol_Text, kHintColor);
-        ImGui::TextWrapped(f->mode == TouchMode::Zones
-                               ? "In 4-pad mode the pads play notes: Record puts them in the note loop, with the "
-                                 "buttons' notes (see the piano roll); a tap over it adds more in overdub."
-                               : "The finger is off: nothing to record.");
+        if (f->mode != TouchMode::Zones)
+            ImGui::TextWrapped("The finger is off: nothing to record.");
         ImGui::PopStyleColor();
         if (ImGui::Button("Clear the loop"))
             clearLoopRequest_ = ClearLoop{source, -1};
@@ -566,7 +529,7 @@ bool MappingEditor::drawLoopForm(int source, Mapping& m, const LiveState& live) 
     }
     if (!clash.empty()) {
         ImGui::PushStyleColor(ImGuiCol_Text, kErrorColor);
-        ImGui::TextWrapped("Also sent by %s: both would fight. Choose other CCs.", clash.c_str());
+        ImGui::TextWrapped("Also sent by %s: both would fight.", clash.c_str());
         ImGui::PopStyleColor();
     }
     drawAxisLanes(source, m, live);
@@ -607,7 +570,6 @@ void MappingEditor::drawAxisLanes(int source, const Mapping& m, const LiveState&
     const float width = ImGui::GetContentRegionAvail().x, laneH = font * 4.8f;
     const LoopBinding& lb = m.loops[static_cast<std::size_t>(source)];
     ImGui::Spacing();
-    ImGui::TextDisabled("Loop lengths: drag the end of a lane");
     for (int axis = 0; axis < 2; ++axis) {
         const LiveState::Lane& lane = loop.lanes[static_cast<std::size_t>(axis)];
         const LoopStatus& st = lane.status;
@@ -789,10 +751,6 @@ bool MappingEditor::drawStepsForm(int source, Mapping& m) {
         ImGui::EndDisabled();
         ImGui::PopID();
     }
-    ImGui::PushStyleColor(ImGuiCol_Text, kHintColor);
-    ImGui::TextWrapped("In steps, the loop holds a value per step of the beat (on the clock's tempo, or the loop's "
-                       "own beats when synced), rounded to that many levels. The recording itself stays as it was.");
-    ImGui::PopStyleColor();
     return changed;
 }
 
@@ -864,10 +822,6 @@ bool MappingEditor::drawTriggerEditor(TriggerBinding& b) {
             b.channelStep = 1;
             changed = true;
         }
-        ImGui::PushStyleColor(ImGuiCol_Text, kHintColor);
-        ImGui::TextWrapped("The channel wraps from 16 to 1. If the preset has a mapping for the new channel, "
-                           "it applies at once.");
-        ImGui::PopStyleColor();
         break;
     }
     case ActionType::Freeze: {
@@ -883,9 +837,6 @@ bool MappingEditor::drawTriggerEditor(TriggerBinding& b) {
                 }
             }
         }
-        ImGui::PushStyleColor(ImGuiCol_Text, kHintColor);
-        ImGui::TextWrapped("One press freezes, the next one releases.");
-        ImGui::PopStyleColor();
         break;
     }
     case ActionType::ProgramChange: {
@@ -904,43 +855,16 @@ bool MappingEditor::drawTriggerEditor(TriggerBinding& b) {
         else
             changed |= ImGui::Checkbox("Wrap around (128 -> 1)", &b.programWrap);
         changed |= inputBankSelect(b.bankMsb, b.bankLsb);
-        ImGui::PushStyleColor(ImGuiCol_Text, kHintColor);
-        ImGui::TextWrapped("Sent on the active channel. Next and Previous step from the last program sent there.");
-        ImGui::PopStyleColor();
         break;
     }
     case ActionType::Shift:
         changed |= modeRadio(b.mode);
-        ImGui::PushStyleColor(ImGuiCol_Text, kHintColor);
-        ImGui::TextWrapped("While Shift is on (held, or pressed once in Toggle mode), the buttons, the D-pad and the "
-                           "touchpad pads play their Shift layer (the Shift tab of their window), and a stick or a "
-                           "finger on the touchpad reshapes its loop: left or right stretches or compresses it in "
-                           "time, as Shift + mouse wheel over its LOOP panel does; up or down widens or narrows its "
-                           "amplitude, as Ctrl + mouse wheel does. Meanwhile they send no CC. What you set stays.");
-        ImGui::PopStyleColor();
         break;
     case ActionType::SessionScreen:
-        ImGui::PushStyleColor(ImGuiCol_Text, kHintColor);
-        ImGui::TextWrapped("Opens and closes the session screen (the clips of every channel); with Shift, the edit mode "
-                           "(a cursor on the main screen, to set things up from the controller); held, the help of the "
-                           "screen you are on. Set on channel 1, it works on every channel. Without one in the preset, "
-                           "the PS / Guide button does it. The buttons that select, open menus and go back in these "
-                           "screens are chosen in Options \u203a CONTROLLER.");
-        ImGui::PopStyleColor();
         break;
     case ActionType::TapTempo:
-        ImGui::PushStyleColor(ImGuiCol_Text, kHintColor);
-        ImGui::TextWrapped("Tap in time: from the second tap, the tempo of the clock (internal or Ableton Link) "
-                           "follows your taps, and every app in the Link session with it. A tap clearly off is "
-                           "ignored; a pause of more than two seconds starts over.");
-        ImGui::PopStyleColor();
         break;
     case ActionType::LoopRecord:
-        ImGui::PushStyleColor(ImGuiCol_Text, kHintColor);
-        ImGui::TextWrapped("Hold to record the stick that moves (left or right, or both); release to play it in a "
-                           "loop, beside the stick, on the loop CCs set in the stick's panel. A press without moving "
-                           "any stick stops the loops.");
-        ImGui::PopStyleColor();
         break;
     }
     return changed;

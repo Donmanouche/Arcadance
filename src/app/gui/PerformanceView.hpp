@@ -127,6 +127,8 @@ public:
         int row = 0, col = -1, item = 0, value = 0;
     };
     std::optional<SongAction> drawSong(const LiveState& live, const midipad::Song& song, const SongCursor& cursor);
+    // The channels the song screen shows, in order: those with a clip or a chain, or something in the song.
+    static std::vector<int> songChannels(const LiveState& live, const midipad::Song& song);
     // An item's length in beats (`open`: it has a forever step), and a section's in bars, from what the engine says.
     static double songItemBeats(const LiveState& live, int channel, const midipad::SongItem& item, bool* open = nullptr);
     static int songSectionBars(const LiveState& live, const midipad::SongSection& section);
@@ -165,6 +167,8 @@ public:
     std::optional<MenuRequest> takeMenuRequest() { return std::exchange(menuRequest_, std::nullopt); }
     // The CHANNEL block's arrows or the wheel over it, during the last draw: the channel asked for.
     std::optional<int> takeChannelRequest() { return std::exchange(channelRequest_, std::nullopt); }
+    // A channel's name double-clicked on the session or song screen: rename it, once.
+    std::optional<int> takeRenameRequest() { return std::exchange(renameRequest_, std::nullopt); }
     // The channels' names (Preset::channelNames), shown with their numbers.
     void setChannelNames(const std::array<std::string, midipad::kChannelCount>& names) { channelNames_ = names; }
     // The chain the session screen shows for each channel, and the chains' names.
@@ -282,9 +286,10 @@ private:
     std::optional<LockRequest> clearRequest_;
     std::optional<MenuRequest> menuRequest_;
     std::optional<int> channelRequest_;
+    std::optional<int> renameRequest_;
     std::array<std::string, midipad::kChannelCount> channelNames_;
     std::array<int, midipad::kChannelCount> shownChains_{};
-    int songScroll_ = 0, songFirst_ = 0;  // the first section row and channel shown
+    int songScroll_ = 0, songFirst_ = 0;  // the first section row shown; the first channel shown, in songChannels
     int songDragBars_ = 0;                // an item being dragged: by how many bars
     ChainNames chainNames_;
     // "CHANNEL 3", or "3  PADS" when it has a name.
