@@ -4,7 +4,62 @@
 
 namespace midipad {
 
+namespace {
+ControllerFamily gFamily = ControllerFamily::PlayStation;
+}  // namespace
+
+void setLabelFamily(ControllerFamily family) { gFamily = family; }
+ControllerFamily labelFamily() { return gFamily; }
+
 std::string label(Button b) {
+    if (gFamily == ControllerFamily::Xbox) {
+        switch (b) {
+        case Button::South: return "A";
+        case Button::East: return "B";
+        case Button::West: return "X";
+        case Button::North: return "Y";
+        case Button::Back: return "View";
+        case Button::Guide: return "Xbox";
+        case Button::Start: return "Menu";
+        case Button::LeftStick: return "LS";
+        case Button::RightStick: return "RS";
+        case Button::LeftShoulder: return "LB";
+        case Button::RightShoulder: return "RB";
+        case Button::LeftTrigger: return "LT";
+        case Button::RightTrigger: return "RT";
+        case Button::Misc1: return "Share";
+        default: break;
+        }
+    } else if (gFamily == ControllerFamily::Nintendo) {
+        switch (b) {
+        case Button::South: return "B";
+        case Button::East: return "A";
+        case Button::West: return "Y";
+        case Button::North: return "X";
+        case Button::Back: return "Minus";
+        case Button::Guide: return "Home";
+        case Button::Start: return "Plus";
+        case Button::LeftStick: return "LS";
+        case Button::RightStick: return "RS";
+        case Button::LeftShoulder: return "L";
+        case Button::RightShoulder: return "R";
+        case Button::LeftTrigger: return "ZL";
+        case Button::RightTrigger: return "ZR";
+        case Button::Misc1: return "Capture";
+        default: break;
+        }
+    } else if (gFamily == ControllerFamily::Generic) {
+        switch (b) {
+        case Button::South: return "Bottom";
+        case Button::East: return "Right";
+        case Button::West: return "Left";
+        case Button::North: return "Top";
+        case Button::Back: return "Select";
+        case Button::Guide: return "Home";
+        case Button::Start: return "Start";
+        default: break;
+        }
+    }
     switch (b) {
     case Button::South: return "Cross";
     case Button::East: return "Circle";
@@ -25,6 +80,10 @@ std::string label(Button b) {
     case Button::Touchpad: return "Touchpad click";
     case Button::LeftTrigger: return "L2";
     case Button::RightTrigger: return "R2";
+    case Button::RightPaddle1: return "P1";
+    case Button::RightPaddle2: return "P2";
+    case Button::LeftPaddle1: return "P3";
+    case Button::LeftPaddle2: return "P4";
     default: return std::string(toString(b));
     }
 }
@@ -35,8 +94,8 @@ std::string label(Axis a) {
     case Axis::LeftY: return "Left stick Y";
     case Axis::RightX: return "Right stick X";
     case Axis::RightY: return "Right stick Y";
-    case Axis::LeftTrigger: return "L2 trigger";
-    case Axis::RightTrigger: return "R2 trigger";
+    case Axis::LeftTrigger: return label(Button::LeftTrigger) + " trigger";
+    case Axis::RightTrigger: return label(Button::RightTrigger) + " trigger";
     case Axis::Count: break;
     }
     return {};

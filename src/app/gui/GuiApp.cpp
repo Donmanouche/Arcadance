@@ -413,6 +413,11 @@ LiveState demoLive(double t) {
     s.connected = true;
     s.hasTouchpad = true;
     s.gamepadName = "DualSense (demo)";
+    s.presentButtons = 0;  // a DualSense's: no paddles
+    for (Button b : {Button::South, Button::East, Button::West, Button::North, Button::Back, Button::Guide, Button::Start, Button::LeftStick,
+                     Button::RightStick, Button::LeftShoulder, Button::RightShoulder, Button::DpadUp, Button::DpadDown, Button::DpadLeft,
+                     Button::DpadRight, Button::Misc1, Button::Touchpad, Button::LeftTrigger, Button::RightTrigger})
+        s.presentButtons |= 1u << static_cast<int>(b);
     auto axis = [](double v) { return static_cast<std::int16_t>(std::clamp(v, -1.0, 1.0) * 32767); };
     // Every motion repeats within the note loop's eight seconds, so a recording of them loops seamlessly.
     const double w = 2 * 3.14159265358979 / 8.0;
@@ -1425,6 +1430,7 @@ void SDLCALL GuiApp::onFolderChosen(void* self, const char* const* files, int) {
 
 void GuiApp::draw() {
     const LiveState live = options_.demo ? demoLive(ImGui::GetTime() + 2.0) : runtime_->live();
+    setLabelFamily(live.family);  // the buttons take the names of the controller connected
     if (!options_.demo && live.clock == ClockMode::Internal && settings_.clock == AppSettings::Clock::Internal &&
         std::abs(live.tempo - settings_.tempo) > 1e-6) {  // tapped on the controller
         settings_.tempo = live.tempo;
@@ -2226,7 +2232,7 @@ void GuiApp::openMenu(const PerformanceView::MenuTarget& t, const LiveState& liv
         const bool lane = t.kind == K::Lane;
         const LoopStatus& st = lane ? loop.lanes[static_cast<std::size_t>(t.axis & 1)].status : loop.status;
         const bool triggers = source == static_cast<int>(LoopSource::Triggers);
-        const std::string axis = !lane ? "" : triggers ? (t.axis == 0 ? " L2" : " R2") : (t.axis == 0 ? " X" : " Y");
+        const std::string axis = !lane ? "" : triggers ? " " + label(t.axis == 0 ? Button::LeftTrigger : Button::RightTrigger) : (t.axis == 0 ? " X" : " Y");
         menu.title = std::string(kSourceNames[source]) + "\nloop" + axis;
         const bool plays = st.state == LoopStatus::State::Playing;
         if (st.locked)
@@ -2864,10 +2870,10 @@ std::string GuiApp::bindingName(ActionType type, const char* fallback) const {
 // While the Mode control is held: what the controller does on this screen, with its buttons.
 void GuiApp::drawHelpOverlay() {
     using T = PerformanceView::Theme;
-    const std::string mode = bindingName(ActionType::SessionScreen, "PS"), rec = bindingName(ActionType::LoopRecord, "Rec"),
+    const std::string mode = bindingName(ActionType::SessionScreen, label(Button::Guide).c_str()), rec = bindingName(ActionType::LoopRecord, "Rec"),
                       shift = bindingName(ActionType::Shift, "Shift");
     std::vector<std::string> select = settings_.navSelect >= 0 ? std::vector<std::string>{buttonName(settings_.navSelect, "")}
-                                                               : std::vector<std::string>{"L3", "R3"};
+                                                               : std::vector<std::string>{label(Button::LeftStick), label(Button::RightStick)};
     const std::string menu = buttonName(settings_.navMenu, ""), back = buttonName(settings_.navBack, "");
     const std::string unset = "(choose it in Options \xE2\x80\xBA EDIT MENU)";
     std::vector<std::pair<std::vector<std::string>, std::string>> rows;
@@ -2900,7 +2906,7 @@ void GuiApp::drawHelpOverlay() {
     } else {
         rows = {{{rec}, "held: record what you play or move;  a tap: stop the loops, or overdub"},
                 {{shift}, "the Shift layer; with a stick or a finger: the loops' lengths"},
-                {{shift, "L3"}, "a stick: lengths, amplitudes or offsets"},
+                {{shift, label(Button::LeftStick)}, "a stick: lengths, amplitudes or offsets"},
                 {{mode}, "the session screen (clips and chains); again: the song"},
                 {{shift, mode}, "edit mode: set things up from the controller"}};
         performance_.drawHelp("MAIN SCREEN", T::kBlue, closeHint, rows);

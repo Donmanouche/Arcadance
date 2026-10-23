@@ -281,6 +281,10 @@ LiveState Runtime::live() const {
     LiveState s;
     s.connected = connected_.load(std::memory_order_relaxed);
     s.hasTouchpad = hasTouchpad_.load(std::memory_order_relaxed);
+    s.family = static_cast<ControllerFamily>(family_.load(std::memory_order_relaxed));
+    s.presentButtons = presentButtons_.load(std::memory_order_relaxed);
+    s.presentAxes = presentAxes_.load(std::memory_order_relaxed);
+    s.touchpadExpected = touchpadExpected_.load(std::memory_order_relaxed);
     s.buttons = buttons_.load(std::memory_order_relaxed);
     for (std::size_t a = 0; a < s.axes.size(); ++a)
         s.axes[a] = axes_[a].load(std::memory_order_relaxed);
@@ -367,6 +371,10 @@ void Runtime::publish(const GamepadInput& gamepad, const Engine& engine) {
         std::lock_guard lock(nameMutex_);  // rare: only when a gamepad comes or goes
         gamepadName_ = gamepad.name();
         hasTouchpad_.store(gamepad.hasTouchpad(), std::memory_order_relaxed);
+        family_.store(static_cast<std::uint8_t>(gamepad.family()), std::memory_order_relaxed);
+        touchpadExpected_.store(!connected || gamepad.touchpadExpected(), std::memory_order_relaxed);
+        presentButtons_.store(connected ? gamepad.presentButtons() : ~0u, std::memory_order_relaxed);
+        presentAxes_.store(connected ? gamepad.presentAxes() : std::uint8_t{0xFF}, std::memory_order_relaxed);
         connected_.store(connected, std::memory_order_relaxed);
     }
     buttons_.store(static_cast<std::uint32_t>(gamepad.buttons().to_ulong()), std::memory_order_relaxed);

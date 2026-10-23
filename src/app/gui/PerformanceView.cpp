@@ -176,9 +176,11 @@ ImU32 trackColor(int track) {
     static constexpr ImU32 kColors[] = {T::kBlue, T::kOrange, T::kCyan, T::kOrange, T::kPink};
     return kColors[std::clamp(track / 2, 0, 4)];
 }
-const char* trackShortName(int track) {
-    static constexpr const char* kNames[] = {"LEFT X", "LEFT Y", "RIGHT X", "RIGHT Y", "F1 X", "F1 Y", "F2 X", "F2 Y", "L2", "R2"};
-    return track >= 0 && track < 10 ? kNames[track] : "";
+std::string trackShortName(int track) {
+    static constexpr const char* kNames[] = {"LEFT X", "LEFT Y", "RIGHT X", "RIGHT Y", "F1 X", "F1 Y", "F2 X", "F2 Y"};
+    if (track == 8 || track == 9)
+        return label(track == 8 ? Button::LeftTrigger : Button::RightTrigger);
+    return track >= 0 && track < 8 ? kNames[track] : "";
 }
 
 // The phosphor looks' neon, before GuiApp tints it.
@@ -1117,17 +1119,27 @@ std::optional<std::string> PerformanceView::draw(const Mapping& normalMapping, c
     const float moduleH = topH - lowH - gap;
     const float lowY = origin.y + moduleH + gap;
     float x = origin.x;
+    // A module the controller has nothing for is off: dimmed under its title, its settings kept.
+    auto off = [&](float mx, bool absent) {
+        if (absent)
+            ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(mx + px(1), origin.y + px(37)), ImVec2(mx + colW - px(1), origin.y + moduleH - px(1)),
+                                                      gLook ? IM_COL32(0, 0, 0, 205) : IM_COL32(0x2E, 0x31, 0x36, 225), px(6));
+    };
     drawStick(0, mapping, live, x, origin.y, colW, moduleH);
+    off(x, live.connected && !live.has(Axis::LeftX) && !live.has(Axis::LeftY));
     x += colW + gap;
     drawStick(1, mapping, live, x, origin.y, colW, moduleH);
+    off(x, live.connected && !live.has(Axis::RightX) && !live.has(Axis::RightY));
     x += colW + gap;
     drawTriggers(mapping, live, x, origin.y, colW, moduleH);
+    off(x, live.connected && !live.has(Axis::LeftTrigger) && !live.has(Axis::RightTrigger));
     drawPianoRoll(mapping, live, origin.x, lowY, colW * 3 + gap * 2, lowH);
     x += colW + gap;
     drawDpad(mapping, live, x, origin.y, colW, moduleH);
     drawScale(key, x, lowY, colW, lowH);
     x += colW + gap;
     drawTouchpad(mapping, live, x, origin.y, colW, moduleH);
+    off(x, live.connected && !live.hasTouchpad && !live.touchpadExpected);  // a DualSense's may only lack the access
     drawChannel(live, x, lowY, colW, lowH);
     drawButtons(mapping, live, origin.x, origin.y + topH + gap, avail.x, stripH);
 
@@ -1958,6 +1970,17 @@ std::pair<ImVec2, ImVec2> PerformanceView::cursorBox() const {
 // A controller button as a small sign: the face buttons' symbols, a pill with the name for the others.
 float buttonSign(ImDrawList* dl, float x, float y, const std::string& name) {
     const float r = px(12);
+    // Xbox and Nintendo face buttons: a letter in a ring (Xbox's in their colours).
+    const ControllerFamily family = labelFamily();
+    if ((family == ControllerFamily::Xbox || family == ControllerFamily::Nintendo) && name.size() == 1 && std::string("ABXY").find(name) != std::string::npos) {
+        const ImU32 ring = family == ControllerFamily::Nintendo ? kPadGrey
+                           : name == "A" ? IM_COL32(0x5C, 0xC8, 0x5C, 255) : name == "B" ? IM_COL32(0xF0, 0x5A, 0x5A, 255)
+                           : name == "X" ? IM_COL32(0x4D, 0x9C, 0xFF, 255) : IM_COL32(0xF2, 0xC0, 0x3C, 255);
+        dl->AddCircleFilled(ImVec2(x + r, y), r, IM_COL32(0x1E, 0x20, 0x24, 255));
+        dl->AddCircle(ImVec2(x + r, y), r, ring, 0, px(1.6f));
+        text(dl, gBold, px(12), x + r, y, ring, name, H::Center, V::Middle);
+        return x + 2 * r;
+    }
     ImU32 col = 0;
     if (name == "Cross") col = IM_COL32(0x6E, 0x8C, 0xFF, 255);
     if (name == "Circle") col = IM_COL32(0xFF, 0x5A, 0x5A, 255);
@@ -3421,8 +3444,8 @@ void PerformanceView::drawTriggers(const Mapping& m, const LiveState& live, floa
             dl->AddPolyline(pts, 4, col, px(2.2f));
             text(dl, gBold, px(13), (x0 + x1) * 0.5f, s.a.y + px(8), on ? T::kText : T::kLabel, name, H::Center);
         };
-        envelope(s.a.x + W * 0.04f, s.a.x + W * 0.48f, vl, soundL, "L2");
-        envelope(s.a.x + W * 0.52f, s.a.x + W * 0.96f, vr, soundR, "R2");
+        envelope(s.a.x + W * 0.04f, s.a.x + W * 0.48f, vl, soundL, label(Button::LeftTrigger).c_str());
+        envelope(s.a.x + W * 0.52f, s.a.x + W * 0.96f, vr, soundR, label(Button::RightTrigger).c_str());
     });
     if (hoverButton("##triggers", s.a, s.b))
         click("axes:left_trigger,right_trigger");
@@ -3434,7 +3457,7 @@ void PerformanceView::drawTriggers(const Mapping& m, const LiveState& live, floa
     const ImU32 pinkLight = mix(T::kPink, T::kText, 0.5f);
     auto triggerRow = [&](float ry, Axis a, Button b, const AxisBinding& ab, const TriggerBinding& t, bool on) {
         const float rh = px(28), midY = ry + rh * 0.5f;
-        text(dl, gBold, px(12), x + px(12), midY, T::kLabel, a == Axis::LeftTrigger ? "L2" : "R2", H::Left, V::Middle);
+        text(dl, gBold, px(12), x + px(12), midY, T::kLabel, label(a == Axis::LeftTrigger ? Button::LeftTrigger : Button::RightTrigger), H::Left, V::Middle);
         const float ccX0 = x + px(38), ccW = px(52);
         badge(dl, gCondensed, px(13), ccX0 + ccW * 0.5f, midY - px(10), px(20), axisTarget(ab, live),
               T::kText, alpha(T::kPink, 0.22f), ab.enabled ? T::kPink : T::kDim);
@@ -3459,8 +3482,9 @@ void PerformanceView::drawTriggers(const Mapping& m, const LiveState& live, floa
     constexpr int kTriggers = static_cast<int>(LoopSource::Triggers);
     const LiveState::Loop& loop = live.loops[static_cast<std::size_t>(kTriggers)];
     const LoopBinding& lb = m.loops[static_cast<std::size_t>(kTriggers)];
-    const LaneLook lanes[2] = {{&loop.lanes[0], Engine::trackOf(kTriggers, 0), T::kPink, "L2", bl.enabled, bl.invert, false, laneTarget(bl, lb.ccX), lb.steps[0]},
-                               {&loop.lanes[1], Engine::trackOf(kTriggers, 1), pinkLight, "R2", br.enabled, br.invert, false, laneTarget(br, lb.ccY), lb.steps[1]}};
+    const std::string leftName = label(Button::LeftTrigger), rightName = label(Button::RightTrigger);
+    const LaneLook lanes[2] = {{&loop.lanes[0], Engine::trackOf(kTriggers, 0), T::kPink, leftName.c_str(), bl.enabled, bl.invert, false, laneTarget(bl, lb.ccX), lb.steps[0]},
+                               {&loop.lanes[1], Engine::trackOf(kTriggers, 1), pinkLight, rightName.c_str(), br.enabled, br.invert, false, laneTarget(br, lb.ccY), lb.steps[1]}};
     drawLoopPanel(dl, x, w, loopY, y + h - px(10), loop.status, lb.playback, lanes, 2, T::kPink, artFor(live.channel, 2),
                   "REC  \xC2\xB7  press a trigger", "##looptriggers", "axes:left_trigger,right_trigger", kTriggers);
 }
@@ -3842,17 +3866,32 @@ void PerformanceView::drawButtons(const Mapping& m, const LiveState& live, float
         ImU32 color;  // face buttons only
     };
     static constexpr Pad kPads[] = {
-        {Button::LeftShoulder, 0}, {Button::LeftTrigger, 0}, {Button::LeftStick, 0},     {Button::Back, 0},
-        {Button::South, kPsCross}, {Button::East, kPsCircle}, {Button::West, kPsSquare},  {Button::North, kPsTriangle},
-        {Button::Start, 0},        {Button::Guide, 0},       {Button::Touchpad, 0},      {Button::Misc1, 0},
-        {Button::RightStick, 0},   {Button::RightTrigger, 0}, {Button::RightShoulder, 0},
+        {Button::LeftPaddle1, 0},  {Button::LeftPaddle2, 0},  {Button::LeftShoulder, 0}, {Button::LeftTrigger, 0}, {Button::LeftStick, 0},
+        {Button::Back, 0},         {Button::South, kPsCross}, {Button::East, kPsCircle}, {Button::West, kPsSquare}, {Button::North, kPsTriangle},
+        {Button::Start, 0},        {Button::Guide, 0},        {Button::Touchpad, 0},     {Button::Misc1, 0},        {Button::RightStick, 0},
+        {Button::RightTrigger, 0}, {Button::RightShoulder, 0}, {Button::RightPaddle2, 0}, {Button::RightPaddle1, 0},
     };
+    // The controller's buttons (the paddles only when it has them), its face buttons in its family's colours.
+    const ControllerFamily family = labelFamily();
+    std::vector<Pad> pads;
+    for (Pad p : kPads) {
+        const bool paddle = p.button == Button::LeftPaddle1 || p.button == Button::LeftPaddle2 || p.button == Button::RightPaddle1 ||
+                            p.button == Button::RightPaddle2;
+        if (!live.has(p.button) || (paddle && !live.connected))
+            continue;
+        if (p.color && family == ControllerFamily::Xbox)
+            p.color = p.button == Button::South ? IM_COL32(0x5C, 0xC8, 0x5C, 255) : p.button == Button::East ? IM_COL32(0xF0, 0x5A, 0x5A, 255)
+                    : p.button == Button::West  ? IM_COL32(0x4D, 0x9C, 0xFF, 255) : IM_COL32(0xF2, 0xC0, 0x3C, 255);
+        else if (p.color && family != ControllerFamily::PlayStation)
+            p.color = kPadGrey;
+        pads.push_back(p);
+    }
     const float pad = px(12);
-    const float slot = (w - 2 * pad) / static_cast<float>(std::size(kPads));
+    const float slot = (w - 2 * pad) / static_cast<float>(std::max<std::size_t>(pads.size(), 1));
     const float body = y + h - top;
     const float cy = top + body * 0.30f;
-    for (std::size_t i = 0; i < std::size(kPads); ++i) {
-        const Pad& pd = kPads[i];
+    for (std::size_t i = 0; i < pads.size(); ++i) {
+        const Pad& pd = pads[i];
         const bool face = pd.color != 0;
         const float cx = x + pad + slot * (static_cast<float>(i) + 0.5f);
         const float r = std::min({slot * (face ? 0.42f : 0.33f), px(face ? 30 : 23), body * (face ? 0.19f : 0.155f)});
@@ -3877,6 +3916,18 @@ void PerformanceView::drawButtons(const Mapping& m, const LiveState& live, float
         dl->AddCircle(c, r, face || sounding ? color : IM_COL32(0x8C, 0x92, 0x9A, 255), 0, px(2.2f));
         const ImU32 symbol = sounding ? IM_COL32(0x10, 0x12, 0x15, 255) : face ? color : T::kText;
         const float s = r * 0.42f, th = r * 0.11f;
+        if (face && (family == ControllerFamily::Xbox || family == ControllerFamily::Nintendo)) {  // its letter
+            text(dl, gBold, r * 0.95f, cx, cy, symbol, label(pd.button), H::Center, V::Middle);
+        } else if (face && family == ControllerFamily::Generic) {  // four dots, the one of its place filled
+            const float d = r * 0.42f, dr = r * 0.16f;
+            const ImVec2 at[4] = {ImVec2(cx, cy + d), ImVec2(cx + d, cy), ImVec2(cx - d, cy), ImVec2(cx, cy - d)};
+            const int mine = pd.button == Button::South ? 0 : pd.button == Button::East ? 1 : pd.button == Button::West ? 2 : 3;
+            for (int k = 0; k < 4; ++k)
+                if (k == mine)
+                    dl->AddCircleFilled(at[k], dr * 1.25f, symbol);
+                else
+                    dl->AddCircle(at[k], dr, alpha(symbol, 0.6f), 0, th * 0.6f);
+        } else
         switch (pd.button) {
         case Button::South:
             dl->AddLine(ImVec2(cx - s, cy - s), ImVec2(cx + s, cy + s), symbol, th);
@@ -3893,10 +3944,17 @@ void PerformanceView::drawButtons(const Mapping& m, const LiveState& live, float
                             symbol, th);
             break;
         default: {
-            const char* code = pd.button == Button::Back       ? "CRE"
-                               : pd.button == Button::Start    ? "OPT"
+            // Short codes for the long names; the paddles P1-P4.
+            const bool ps = family == ControllerFamily::PlayStation, xbox = family == ControllerFamily::Xbox, nin = family == ControllerFamily::Nintendo;
+            const char* code = pd.button == Button::Back       ? (ps ? "CRE" : xbox ? "VIEW" : nin ? "\xE2\x80\x93" : "SEL")
+                               : pd.button == Button::Start    ? (ps ? "OPT" : xbox ? "MENU" : nin ? "+" : "STA")
+                               : pd.button == Button::Guide    ? (ps ? "PS" : xbox ? "XBOX" : "HOME")
                                : pd.button == Button::Touchpad ? "TP"
-                               : pd.button == Button::Misc1    ? "MUTE"
+                               : pd.button == Button::Misc1    ? (ps ? "MUTE" : xbox ? "SHR" : nin ? "CAP" : "MISC")
+                               : pd.button == Button::RightPaddle1 ? "P1"
+                               : pd.button == Button::LeftPaddle1  ? "P3"
+                               : pd.button == Button::RightPaddle2 ? "P2"
+                               : pd.button == Button::LeftPaddle2  ? "P4"
                                                                 : nullptr;
             const std::string name = code ? code : label(pd.button);
             text(dl, gBold, std::min(px(name.size() > 3 ? 11 : 13), r * 0.62f), cx, cy, symbol, name, H::Center, V::Middle);

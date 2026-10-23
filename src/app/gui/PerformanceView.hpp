@@ -52,11 +52,12 @@ public:
     // screen's (lines on black; GuiApp then tints every colour).
     enum class Look { Classic, PhosphorGreen, PhosphorBlue };
     static void setLook(Look look);
-    // A movement track's name (Engine::trackOf): Left stick X ... R2.
-    static const char* trackName(int track) {
-        static constexpr const char* kNames[] = {"Left stick X", "Left stick Y", "Right stick X", "Right stick Y", "Finger 1 X",
-                                                 "Finger 1 Y",   "Finger 2 X",   "Finger 2 Y",    "L2",            "R2"};
-        return track >= 0 && track < 10 ? kNames[track] : "";
+    // A movement track's name (Engine::trackOf): Left stick X ... R2 (the controller's names of the triggers).
+    static std::string trackName(int track) {
+        static constexpr const char* kNames[] = {"Left stick X", "Left stick Y", "Right stick X", "Right stick Y", "Finger 1 X", "Finger 1 Y", "Finger 2 X", "Finger 2 Y"};
+        if (track == 8 || track == 9)
+            return midipad::label(track == 8 ? midipad::Button::LeftTrigger : midipad::Button::RightTrigger);
+        return track >= 0 && track < 8 ? kNames[track] : "";
     }
 
     // The fonts of the view; null ones fall back to the default font.

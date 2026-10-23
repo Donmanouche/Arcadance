@@ -2,12 +2,20 @@
 
 #include "midipad/Preset.hpp"
 
+#include <cstdint>
 #include <string>
 
 namespace midipad {
 
-// User-facing names. PlayStation names for the buttons, since the DualSense
-// is the reference controller.
+// The family of the controller connected, whose names the buttons take:
+// PlayStation (the reference: Cross, Circle...), Xbox (A at the bottom),
+// Nintendo (A on the right, B at the bottom), or generic (by place: Bottom,
+// Right...). Positions never change, only names: South is South everywhere.
+enum class ControllerFamily : std::uint8_t { PlayStation, Xbox, Nintendo, Generic };
+void setLabelFamily(ControllerFamily family);
+ControllerFamily labelFamily();
+
+// User-facing names, in the family set above.
 std::string label(Button b);
 std::string label(Axis a);
 std::string label(HatDir d);

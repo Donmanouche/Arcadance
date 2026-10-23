@@ -394,7 +394,7 @@ void MappingEditor::drawModulationForm(int source, const LiveState& live) {
         if (st.state != LoopStatus::State::Playing)
             continue;
         ImGui::PushID(axis);
-        const char* name = triggers ? (axis == 0 ? "L2" : "R2") : (axis == 0 ? "X" : "Y");
+        const std::string name = triggers ? label(axis == 0 ? Button::LeftTrigger : Button::RightTrigger) : (axis == 0 ? "X" : "Y");
         // The loops it may modulate: playing, never one it is modulated by (even through others).
         auto allowed = [&](int track) {
             if (track == self || statusOf(track).state != LoopStatus::State::Playing)
@@ -409,11 +409,11 @@ void MappingEditor::drawModulationForm(int source, const LiveState& live) {
         auto choose = [&](const char* id, int current) {  // a combo of the loops; the one chosen, or -1
             int picked = -1;
             ImGui::SetNextItemWidth(comboW);
-            if (ImGui::BeginCombo(id, current >= 0 ? PerformanceView::trackName(current) : (current == -1 ? "\xE2\x80\x94" : "+"))) {
+            if (ImGui::BeginCombo(id, current >= 0 ? PerformanceView::trackName(current).c_str() : (current == -1 ? "\xE2\x80\x94" : "+"))) {
                 for (int track = 0; track < Engine::kNoteTrack; ++track) {
                     if (track == self || (statusOf(track).modSource == self && track != current))
                         continue;  // itself, or one it already modulates
-                    if (ImGui::Selectable(PerformanceView::trackName(track), track == current, allowed(track) ? 0 : ImGuiSelectableFlags_Disabled) && track != current)
+                    if (ImGui::Selectable(PerformanceView::trackName(track).c_str(), track == current, allowed(track) ? 0 : ImGuiSelectableFlags_Disabled) && track != current)
                         picked = track;
                 }
                 ImGui::EndCombo();
@@ -523,8 +523,9 @@ bool MappingEditor::drawLoopForm(int source, Mapping& m, const LiveState& live) 
         }
         return inputU7((std::string("Loop CC for ") + name).c_str(), cc);
     };
-    changed |= loopCc(own, triggers ? "L2" : "X", loop.ccX);
-    changed |= loopCc(ownY, triggers ? "R2" : "Y", loop.ccY);
+    const std::string leftName = label(Button::LeftTrigger), rightName = label(Button::RightTrigger);
+    changed |= loopCc(own, triggers ? leftName.c_str() : "X", loop.ccX);
+    changed |= loopCc(ownY, triggers ? rightName.c_str() : "Y", loop.ccY);
 
     // The loop plays beside the sticks and fingers: a CC they send too would fight.
     std::string clash;
@@ -548,8 +549,8 @@ bool MappingEditor::drawLoopForm(int source, Mapping& m, const LiveState& live) 
             const char* as = shapesAs(axis);
             return as ? std::string("as ") + as : "on CC " + std::to_string(cc);
         };
-        const std::string text = std::string("The loop plays beside the ") + what + ": " + (triggers ? "L2 " : "X ") +
-                                 plays(own, loop.ccX) + ", " + (triggers ? "R2 " : "Y ") + plays(ownY, loop.ccY) + ".";
+        const std::string text = std::string("The loop plays beside the ") + what + ": " + (triggers ? leftName + " " : std::string("X ")) +
+                                 plays(own, loop.ccX) + ", " + (triggers ? rightName + " " : std::string("Y ")) + plays(ownY, loop.ccY) + ".";
         ImGui::TextWrapped("%s", text.c_str());
         ImGui::PopStyleColor();
     }
@@ -601,7 +602,8 @@ void MappingEditor::drawAxisLanes(int source, const Mapping& m, const LiveState&
         const LoopStatus& st = lane.status;
         const ImVec4 c = ImGui::ColorConvertU32ToFloat4(base);  // Y: lighter
         const ImU32 color = axis == 0 ? base : ImGui::ColorConvertFloat4ToU32(ImVec4((c.x + 1) * 0.5f, (c.y + 1) * 0.5f, (c.z + 1) * 0.5f, 1));
-        const char* name = triggers ? (axis == 0 ? "L2" : "R2") : axis == 0 ? "X" : "Y";
+        const std::string nameText = triggers ? label(axis == 0 ? Button::LeftTrigger : Button::RightTrigger) : axis == 0 ? "X" : "Y";
+        const char* name = nameText.c_str();
         const Axis own = triggers ? (axis == 0 ? Axis::LeftTrigger : Axis::RightTrigger)
                                   : static_cast<Axis>(source * 2 + axis);  // sticks only
         const AxisBinding& binding = finger ? (axis == 0 ? m.fingers[static_cast<std::size_t>(source - 2)].x
@@ -757,7 +759,7 @@ bool MappingEditor::drawStepsForm(int source, Mapping& m) {
         StepGrid& grid = loop.steps[static_cast<std::size_t>(axis)];
         ImGui::PushID(100 + axis);
         ImGui::AlignTextToFramePadding();
-        ImGui::Text("%s", triggers ? (axis == 0 ? "L2" : "R2") : axis == 0 ? "X " : "Y ");
+        ImGui::Text("%s", triggers ? label(axis == 0 ? Button::LeftTrigger : Button::RightTrigger).c_str() : axis == 0 ? "X " : "Y ");
         ImGui::SameLine();
         changed |= ImGui::Checkbox("Steps", &grid.on);
         ImGui::BeginDisabled(!grid.on);

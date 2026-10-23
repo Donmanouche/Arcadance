@@ -3,6 +3,7 @@
 #include "MidiOutput.hpp"
 
 #include "midipad/Engine.hpp"
+#include "midipad/Labels.hpp"
 #include "midipad/SpscRing.hpp"
 
 #include <array>
@@ -44,6 +45,13 @@ struct LiveState {
     bool connected = false;
     bool hasTouchpad = false;
     std::string gamepadName;
+    // GamepadInput::family, presentButtons, presentAxes (all of a DualSense's when none is connected).
+    midipad::ControllerFamily family = midipad::ControllerFamily::PlayStation;
+    std::uint32_t presentButtons = ~0u;
+    std::uint8_t presentAxes = 0xFF;
+    bool touchpadExpected = true;  // GamepadInput::touchpadExpected
+    bool has(midipad::Button b) const { return (presentButtons >> static_cast<int>(b)) & 1u; }
+    bool has(midipad::Axis a) const { return (presentAxes >> static_cast<int>(a)) & 1u; }
     std::uint32_t buttons = 0;  // bit per SDL gamepad button
     std::array<std::int16_t, midipad::kAxisCount> axes{};
     struct Finger {
@@ -346,7 +354,9 @@ private:
     std::vector<NoteEdit> noteEdits_;  // under sessionMutex_, oldest first
 
     // Published by the input thread after each poll.
-    std::atomic<bool> connected_{false}, hasTouchpad_{false};
+    std::atomic<bool> connected_{false}, hasTouchpad_{false}, touchpadExpected_{true};
+    std::atomic<std::uint8_t> family_{0}, presentAxes_{0xFF};
+    std::atomic<std::uint32_t> presentButtons_{~0u};
     std::atomic<std::uint32_t> buttons_{0};
     std::array<std::atomic<std::int16_t>, midipad::kAxisCount> axes_{};
     std::array<std::atomic<bool>, midipad::kFingerCount> fingerDown_{};

@@ -83,7 +83,27 @@ std::string GamepadInput::name() const {
     return n ? n : (pad_ ? "Unnamed gamepad" : "");
 }
 
+// Controllers SDL maps wrongly on its own, mapped right (by place: a is the
+// bottom face button, b the right one). The HORIPAD S (wired, for Switch)
+// sends its buttons in the Switch's order (Y, B, A, X, L, R, ZL, ZR, -, +,
+// LS, RS, Home, Capture), its right stick on Z / RZ, and has no analog
+// triggers: SDL's guess swapped the face buttons and gave the triggers the
+// right stick's axes.
+constexpr const char* kMappingFixes[] = {
+    "0300910d0d0f0000c100000011010000,HORIPAD S,a:b1,b:b2,x:b0,y:b3,back:b8,guide:b12,start:b9,leftstick:b10,rightstick:b11,"
+    "leftshoulder:b4,rightshoulder:b5,lefttrigger:b6,righttrigger:b7,misc1:b13,dpup:h0.1,dpdown:h0.4,dpleft:h0.8,dpright:h0.2,"
+    "leftx:a0,lefty:a1,rightx:a2,righty:a3,platform:Linux,",
+};
+
+constexpr Uint16 kSonyVendor = 0x054c, kNintendoVendor = 0x057e, kValveVendor = 0x28de;
+
 void GamepadInput::tryOpen() {
+    static const bool fixed = [] {
+        for (const char* mapping : kMappingFixes)
+            SDL_AddGamepadMapping(mapping);
+        return true;
+    }();
+    (void)fixed;
     int count = 0;
     SDL_JoystickID* ids = SDL_GetGamepads(&count);
     for (int i = 0; i < count && !pad_; ++i)
@@ -94,11 +114,56 @@ void GamepadInput::tryOpen() {
         return;
 
     hasTouchpad_ = SDL_GetNumGamepadTouchpads(pad_) > 0;
+    // Its family: from its type; else Nintendo's and Valve's own (Xbox-like)
+    // by their vendor; else a PlayStation or Nintendo labelling; else generic,
+    // named by place (SDL calls an unknown pad's face buttons A, B, X, Y even
+    // when they read 1-4).
+    using F = midipad::ControllerFamily;
+    const Uint16 vendor = SDL_GetGamepadVendor(pad_);
+    switch (SDL_GetGamepadType(pad_)) {
+    case SDL_GAMEPAD_TYPE_PS3:
+    case SDL_GAMEPAD_TYPE_PS4:
+    case SDL_GAMEPAD_TYPE_PS5: family_ = F::PlayStation; break;
+    case SDL_GAMEPAD_TYPE_XBOX360:
+    case SDL_GAMEPAD_TYPE_XBOXONE: family_ = F::Xbox; break;
+    case SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_PRO:
+    case SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_LEFT:
+    case SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_RIGHT:
+    case SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_PAIR:
+    case SDL_GAMEPAD_TYPE_GAMECUBE: family_ = F::Nintendo; break;
+    default:
+        if (vendor == kNintendoVendor)
+            family_ = F::Nintendo;
+        else if (vendor == kValveVendor)
+            family_ = F::Xbox;
+        else
+            switch (SDL_GetGamepadButtonLabel(pad_, SDL_GAMEPAD_BUTTON_SOUTH)) {
+            case SDL_GAMEPAD_BUTTON_LABEL_B: family_ = F::Nintendo; break;
+            case SDL_GAMEPAD_BUTTON_LABEL_CROSS: family_ = F::PlayStation; break;
+            default: family_ = F::Generic; break;
+            }
+    }
+    // A touchpad only Sony's own DualShock 4 and DualSense are expected to have
+    // (without the access to it, they have none to SDL).
+    const SDL_GamepadType type = SDL_GetGamepadType(pad_);
+    touchpadExpected_ = vendor == kSonyVendor && (type == SDL_GAMEPAD_TYPE_PS4 || type == SDL_GAMEPAD_TYPE_PS5);
+    presentButtons_ = 0;
+    for (int b = 0; b < SDL_GAMEPAD_BUTTON_COUNT && b < 32; ++b)
+        if (SDL_GamepadHasButton(pad_, static_cast<SDL_GamepadButton>(b)))
+            presentButtons_ |= 1u << b;
+    presentAxes_ = 0;
+    for (int a = 0; a < SDL_GAMEPAD_AXIS_COUNT; ++a)
+        if (SDL_GamepadHasAxis(pad_, static_cast<SDL_GamepadAxis>(a)))
+            presentAxes_ = static_cast<std::uint8_t>(presentAxes_ | (1u << a));
+    if (SDL_GamepadHasAxis(pad_, SDL_GAMEPAD_AXIS_LEFT_TRIGGER))
+        presentButtons_ |= 1u << static_cast<int>(midipad::Button::LeftTrigger);
+    if (SDL_GamepadHasAxis(pad_, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER))
+        presentButtons_ |= 1u << static_cast<int>(midipad::Button::RightTrigger);
     const char* name = SDL_GetGamepadName(pad_);
     std::string message = std::string("Gamepad connected: ") + (name ? name : "unnamed");
     message += hasTouchpad_ ? " (touchpad active)" : " (no touchpad)";
     log_(message);
-    if (!hasTouchpad_ && SDL_GetGamepadType(pad_) == SDL_GAMEPAD_TYPE_PS5)
+    if (!hasTouchpad_ && touchpadExpected_)
         log_("  The DualSense touchpad needs access to /dev/hidraw*: see the udev rule in the README.");
 
     captureBaseline();

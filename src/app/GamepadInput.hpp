@@ -1,6 +1,7 @@
 #pragma once
 
 #include "midipad/Engine.hpp"
+#include "midipad/Labels.hpp"
 
 #include <SDL3/SDL_gamepad.h>
 
@@ -43,6 +44,13 @@ public:
     // State as of the last poll(), for display.
     bool connected() const { return pad_ != nullptr; }
     bool hasTouchpad() const { return hasTouchpad_; }
+    // What the controller is and has, found when it connects: the family its
+    // buttons are named after, a bit per midipad::Button it has (the triggers
+    // as buttons when it has their axes) and per axis.
+    midipad::ControllerFamily family() const { return family_; }
+    std::uint32_t presentButtons() const { return presentButtons_; }
+    std::uint8_t presentAxes() const { return presentAxes_; }
+    bool touchpadExpected() const { return touchpadExpected_; }  // a Sony DualShock 4 or DualSense, touchpad read or not
     std::string name() const;  // empty when no gamepad is open
     const std::bitset<SDL_GAMEPAD_BUTTON_COUNT>& buttons() const { return buttons_; }
     const std::array<Sint16, SDL_GAMEPAD_AXIS_COUNT>& axes() const { return axes_; }
@@ -65,4 +73,8 @@ private:
     std::array<Sint16, SDL_GAMEPAD_AXIS_COUNT> axes_{};
     std::array<Finger, midipad::kFingerCount> fingers_{};
     bool hasTouchpad_ = false;
+    midipad::ControllerFamily family_ = midipad::ControllerFamily::PlayStation;
+    std::uint32_t presentButtons_ = 0;
+    std::uint8_t presentAxes_ = 0;
+    bool touchpadExpected_ = false;
 };
