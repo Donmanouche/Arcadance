@@ -405,7 +405,7 @@ void drawLockedBorder(ImDrawList* dl, ImVec2 a, ImVec2 b, ImU32 col, float round
 // arcade game, drawn smooth and glowing rather than in big pixels.
 // kIdleArtCount of them; PerformanceView picks one per box, and which boxes play.
 
-constexpr int kIdleArtCount = 12;
+constexpr int kIdleArtCount = 10;
 constexpr ImU32 kIdleTint = IM_COL32(0x9A, 0xA0, 0xA8, 255), kIdleInk = IM_COL32(0xE6, 0xE8, 0xEC, 255);
 
 // A soft glow under a shape: the shape drawn wider and fainter.
@@ -548,40 +548,7 @@ void arcade(ImDrawList* dl, int game, ImVec2 a, ImVec2 b, double time, ImU32 col
         glowRect(dl, ImVec2(pxl, b.y - u * 2.5f), ImVec2(pxl + pw, b.y - u * 1.2f), col, u * 0.65f);
         break;
     }
-    case 5: {  // Tron: two light cycles, their walls of light
-        for (float x = a.x; x < b.x; x += u * 6)
-            dl->AddLine(ImVec2(x, a.y), ImVec2(x, b.y), alpha(col, 0.07f), 1.0f);
-        for (float y = a.y; y < b.y; y += u * 6)
-            dl->AddLine(ImVec2(a.x, y), ImVec2(b.x, y), alpha(col, 0.07f), 1.0f);
-        for (int bike = 0; bike < 2; ++bike) {
-            // A path of right angles, from a seed: where it was over the last few seconds.
-            ImVec2 pts[64];
-            int n = 0;
-            const float seg = 1.4f, now = t + static_cast<float>(bike) * 7.3f;
-            const int first = static_cast<int>(now / seg) - 5;
-            ImVec2 p(c.x, c.y);
-            for (int s = first; s <= first + 5; ++s) {
-                const int dir = static_cast<int>(hash01(s * 17 + bike * 101) * 4);
-                const float len = (s == first + 5 ? std::fmod(now, seg) / seg : 1.0f) * u * 9;
-                if (n == 0) {
-                    p = ImVec2(a.x + w * (0.25f + 0.5f * hash01(s + bike * 3)), a.y + h * (0.25f + 0.5f * hash01(s * 3 + bike)));
-                    pts[n++] = p;
-                }
-                p = ImVec2(std::clamp(p.x + (dir == 0 ? len : dir == 2 ? -len : 0), a.x + u, b.x - u), std::clamp(p.y + (dir == 1 ? len : dir == 3 ? -len : 0), a.y + u, b.y - u));
-                pts[n++] = p;
-            }
-            const ImU32 bc = bike == 0 ? col : mix(col, IM_COL32(255, 255, 255, 255), 0.5f);
-            for (int i = 1; i < n; ++i)  // segment by segment: no miter spikes at the turns
-                dl->AddLine(pts[i - 1], pts[i], alpha(bc, 0.2f), u * 2.2f);
-            for (int i = 1; i < n; ++i)
-                dl->AddLine(pts[i - 1], pts[i], bc, u * 0.6f);
-            for (int i = 1; i < n - 1; ++i)
-                dl->AddCircleFilled(pts[i], u * 0.3f, bc);
-            glowCircle(dl, pts[n - 1], u * 1.1f, IM_COL32(255, 255, 255, 230));
-        }
-        break;
-    }
-    case 6: {  // Missile Command: trails falling on the cities, interceptions blooming
+    case 5: {  // Missile Command: trails falling on the cities, interceptions blooming
         dl->AddLine(ImVec2(a.x, b.y - u * 2), ImVec2(b.x, b.y - u * 2), dim, u * 0.6f);
         for (int k = 0; k < 5; ++k)
             dl->AddRectFilled(ImVec2(a.x + w * (0.1f + 0.2f * static_cast<float>(k)) - u * 2, b.y - u * 4), ImVec2(a.x + w * (0.1f + 0.2f * static_cast<float>(k)) + u * 2, b.y - u * 2),
@@ -601,30 +568,7 @@ void arcade(ImDrawList* dl, int game, ImVec2 a, ImVec2 b, double time, ImU32 col
         }
         break;
     }
-    case 7: {  // Frogger: lanes of cars, the frog hopping across
-        for (int lane = 0; lane < 4; ++lane) {
-            const float ly = a.y + u * 5 + static_cast<float>(lane) * u * 8;
-            for (float x = a.x; x < b.x; x += u * 5)
-                dl->AddLine(ImVec2(x, ly + u * 6.5f), ImVec2(x + u * 2.5f, ly + u * 6.5f), faint, u * 0.4f);
-            const float dir = lane % 2 ? -1.0f : 1.0f, speed = u * (5 + static_cast<float>(lane) * 2);
-            for (int k = 0; k < 2; ++k) {
-                const float len = u * (lane == 1 ? 10 : 6);
-                float x = std::fmod(t * speed + static_cast<float>(k) * (w + len) * 0.5f + hash01(lane) * w, w + len) - len;
-                if (dir < 0)
-                    x = b.x - (x - a.x) - len + a.x - a.x;
-                else
-                    x += a.x;
-                glowRect(dl, ImVec2(x, ly + u * 1.5f), ImVec2(x + len, ly + u * 4.5f), lane == 1 ? dim : col, u * 1.2f);
-            }
-        }
-        const float hop = std::fmod(t * 1.2f, 5.0f), step = std::floor(hop), part = hop - step;
-        const float fy = b.y - u * 3 - (step + std::min(part * 3, 1.0f)) * u * 8 + std::sin(std::min(part * 3, 1.0f) * 3.1416f) * -u * 2;
-        glowCircle(dl, ImVec2(c.x, fy), u * 2, col);
-        dl->AddCircleFilled(ImVec2(c.x - u * 1.1f, fy - u * 1.6f), u * 0.8f, IM_COL32(255, 255, 255, 230));
-        dl->AddCircleFilled(ImVec2(c.x + u * 1.1f, fy - u * 1.6f), u * 0.8f, IM_COL32(255, 255, 255, 230));
-        break;
-    }
-    case 8: {  // Tetris: the well, the stack, a piece falling and turning
+    case 6: {  // Tetris: the well, the stack, a piece falling and turning
         const float cell = u * 3.2f, wx = c.x - cell * 5, wy = b.y - u;
         dl->AddLine(ImVec2(wx - u, a.y), ImVec2(wx - u, wy), dim, u * 0.5f);
         dl->AddLine(ImVec2(wx + cell * 10 + u, a.y), ImVec2(wx + cell * 10 + u, wy), dim, u * 0.5f);
@@ -645,7 +589,7 @@ void arcade(ImDrawList* dl, int game, ImVec2 a, ImVec2 b, double time, ImU32 col
         }
         break;
     }
-    case 9: {  // Galaga: a formation, one diving in a loop, the fighter firing
+    case 7: {  // Galaga: a formation, one diving in a loop, the fighter firing
         const float sway = std::sin(t * 0.8f) * u * 3;
         auto bug = [&](ImVec2 p, ImU32 bc, float flap) {
             dl->AddEllipseFilled(ImVec2(p.x - u * 1.6f, p.y), ImVec2(u * 1.4f, u * (0.7f + 0.5f * flap)), alpha(bc, 0.6f));
@@ -668,7 +612,7 @@ void arcade(ImDrawList* dl, int game, ImVec2 a, ImVec2 b, double time, ImU32 col
         }
         break;
     }
-    case 10: {  // Donkey Kong: slanted girders, ladders, barrels rolling down
+    case 8: {  // Donkey Kong: slanted girders, ladders, barrels rolling down
         const int floors = 3;
         auto girderY = [&](int f, float x) {
             const float y0 = a.y + u * 9 + static_cast<float>(f) * (h - u * 12) / static_cast<float>(floors - 1);
@@ -2374,7 +2318,7 @@ std::optional<PerformanceView::SongAction> PerformanceView::drawSong(const LiveS
     constexpr ImU32 kViolet = IM_COL32(0xB0, 0x8C, 0xFF, 255);
     const int sections = static_cast<int>(song.sections.size());
     const double bar = std::max(live.beatsPerBar, 1);
-    // The channels in use, eight at a time; the columns and lanes share the width and height.
+    // The channels in use, eight at a time, each column and lane its usual size.
     const std::vector<int> shown = songChannels(live, song);
     const int shownCount = static_cast<int>(shown.size());
     if (cursor.col >= 0)
@@ -2468,7 +2412,7 @@ std::optional<PerformanceView::SongAction> PerformanceView::drawSong(const LiveS
         ImGui::SetItemTooltip("Click: go there. Double-click: play from here");
         ImGui::PopID();
     }
-    const float laneH = std::min(px(24), kColumns * px(13.5f) / static_cast<float>(std::max(count, 1)) - px(2)), ly0 = sy1 + px(7);
+    const float laneH = px(11.5f), ly0 = sy1 + px(7);
     for (int k = 0; k < count; ++k) {
         const int ch = channelAt(k);
         const auto c = static_cast<std::size_t>(ch);
@@ -2511,8 +2455,7 @@ std::optional<PerformanceView::SongAction> PerformanceView::drawSong(const LiveS
         dl->AddRectFilled(ImVec2(origin.x, gy0), ImVec2(origin.x + width, gy0 + headH), T::kPanelHeader, px(8), ImDrawFlags_RoundCornersTop);
         dl->AddRect(ImVec2(origin.x, gy0), ImVec2(origin.x + width, gy1), T::kBorder, px(8), px(1));
     }
-    const int columns = std::max(count, 1);
-    const float cx0 = origin.x + px(8) + nameW + gap, colW = (origin.x + width - px(8) - cx0 - gap * static_cast<float>(columns - 1)) / static_cast<float>(columns);
+    const float cx0 = origin.x + px(8) + nameW + gap, colW = (origin.x + width - px(8) - cx0 - gap * (kColumns - 1)) / kColumns;
     for (int k = 0; k < count; ++k) {
         const int ch = channelAt(k);
         const float x = cx0 + static_cast<float>(k) * (colW + gap);
@@ -2677,12 +2620,16 @@ std::optional<PerformanceView::SongAction> PerformanceView::drawSong(const LiveS
     // --- The editor of the cell under the cursor ---
     const float ey0 = origin.y + height - editorH, ey1 = origin.y + height;
     if (gLook) {
-        frame(dl, ImVec2(origin.x, ey0), ImVec2(origin.x + width, ey1), px(37), gLook == 1 ? kNeon : kSongScreen);
+        // Its frame alone (no rule under a title while no cell is chosen); the cyan one while editing.
+        const bool chosen = cursor.col >= 0 && cursor.row < sections;
+        frame(dl, ImVec2(origin.x, ey0), ImVec2(origin.x + width, ey1), chosen ? px(37) : 0.0f, gLook == 1 ? kNeon : kSongScreen);
+        if (cursor.editing)
+            dl->AddRect(ImVec2(origin.x, ey0), ImVec2(origin.x + width, ey1), T::kCyan, px(8), px(2.0f));
     } else {
         dl->AddRectFilled(ImVec2(origin.x, ey0), ImVec2(origin.x + width, ey1), T::kPanel, px(8));
         dl->AddRectFilled(ImVec2(origin.x, ey0), ImVec2(origin.x + width, ey0 + px(37)), T::kPanelHeader, px(8), ImDrawFlags_RoundCornersTop);
+        dl->AddRect(ImVec2(origin.x, ey0), ImVec2(origin.x + width, ey1), cursor.editing ? T::kCyan : T::kBorder, px(8), px(cursor.editing ? 2.0f : 1.0f));
     }
-    dl->AddRect(ImVec2(origin.x, ey0), ImVec2(origin.x + width, ey1), cursor.editing ? T::kCyan : T::kBorder, px(8), px(cursor.editing ? 2.0f : 1.0f));
     if (cursor.col < 0 || cursor.row >= sections) {  // no cell chosen: an empty editor
         ImGui::PopID();
         return action;
