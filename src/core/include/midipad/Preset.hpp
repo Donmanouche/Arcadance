@@ -160,6 +160,9 @@ struct Preset {
     std::array<std::optional<Mapping>, kChannelCount> channels;
     // A name per channel ("BASS", "PADS"), shown with its number; empty: none.
     std::array<std::string, kChannelCount> channelNames;
+    // The channels whose note loop editor shows every note alike (chromatic,
+    // drums), a bit each; the others move notes on the tonality's degrees.
+    std::uint16_t chromaticChannels = 0;
 
     const Mapping& forChannel(int channel) const {
         if (channel < 0 || channel >= kChannelCount || !channels[static_cast<std::size_t>(channel)])

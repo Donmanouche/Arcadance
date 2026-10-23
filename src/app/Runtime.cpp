@@ -181,9 +181,13 @@ void Runtime::stretchLoop(int source, int axis, int steps) { commands_.push({Com
 
 void Runtime::amplifyLoop(int source, int axis, int steps) { commands_.push({Command::Kind::AmplifyLoop, source, steps, axis}); }
 
-void Runtime::setLoopModulation(int source, int axis, const midipad::LoopModulation& m) {
-    commands_.push({Command::Kind::Modulation, source, m.target, axis, m.depth | (m.inverted ? 0x100 : 0) | (m.sendsCc ? 0x200 : 0)});
+void Runtime::setModulation(int source, int axis, const midipad::LoopModulation& m) {
+    commands_.push({Command::Kind::Modulation, source, m.source, axis, m.depth | (m.inverted ? 0x100 : 0)});
 }
+
+void Runtime::setModulationSendsCc(int source, int axis, bool sends) { commands_.push({Command::Kind::ModulationCc, source, sends ? 1 : 0, axis}); }
+
+void Runtime::offsetLoop(int source, int axis, int steps) { commands_.push({Command::Kind::OffsetLoop, source, steps, axis}); }
 
 void Runtime::setAxisLoopLength(int source, int axis, int length) {
     commands_.push({Command::Kind::AxisLength, source, length, axis});
@@ -291,9 +295,9 @@ LiveState Runtime::live() const {
     s.muted = muted_.load(std::memory_order_relaxed);
     s.soloed = soloed_.load(std::memory_order_relaxed);
     s.stretchHeld = stretchHeld_.load(std::memory_order_relaxed);
-    const std::uint8_t amplitudes = amplitudes_.load(std::memory_order_relaxed);
-    s.stickAmplitudes = {(amplitudes & 1u) != 0, (amplitudes & 2u) != 0};
-    s.fingerAmplitudes = (amplitudes & 4u) != 0;
+    const std::uint8_t shapes = shapes_.load(std::memory_order_relaxed);
+    s.stickShapes = {static_cast<Engine::ShapeMode>(shapes & 3u), static_cast<Engine::ShapeMode>((shapes >> 2) & 3u)};
+    s.fingerShape = static_cast<Engine::ShapeMode>((shapes >> 4) & 3u);
     s.velocityShaping = velocityShaping_.load(std::memory_order_relaxed);
     s.velocityLoop = velocityLoop_.load(std::memory_order_relaxed);
     s.transposeNotes = transposeNotes_.load(std::memory_order_relaxed);
@@ -385,9 +389,9 @@ void Runtime::publish(const GamepadInput& gamepad, const Engine& engine) {
     muted_.store(engine.mutedChannels(), std::memory_order_relaxed);
     soloed_.store(engine.soloedChannels(), std::memory_order_relaxed);
     stretchHeld_.store(engine.stretchHeld(), std::memory_order_relaxed);
-    amplitudes_.store(static_cast<std::uint8_t>((engine.stickAmplitudes(0) ? 1u : 0u) | (engine.stickAmplitudes(1) ? 2u : 0u) |
-                                                (engine.fingerAmplitudes() ? 4u : 0u)),
-                      std::memory_order_relaxed);
+    shapes_.store(static_cast<std::uint8_t>(static_cast<unsigned>(engine.stickShape(0)) | static_cast<unsigned>(engine.stickShape(1)) << 2 |
+                                            static_cast<unsigned>(engine.fingerShape()) << 4),
+                  std::memory_order_relaxed);
     const auto shaping = engine.shaping(engine.channel());
     velocityShaping_.store(shaping.velocity, std::memory_order_relaxed);
     velocityLoop_.store(shaping.velocityLoop, std::memory_order_relaxed);
@@ -670,8 +674,13 @@ void Runtime::run(std::stop_token stop, Options options, std::shared_ptr<const P
                 engine.setSoloed(command->channel, command->value != 0);
             } else if (command->kind == Command::Kind::Modulation) {
                 const int e = command->extra;
-                engine.setLoopModulation(engine.channel(), command->channel, command->axis,
-                                         {command->value, e & 0xFF, (e & 0x100) != 0, (e & 0x200) != 0});
+                engine.setModulation(engine.channel(), command->channel, command->axis, {command->value, e & 0xFF, (e & 0x100) != 0});
+            } else if (command->kind == Command::Kind::ModulationCc) {
+                engine.setModulationSendsCc(engine.channel(), command->channel, command->axis, command->value != 0);
+            } else if (command->kind == Command::Kind::OffsetLoop) {
+                for (int a = 0; a < 2; ++a)
+                    if (command->axis < 0 || command->axis == a)
+                        engine.offsetLoop(engine.channel(), command->channel, a, command->value);
             } else if (command->kind == Command::Kind::MuteSolo) {
                 engine.setMuteSolo(static_cast<std::uint16_t>(command->value), static_cast<std::uint16_t>(command->extra));
             } else if (command->kind == Command::Kind::LoadChains) {

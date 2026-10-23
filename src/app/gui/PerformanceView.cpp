@@ -772,8 +772,8 @@ std::string durationText(double seconds) {
 // While Shift is on, top right of a stick's or the touchpad's screen: what
 // moving it changes in its loops, their lengths or their amplitudes (Shift +
 // its click switches).
-void shiftModeBadge(ImDrawList* dl, ImVec2 a, ImVec2 b, bool amplitudes, ImU32 color) {
-    const char* label = amplitudes ? "AMP" : "LEN";
+void shiftModeBadge(ImDrawList* dl, ImVec2 a, ImVec2 b, Engine::ShapeMode mode, ImU32 color) {
+    const char* label = mode == Engine::ShapeMode::Offset ? "OFS" : mode == Engine::ShapeMode::Amplitude ? "AMP" : "LEN";
     const float w = textWidth(gBold, px(11), label) + px(14);
     badge(dl, gBold, px(11), b.x - px(8) - w * 0.5f, a.y + px(8), px(20), label, T::kText, alpha(color, 0.3f), color);
 }
@@ -880,8 +880,9 @@ void PerformanceView::moveFocus(int dx, int dy) {
 
 void PerformanceView::stretchWheel(std::uint16_t tracks, ImVec2 a, ImVec2 b) {
     const ImGuiIO& io = ImGui::GetIO();
-    const bool amplitude = io.KeyCtrl && !io.KeyShift;  // Ctrl + wheel: the amplitude
-    if ((!io.KeyShift && !amplitude) || !ImGui::IsWindowHovered() || !ImGui::IsMouseHoveringRect(a, b))
+    const bool amplitude = io.KeyCtrl && !io.KeyShift;            // Ctrl + wheel: the amplitude
+    const bool offset = io.KeyAlt && !io.KeyShift && !io.KeyCtrl;  // Alt + wheel: the offset
+    if ((!io.KeyShift && !amplitude && !offset) || !ImGui::IsWindowHovered() || !ImGui::IsMouseHoveringRect(a, b))
         return;
     // Some systems turn Shift + wheel into a horizontal scroll.
     const float wheel = io.MouseWheel != 0.0f ? io.MouseWheel : io.MouseWheelH;
@@ -895,9 +896,10 @@ void PerformanceView::stretchWheel(std::uint16_t tracks, ImVec2 a, ImVec2 b) {
     // Turned quickly, each notch goes further: 100x is 198 steps away.
     wheelStreak_ = time_ - lastWheel_ < 0.12 ? wheelStreak_ + 1 : 0;
     lastWheel_ = time_;
-    const int accel = std::min(1 + wheelStreak_ / 2, amplitude ? 4 : 10);
-    stretch_ = StretchRequest{tracks, notches * accel, amplitude};
-    auto& shown = amplitude ? amplitudeShown_ : stretchShown_;
+    const int accel = std::min(1 + wheelStreak_ / 2, amplitude || offset ? 4 : 10);
+    using K = StretchRequest::Kind;
+    stretch_ = StretchRequest{offset ? K::Offset : amplitude ? K::Amplitude : K::Stretch, tracks, notches * accel};
+    auto& shown = offset ? offsetShown_ : amplitude ? amplitudeShown_ : stretchShown_;
     for (std::size_t i = 0; i < shown.size(); ++i)
         if (tracks & (1u << i))
             shown[i] = time_;
@@ -905,6 +907,43 @@ void PerformanceView::stretchWheel(std::uint16_t tracks, ImVec2 a, ImVec2 b) {
 
 float PerformanceView::drawStretchChip(ImDrawList* dl, float right, float y, int stretch, ImU32 color) {
     return stretch == 0 ? right : drawChip(dl, right, y, stretchText(stretch), color);
+}
+
+// While the offset changes (and a moment after), a gauge across the bottom of
+// the lane: -100 % to +100 %, 0 marked.
+void PerformanceView::drawOffsetGauge(ImDrawList* dl, ImVec2 ga, ImVec2 gb, std::uint16_t tracks, int offset, ImU32 color) {
+    double shownAt = -1e9;
+    for (std::size_t i = 0; i < offsetShown_.size(); ++i)
+        if (tracks & (1u << i))
+            shownAt = std::max(shownAt, offsetShown_[i]);
+    const double age = time_ - shownAt;
+    if (age > 1.6)
+        return;
+    const float a = age < 1.2 ? 1.0f : static_cast<float>(1.0 - (age - 1.2) / 0.4);
+    const ImVec2 ba(ga.x + px(6), gb.y - px(34)), bb(gb.x - px(6), gb.y - px(6));
+    dl->AddRectFilled(ba, bb, IM_COL32(0x14, 0x16, 0x19, static_cast<int>(240 * a)), px(5));
+    dl->AddRect(ba, bb, alpha(IM_COL32(0x2E, 0x32, 0x38, 255), a), px(5), px(1));
+    const float x0 = ba.x + px(12), x1 = bb.x - px(12), ty = bb.y - px(9), ly = ba.y + px(9);
+    auto xAt = [&](int pct) { return x0 + (x1 - x0) * static_cast<float>(pct + Engine::kMaxOffset) / static_cast<float>(2 * Engine::kMaxOffset); };
+    const float zero = xAt(0), at = xAt(std::clamp(offset, -Engine::kMaxOffset, Engine::kMaxOffset));
+    dl->AddLine(ImVec2(x0, ty), ImVec2(x1, ty), alpha(IM_COL32(0x4A, 0x4F, 0x57, 255), a), px(2));
+    dl->AddLine(ImVec2(zero, ty - px(4)), ImVec2(zero, ty + px(4)), alpha(T::kDim, a), px(1.5f));
+    dl->AddLine(ImVec2(std::min(zero, at), ty), ImVec2(std::max(zero, at), ty), alpha(color, a), px(3));
+    dl->AddCircleFilled(ImVec2(at, ty), px(4.5f), alpha(color, a));
+    const std::string value = std::string("OFS ") + (offset > 0 ? "+" : "") + std::to_string(offset) + "%";
+    const float vw = textWidth(gBold, px(10), value);
+    const float vx = std::clamp(at, x0 + vw * 0.5f, x1 - vw * 0.5f);
+    auto fixed = [&](float x, const char* label, H align) {
+        const float w = textWidth(gMedium, px(10), label);
+        const float l = align == H::Left ? x : align == H::Right ? x - w : x - w * 0.5f;
+        if (l + w < vx - vw * 0.5f - px(4) || l > vx + vw * 0.5f + px(4))
+            text(dl, gMedium, px(10), x, ly, alpha(T::kDim, a), label, align, V::Middle);
+    };
+    fixed(x0 - px(6), "-100%", H::Left);
+    if (offset != 0)
+        fixed(zero, "0", H::Center);
+    fixed(x1 + px(6), "+100%", H::Right);
+    text(dl, gBold, px(10), vx, ly, alpha(T::kText, a), value, H::Center, V::Middle);
 }
 
 float PerformanceView::drawAmplitudeChip(ImDrawList* dl, float right, float y, int amplitude, ImU32 color) {
@@ -1051,6 +1090,9 @@ std::optional<std::string> PerformanceView::draw(const Mapping& normalMapping, c
         if (ls.amplitude != lastAmplitude_[t] && live.channel == lastStretchChannel_)
             amplitudeShown_[t] = time_;
         lastAmplitude_[t] = ls.amplitude;
+        if (ls.offset != lastOffset_[t] && live.channel == lastStretchChannel_)
+            offsetShown_[t] = time_;
+        lastOffset_[t] = ls.offset;
     }
     lastStretchChannel_ = live.channel;
 
@@ -1244,6 +1286,9 @@ void PerformanceView::drawPianoRoll(const Mapping& m, const LiveState& live, flo
         dl->AddRectFilled(ImVec2(ax0, yt), ImVec2(ax0 + keyW, yb - 0.5f), black ? IM_COL32(0x2A, 0x2C, 0x30, 255) : IM_COL32(0xCD, 0xD0, 0xD6, 255));
         if (black)
             dl->AddRectFilled(ImVec2(gx0, yt), ImVec2(ax1, yb), IM_COL32(0, 0, 0, 40));
+        if (editing_ && !scaleMoves_ && rowH >= px(7))  // chromatic: each row named
+            text(dl, gMedium, std::min(px(8), rowH * 0.9f), ax0 + keyW - px(2), yb - rowH * 0.5f, black ? T::kLabel : IM_COL32(0x30, 0x33, 0x38, 255),
+                 noteName(n, false), H::Right, V::Middle);
         if (editing_ && scaleMoves_ && key_) {  // where notes may go: the scale's rows, its roots tinted
             if (!inKey(*key_, n))
                 dl->AddRectFilled(ImVec2(gx0, yt), ImVec2(ax1, yb), IM_COL32(0, 0, 0, 95));
@@ -2992,7 +3037,7 @@ void PerformanceView::drawStick(int index, const Mapping& m, const LiveState& li
                   T::kIce, alpha(T::kIce, 0.16f), T::kIce);
     });
     if (live.stretchHeld)
-        shiftModeBadge(dl, s.a, s.b, live.stickAmplitudes[static_cast<std::size_t>(index)], accent);
+        shiftModeBadge(dl, s.a, s.b, live.stickShapes[static_cast<std::size_t>(index)], accent);
     if (hoverButton(index == 0 ? "##stickL" : "##stickR", s.a, s.b))
         click(index == 0 ? "axes:left_x,left_y" : "axes:right_x,right_y");
 
@@ -3200,8 +3245,12 @@ void PerformanceView::drawLane(ImDrawList* dl, ImVec2 a, ImVec2 b, const LaneLoo
     const float amp = playing ? static_cast<float>(st.amplitude) / 100.0f * (modulated ? st.modFactor : 1.0f) : 1.0f;
     const bool steps = playing && lane.stepSamples > 0;
     const float levels = static_cast<float>(std::clamp(look.steps.levels, 2, 128) - 1);
-    auto value = [&](int i, float scale, bool stepped) {
+    const float offset = playing ? static_cast<float>(st.offset) / 100.0f : 0.0f;
+    // `shifted`: with its offset (not the faint curve as recorded).
+    auto value = [&](int i, float scale, bool stepped, bool shifted = true) {
         float v = Engine::shapeAmplitude(static_cast<float>(lane.v[static_cast<std::size_t>(i)]) / 255.0f, centre, scale);
+        if (shifted)
+            v = Engine::shapeOffset(v, offset);
         if (stepped)
             v = std::round(v * levels) / levels;
         // What the loop sends: a finger's Y the other way up, an inverted axis upside down.
@@ -3211,11 +3260,11 @@ void PerformanceView::drawLane(ImDrawList* dl, ImVec2 a, ImVec2 b, const LaneLoo
     };
     auto yOf = [&](float v) { return ly1 - v * (ly1 - ly0); };
     auto xOfPoint = [&](int i) { return lx0 + (lx1 - lx0) * static_cast<float>(i) / static_cast<float>(lane.points - 1); };
-    auto polyline = [&](float scale, ImU32 col, float thickness) {  // broken where a finger was lifted
+    auto polyline = [&](float scale, ImU32 col, float thickness, bool shifted = true) {  // broken where a finger was lifted
         for (int i = 1; i < lane.points; ++i)
             if (lane.on[static_cast<std::size_t>(i)] && lane.on[static_cast<std::size_t>(i - 1)])
-                dl->AddLine(ImVec2(xOfPoint(i - 1), yOf(value(i - 1, scale, false))), ImVec2(xOfPoint(i), yOf(value(i, scale, false))), col,
-                            thickness);
+                dl->AddLine(ImVec2(xOfPoint(i - 1), yOf(value(i - 1, scale, false, shifted))), ImVec2(xOfPoint(i), yOf(value(i, scale, false, shifted))),
+                            col, thickness);
     };
     const int lastSample = std::max(st.length - 1, 1);
     auto pointOf = [&](int sample) { return std::clamp(static_cast<int>(std::lround(static_cast<float>(sample) / static_cast<float>(lastSample) *
@@ -3228,7 +3277,7 @@ void PerformanceView::drawLane(ImDrawList* dl, ImVec2 a, ImVec2 b, const LaneLoo
         if (xOfSample(step) - lx0 >= px(5))
             for (int s = step; s < st.length; s += step)
                 dl->AddLine(ImVec2(xOfSample(s), a.y + px(2)), ImVec2(xOfSample(s), b.y - px(2)), IM_COL32(255, 255, 255, 18), px(1));
-        polyline(1.0f, alpha(look.color, 0.22f), px(1.3f));
+        polyline(1.0f, alpha(look.color, 0.22f), px(1.3f), false);
         float previous = -1;
         for (int s = 0; s < st.length; s += step) {
             const int i = pointOf(s);
@@ -3244,14 +3293,14 @@ void PerformanceView::drawLane(ImDrawList* dl, ImVec2 a, ImVec2 b, const LaneLoo
             previous = y;
         }
     } else {
-        if (amp != 1.0f)
-            polyline(1.0f, alpha(look.color, 0.22f), px(1.3f));
+        if (amp != 1.0f || offset != 0.0f)
+            polyline(1.0f, alpha(look.color, 0.22f), px(1.3f), false);
         polyline(amp, look.color, px(1.8f));
     }
     if (modulated) {  // the band the loop modulating it leaves it now, dashed in that loop's colour
         const ImU32 tone = alpha(trackColor(st.modSource), 0.8f);
         for (float v : {lo, hi}) {
-            float e = Engine::shapeAmplitude(v, centre, amp);
+            float e = Engine::shapeOffset(Engine::shapeAmplitude(v, centre, amp), offset);
             if (look.flip)
                 e = 1.0f - e;
             const float y = yOf(look.invert ? 1.0f - e : e);
@@ -3293,12 +3342,23 @@ void PerformanceView::drawLane(ImDrawList* dl, ImVec2 a, ImVec2 b, const LaneLoo
             ImGui::SetTooltip("Clear %s's loop", look.name);
         }
     }
-    // A modulation: bottom left, the loop modulating it (and how deep), or the one it modulates.
-    if (playing && b.y - a.y >= px(30) && (st.modSource >= 0 || st.modTarget >= 0)) {
+    // A modulation: bottom left, the loop modulating it (and how deep), else the ones it modulates.
+    if (playing && b.y - a.y >= px(30) && (st.modSource >= 0 || st.modTargets != 0)) {
         const bool target = st.modSource >= 0;
-        const std::string badge = target ? std::string(trackShortName(st.modSource)) + " \xE2\x80\xBA AMP " + std::to_string(st.modSourceDepth) + "%"
-                                         : "\xE2\x80\xBA " + std::string(trackShortName(st.modTarget));
-        const ImU32 tone = trackColor(target ? st.modSource : st.modTarget);
+        std::string badge;
+        int first = -1, count = 0;
+        if (target) {
+            badge = std::string(trackShortName(st.modSource)) + " \xE2\x80\xBA AMP " + std::to_string(st.modDepth) + "%";
+        } else {
+            for (int t = 0; t < Engine::kNoteTrack; ++t)
+                if ((st.modTargets >> t) & 1u) {
+                    badge += (count++ ? " \xC2\xB7 " : "\xE2\x80\xBA ") + std::string(trackShortName(t));
+                    first = first < 0 ? t : first;
+                }
+            if (textWidth(gBold, small, badge) > (b.x - a.x) * 0.55f)  // no room: how many
+                badge = "\xE2\x80\xBA " + std::to_string(count) + " loops";
+        }
+        const ImU32 tone = trackColor(target ? st.modSource : first);
         const float bw = textWidth(gBold, small, badge) + px(10);
         const ImVec2 pa(a.x + px(4), b.y - small - px(7)), pb(a.x + px(4) + bw, b.y - px(3));
         dl->AddRectFilled(pa, pb, IM_COL32(0x14, 0x16, 0x19, 220), px(6));
@@ -3307,7 +3367,7 @@ void PerformanceView::drawLane(ImDrawList* dl, ImVec2 a, ImVec2 b, const LaneLoo
     }
     if (b.y - a.y >= px(30)) {
         std::string cc = look.cc == kLaneVelocity ? "VEL" : look.cc == kLaneTranspose ? "TR" : "CC " + std::to_string(look.cc);
-        if (playing && st.modTarget >= 0 && !st.modSendsCc)
+        if (playing && st.modTargets != 0 && !st.modSendsCc)
             cc = "MOD";  // it only modulates
         const float ccW = textWidth(gCondensed, small, cc) + px(10);
         const ImVec2 pa(b.x - px(4) - ccW, b.y - small - px(7)), pb(b.x - px(4), b.y - px(3));
@@ -3321,10 +3381,13 @@ void PerformanceView::drawLane(ImDrawList* dl, ImVec2 a, ImVec2 b, const LaneLoo
         float right = drawChip(dl, b.x - px(4), chipY, length, look.color) - px(4);
         if (b.y - a.y >= px(34)) {  // room for the stretch and the amplitude too
             right = drawStretchChip(dl, right, chipY, st.stretch, look.color) - (st.stretch != 0 ? px(4) : 0.0f);
-            drawAmplitudeChip(dl, right, chipY, st.amplitude, look.color);
+            right = drawAmplitudeChip(dl, right, chipY, st.amplitude, look.color) - (st.amplitude != 100 ? px(4) : 0.0f);
+            if (st.offset != 0)
+                drawChip(dl, right, chipY, std::string("OFS ") + (st.offset > 0 ? "+" : "") + std::to_string(st.offset) + "%", look.color);
         }
         drawStretchGauge(dl, a, b, bit, st.stretch, look.color);
         drawAmplitudeGauge(dl, a, b, bit, st.amplitude, look.color);
+        drawOffsetGauge(dl, a, b, bit, st.offset, look.color);
     } else if (recording) {  // how long it is so far
         drawChip(dl, b.x - px(4), nameY, durationText(seconds), T::kRed);
     }
@@ -3545,7 +3608,7 @@ void PerformanceView::drawTouchpad(const Mapping& m, const LiveState& live, floa
                  H::Center, V::Middle);
     });
     if (live.stretchHeld && (m.fingers[0].mode == TouchMode::Axis || m.fingers[1].mode == TouchMode::Axis))
-        shiftModeBadge(dl, s.a, s.b, live.fingerAmplitudes, fingerColors[0]);
+        shiftModeBadge(dl, s.a, s.b, live.fingerShape, fingerColors[0]);
     if (hoverButton("##touchscreen", s.a, s.b))
         click("fingers");
 

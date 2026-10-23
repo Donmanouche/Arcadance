@@ -75,9 +75,9 @@ struct LiveState {
     };
     std::array<Loop, midipad::kLoopSourceCount> loops{};
     // Shift + L3 / R3, Shift + the touchpad's click: the stick, the fingers
-    // change amplitudes instead of lengths (Engine::stickAmplitudes).
-    std::array<bool, 2> stickAmplitudes{};
-    bool fingerAmplitudes = false;
+    // change lengths, amplitudes or offsets (Engine::stickShape).
+    std::array<midipad::Engine::ShapeMode, 2> stickShapes{};
+    midipad::Engine::ShapeMode fingerShape = midipad::Engine::ShapeMode::Length;
     // The active channel's note loop, as notes (in loop samples).
     static constexpr int kMaxNoteLoopNotes = 128;
     std::array<midipad::NoteInterval, kMaxNoteLoopNotes> noteLoop{};
@@ -241,8 +241,10 @@ public:
     // active channel; axis -1: both.
     void stretchLoop(int source, int axis, int steps);
     void amplifyLoop(int source, int axis, int steps);
-    // Engine::setLoopModulation, on the active channel.
-    void setLoopModulation(int source, int axis, const midipad::LoopModulation& modulation);
+    // Engine::setModulation, setModulationSendsCc and offsetLoop, on the active channel (offsetLoop: axis -1, both).
+    void setModulation(int source, int axis, const midipad::LoopModulation& modulation);
+    void setModulationSendsCc(int source, int axis, bool sends);
+    void offsetLoop(int source, int axis, int steps);
     void setAxisLoopLength(int source, int axis, int length);
     // The transport (Engine::transportPlay, transportStop): Play the song
     // from `section` (>= 0) or the clips (-1). setTransportSong: what the
@@ -293,7 +295,7 @@ private:
     struct Command {
         enum class Kind : std::uint8_t {
             SetChannel, Panic, ClearLoop, ToggleLock, ChainStep, ChainThen, ChainGo, ChainStop, ClearClip, CopyClip, ResetShape, LaunchClip, RecordSlot, StretchLoop, AmplifyLoop, AxisLength, PauseLoops, PlayLoops,
-            SaveLoops, LoadLoops, LoadChains, LoadSong, SongPlay, SongStop, SongLoop, Mute, Solo, MuteSolo, Modulation, EditNotes
+            SaveLoops, LoadLoops, LoadChains, LoadSong, SongPlay, SongStop, SongLoop, Mute, Solo, MuteSolo, Modulation, ModulationCc, OffsetLoop, EditNotes
         } kind;
         int channel = 0;
         int value = 0;
@@ -356,7 +358,7 @@ private:
     std::atomic<bool> loopsPaused_{false};
     std::atomic<std::uint16_t> muted_{0}, soloed_{0};
     std::atomic<bool> stretchHeld_{false};
-    std::atomic<std::uint8_t> amplitudes_{0};  // bits: left stick, right stick, fingers
+    std::atomic<std::uint8_t> shapes_{0};  // two bits each (Engine::ShapeMode): left stick, right stick, fingers
     std::atomic<int> key_{-1};  // root * 256 + scale, -1: none
     struct LinkSession;  // ableton::Link, kept out of this header
     std::unique_ptr<LinkSession> link_;

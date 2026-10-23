@@ -59,14 +59,16 @@ struct LoopStatus {
     int amplitude = 100;   // movement loops: percent of the recorded swing, around its middle
     double beats = 0;      // synced to the beat clock: its length in beats (stretched); 0: free
     bool locked = false;   // see Engine::toggleLoopLock
-    // Movement loops (Engine::setLoopModulation): the track whose amplitude
-    // this one modulates (-1: none), how deep, which way, whether it still
-    // sends its own CC; the track modulating this one (-1: none) and the
-    // factor its amplitude takes from it now.
-    int modTarget = -1, modDepth = 100;
-    bool modInverted = false, modSendsCc = true;
-    int modSource = -1, modSourceDepth = 0;
+    int offset = 0;        // movement loops: percent of the travel, up (+) or down (-)
+    // Movement loops (Engine::setModulation): the track modulating this one's
+    // amplitude (-1: none), how deep, which way, and the factor its amplitude
+    // takes from it now; the tracks this one modulates (a bit each), and
+    // whether it still sends its own CC.
+    int modSource = -1, modDepth = 100;
+    bool modInverted = false;
     float modFactor = 1;
+    std::uint16_t modTargets = 0;
+    bool modSendsCc = true;
 };
 
 // Turns controller events into MIDI according to the active preset.
@@ -258,18 +260,20 @@ public:
     void setSongLoop(bool on) { songLoop_ = on; }
     bool songLoop() const { return songLoop_; }
 
-    // A movement loop of the active channel's current clip modulating the
-    // amplitude of another one of the clip: the target's swing is its
-    // amplitude times 1 - depth * (1 - v), v the value this loop plays now
+    // The amplitude of a movement loop of the active channel's current clip,
+    // modulated by another movement loop of the clip: its swing is its
+    // amplitude times 1 - depth * (1 - v), v the value the source plays now
     // in [0, 1] (1 - v inverted), so each keeps its own length and the
-    // modulation turns at its own pace. A target has one modulating loop at
-    // a time (setting a second takes it from the first); a loop modulates
-    // one target, never itself nor a loop that leads back to it (refused:
-    // false). The routing belongs to the clip (copied, saved in sessions);
-    // clearing the loop removes it, recording it again keeps it. Without a
-    // target the loop sends its CC again.
-    bool setLoopModulation(int channel, int source, int axis, const LoopModulation& modulation);
+    // modulation turns at its own pace. A loop has one source at a time; a
+    // source modulates as many loops as it likes, never itself nor a loop it
+    // is modulated by, even through others (refused: false); source -1
+    // removes the modulation. setModulationSendsCc: whether a source still
+    // sends its own CC while it modulates. The routing belongs to the clip
+    // (copied, saved in sessions); clearing either loop removes it,
+    // recording one again keeps it.
+    bool setModulation(int channel, int source, int axis, const LoopModulation& modulation);
     LoopModulation loopModulation(int channel, int source, int axis) const;
+    void setModulationSendsCc(int channel, int source, int axis, bool sends);
 
     // Mute and solo, per channel. A channel muted, or not soloed while
     // another one is, goes on playing its loops, clips, chains and song in
@@ -380,17 +384,28 @@ public:
     // from its last value back to its first, so it closes without a jump. A
     // synced one keeps whole beats. False without that loop playing.
     bool setAxisLoopLength(int channel, int source, int axis, int length);
-    void resetLoopShape(int channel, int source, int axis);  // back to 1x and 100 %
+    // A movement loop moved up (steps > 0) or down by kOffsetStep percent of
+    // the travel a step, from -100 % to +100 %; what would pass an end bends
+    // towards it, then stays flat there (see shapeOffset). Eased in; moving
+    // across 0 stops there; recording the loop again puts it back to 0.
+    static constexpr int kOffsetStep = 5, kMaxOffset = 100;
+    void offsetLoop(int channel, int source, int axis, int steps);
+    void resetLoopShape(int channel, int source, int axis);  // back to 1x, 100 % and no offset
     // An axis playing in steps (LoopBinding::steps): the samples of a step; 0 when not.
     int loopStepSamples(int channel, int source, int axis) const;
     // Shift + a stick's click (L3, R3) or the touchpad's: the stick, or the
-    // fingers, change the loops' amplitudes instead of their lengths (again: back).
-    bool stickAmplitudes(int stick) const { return stickAmplitudes_[static_cast<std::size_t>(stick & 1)]; }
-    bool fingerAmplitudes() const { return fingerAmplitudes_; }
+    // fingers, change the loops' lengths, then their amplitudes, then their
+    // offsets, then their lengths again.
+    enum class ShapeMode : std::uint8_t { Length, Amplitude, Offset };
+    ShapeMode stickShape(int stick) const { return stickShape_[static_cast<std::size_t>(stick & 1)]; }
+    ShapeMode fingerShape() const { return fingerShape_; }
     // One recorded value `v` in [0, 1] with the amplitude `a` (1 = as recorded)
     // around `middle`, softly clipped to [0, 1] when widened. Shared with the
     // view, which draws what plays.
     static float shapeAmplitude(float v, float middle, float a);
+    // A value in [0, 1] moved by `o` (a fraction of the travel), bent softly
+    // towards the end it would pass.
+    static float shapeOffset(float v, float o);
     // While Shift is on, a stick or a finger on the touchpad (in axis mode)
     // changes its loops on the active channel: along X its X loop, along Y its
     // Y loop; their stretch, as Shift + wheel does, or (after a click of the
@@ -608,8 +623,11 @@ private:
         int sentX = -1;
         bool locked = false;
         double turns = 0;  // free: how many times round since it started
-        LoopModulation modulation;  // of another loop's amplitude (setLoopModulation)
-        float modValue = 0.5f;      // the value it played last, [0, 1], for the loop it modulates
+        LoopModulation modulation;  // what modulates its amplitude (setModulation)
+        bool sendsCc = true;        // modulating others: still sending its own CC
+        float modValue = 0.5f;      // the value it played last, [0, 1], for the loops it modulates
+        int offset = 0;             // percent of the travel (offsetLoop)
+        float offsetNow = 0;        // eased towards offset / 100
     };
     static constexpr std::uint16_t kLifted = 0xFFFF;
     static void findMiddle(Loop& loop);  // a movement loop's middle, from its samples
@@ -629,7 +647,8 @@ private:
         return slotIndex(channel, currentSlot_[static_cast<std::size_t>(channel)], track);
     }
     void clearTrack(std::size_t index);
-    float modulationFactor(std::size_t index, int* source = nullptr) const;  // the amplitude a loop takes from the one modulating it
+    float modulationFactor(std::size_t index) const;  // the amplitude a loop takes from the one modulating it
+    bool modulatesOthers(std::size_t index) const;
     void fillModulation(LoopStatus& status, std::size_t index) const;
     // Where a track's control is now, [0, 1]; false for a lifted finger (or the notes).
     bool trackPosition(int track, float& v) const;
@@ -765,13 +784,15 @@ private:
     int stretchFinger_ = -1;
     float stretchFingerX_ = 0, stretchFingerY_ = 0;
     std::array<std::uint64_t, kTrackCount> stretchPausedUntil_{};
-    std::array<bool, 2> stickAmplitudes_{};
-    bool fingerAmplitudes_ = false;
+    std::array<ShapeMode, 2> stickShape_{};
+    ShapeMode fingerShape_ = ShapeMode::Length;
     std::uint64_t lastStretchTick_ = 0;
     void stretchFromControls();
     void stretchPausing(int source, int steps);
     void amplifyPausing(int source, int steps);
-    std::array<std::uint64_t, kTrackCount> amplitudePausedUntil_{};
+    std::array<std::uint64_t, kTrackCount> amplitudePausedUntil_{}, offsetPausedUntil_{};
+    void offsetPausing(int track, int steps);
+    void shapePausing(ShapeMode mode, int track, int steps);
     bool recordedThisHold_ = false;
     // The session screen: its button, whether it shows, the events asked, and
     // the stick's and the D-pad's pushes held, with when they repeat.

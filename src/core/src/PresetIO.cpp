@@ -680,6 +680,16 @@ Preset presetFromJson(const Json& j) {
             p.channelNames[static_cast<std::size_t>(channel - 1)] = value.get<std::string>().substr(0, 24);
         }
     }
+    if (j.contains("chromatic_channels")) {
+        const Json& list = j["chromatic_channels"];
+        if (!list.is_array())
+            fail("chromatic_channels", "expected a list of channels from 1 to 16");
+        for (const Json& c : list) {
+            if (!c.is_number_integer() || c.get<int>() < 1 || c.get<int>() > kChannelCount)
+                fail("chromatic_channels", "expected a list of channels from 1 to 16");
+            p.chromaticChannels = static_cast<std::uint16_t>(p.chromaticChannels | (1u << (c.get<int>() - 1)));
+        }
+    }
     // Channel 1's mapping is the base one, which every channel without its own
     // plays: a mapping saved for channel 1 takes its place.
     if (p.channels[0]) {
@@ -707,6 +717,12 @@ Json presetToJson(const Preset& p) {
             names[std::to_string(i + 1)] = p.channelNames[static_cast<std::size_t>(i)];
     if (!names.empty())
         j["channel_names"] = names;
+    Json chromatic = Json::array();
+    for (int i = 0; i < kChannelCount; ++i)
+        if ((p.chromaticChannels >> i) & 1u)
+            chromatic.push_back(i + 1);
+    if (!chromatic.empty())
+        j["chromatic_channels"] = chromatic;
     return j;
 }
 

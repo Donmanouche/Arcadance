@@ -387,52 +387,78 @@ void MappingEditor::drawModulationForm(int source, const LiveState& live) {
         return;
     ImGui::SeparatorText("Modulation");
     const bool triggers = source == static_cast<int>(LoopSource::Triggers);
-    const float column = ImGui::GetFontSize() * 7.5f;
+    const float column = ImGui::GetFontSize() * 7.5f, comboW = ImGui::GetFontSize() * 9;
     for (int axis = 0; axis < 2; ++axis) {
         const int self = Engine::trackOf(source, axis);
         const LoopStatus& st = statusOf(self);
         if (st.state != LoopStatus::State::Playing)
             continue;
         ImGui::PushID(axis);
-        LoopModulation m{st.modTarget, st.modTarget >= 0 ? st.modDepth : 100, st.modInverted, st.modSendsCc};
-        bool changed = false;
-        ImGui::AlignTextToFramePadding();
-        ImGui::Text("%s modulates", triggers ? (axis == 0 ? "L2" : "R2") : (axis == 0 ? "X" : "Y"));
-        ImGui::SameLine(column);
-        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 9);
-        if (ImGui::BeginCombo("##target", m.target >= 0 ? PerformanceView::trackName(m.target) : "\xE2\x80\x94")) {
-            if (ImGui::Selectable("\xE2\x80\x94", m.target < 0) && m.target >= 0) {
-                m = {};
-                changed = true;
+        const char* name = triggers ? (axis == 0 ? "L2" : "R2") : (axis == 0 ? "X" : "Y");
+        // The loops it may modulate: playing, never one it is modulated by (even through others).
+        auto allowed = [&](int track) {
+            if (track == self || statusOf(track).state != LoopStatus::State::Playing)
+                return false;
+            for (int at = self, hops = 0; at >= 0 && hops < Engine::kNoteTrack; ++hops) {
+                at = statusOf(at).modSource;
+                if (at == track)
+                    return false;
             }
-            for (int track = 0; track < Engine::kNoteTrack; ++track) {
-                if (track == self)
-                    continue;
-                bool cycle = false;  // never a loop leading back to this one
-                for (int at = track, hops = 0; at >= 0 && hops < Engine::kNoteTrack && !cycle; ++hops) {
-                    at = statusOf(at).modTarget;
-                    cycle = at == self;
+            return true;
+        };
+        auto choose = [&](const char* id, int current) {  // a combo of the loops; the one chosen, or -1
+            int picked = -1;
+            ImGui::SetNextItemWidth(comboW);
+            if (ImGui::BeginCombo(id, current >= 0 ? PerformanceView::trackName(current) : (current == -1 ? "\xE2\x80\x94" : "+"))) {
+                for (int track = 0; track < Engine::kNoteTrack; ++track) {
+                    if (track == self || (statusOf(track).modSource == self && track != current))
+                        continue;  // itself, or one it already modulates
+                    if (ImGui::Selectable(PerformanceView::trackName(track), track == current, allowed(track) ? 0 : ImGuiSelectableFlags_Disabled) && track != current)
+                        picked = track;
                 }
-                const bool plays = statusOf(track).state == LoopStatus::State::Playing;
-                if (ImGui::Selectable(PerformanceView::trackName(track), m.target == track, plays && !cycle ? 0 : ImGuiSelectableFlags_Disabled) &&
-                    m.target != track) {
-                    m.target = track;
-                    changed = true;
-                }
+                ImGui::EndCombo();
             }
-            ImGui::EndCombo();
-        }
-        if (m.target >= 0) {
+            return picked;
+        };
+        bool first = true;
+        auto label = [&] {
+            ImGui::AlignTextToFramePadding();
+            ImGui::TextUnformatted(first ? (std::string(name) + " modulates").c_str() : "");
+            ImGui::SameLine(column);
+            first = false;
+        };
+        // A row per loop it modulates: which, how deep, which way, x to stop.
+        for (int track = 0; track < Engine::kNoteTrack; ++track) {
+            const LoopStatus& t = statusOf(track);
+            if (t.modSource != self)
+                continue;
+            ImGui::PushID(track);
+            label();
+            LoopModulation m{self, t.modDepth, t.modInverted};
+            if (const int other = choose("##target", track); other >= 0)  // moved to another loop
+                modulationRequest_ = Modulation{other, m, std::nullopt, track};
             ImGui::SameLine();
             ImGui::SetNextItemWidth(ImGui::GetFontSize() * 7);
-            changed |= ImGui::SliderInt("##depth", &m.depth, 0, 100, "depth %d %%", ImGuiSliderFlags_AlwaysClamp);
+            bool changed = ImGui::SliderInt("##depth", &m.depth, 0, 100, "depth %d %%", ImGuiSliderFlags_AlwaysClamp);
             ImGui::SameLine();
             changed |= ImGui::Checkbox("inverted", &m.inverted);
             ImGui::SameLine();
-            changed |= ImGui::Checkbox("sends its CC", &m.sendsCc);
+            if (ImGui::SmallButton("\xC3\x97"))
+                modulationRequest_ = Modulation{track, {}, std::nullopt};
+            else if (changed)
+                modulationRequest_ = Modulation{track, m, std::nullopt};
+            ImGui::PopID();
         }
-        if (changed)
-            modulationRequest_ = Modulation{source, axis, m};
+        const bool modulates = st.modTargets != 0;
+        label();
+        if (const int added = choose("##add", modulates ? -2 : -1); added >= 0)
+            modulationRequest_ = Modulation{added, {self, 100, false}, std::nullopt};
+        if (modulates) {
+            ImGui::SetCursorPosX(column);
+            bool sends = st.modSendsCc;
+            if (ImGui::Checkbox((std::string(name) + " sends its CC").c_str(), &sends))
+                modulationRequest_ = Modulation{self, {}, sends};
+        }
         ImGui::PopID();
     }
 }

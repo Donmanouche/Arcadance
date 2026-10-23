@@ -28,10 +28,14 @@ public:
         int source = 0, axis = -1;
     };
     std::optional<ClearLoop> takeClearLoopRequest() { return std::exchange(clearLoopRequest_, std::nullopt); }
-    // A loop's modulation set in the window, once (Engine::setLoopModulation, on the active channel).
+    // A loop's modulation set in the window, once, on the active channel: the loop modulated
+    // (`track`) and its source (Engine::setModulation), or whether a source sends its CC
+    // (`sendsCc` set, `track` the source; Engine::setModulationSendsCc).
     struct Modulation {
-        int source = 0, axis = 0;
+        int track = 0;
         midipad::LoopModulation modulation;
+        std::optional<bool> sendsCc;
+        int freed = -1;  // a loop it stops modulating first (moved to another one)
     };
     std::optional<Modulation> takeModulationRequest() { return std::exchange(modulationRequest_, std::nullopt); }
     // An axis loop's end dragged in the control's window: its new length, once

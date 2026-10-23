@@ -191,6 +191,113 @@ const TriggerBinding* specBinding(const Mapping& m, const std::string& spec) {
     return nullptr;
 }
 
+// Copies the control a spec names ("button:south", "axes:left_x:left_y", "finger:1"...) from one
+// mapping into another: its bindings, its Shift layer's, and a whole stick's, the triggers' or a
+// finger's loop settings. False when the spec names nothing to copy.
+bool copyControl(const Mapping& from, Mapping& to, const std::string& spec) {
+    std::vector<std::string> p;
+    for (std::size_t at = 0; at <= spec.size();) {
+        const std::size_t next = std::min(spec.find(':', at), spec.size());
+        p.push_back(spec.substr(at, next - at));
+        at = next + 1;
+    }
+    if (p.size() == 2 && p[0] == "button")
+        if (auto b = parseButton(p[1]); b && !isDpad(*b)) {
+            const auto i = static_cast<std::size_t>(*b);
+            to.buttons[i] = from.buttons[i];
+            to.shift.buttons[i] = from.shift.buttons[i];
+            return true;
+        }
+    if (p.size() == 2 && p[0] == "dpad")
+        if (auto d = parseHatDir(p[1])) {
+            const auto i = static_cast<std::size_t>(*d);
+            to.dpad[i] = from.dpad[i];
+            to.shift.dpad[i] = from.shift.dpad[i];
+            return true;
+        }
+    if (p.size() == 3 && p[0] == "zone" && (p[1] == "1" || p[1] == "2"))
+        if (auto z = parseZone(p[2])) {
+            const auto f = static_cast<std::size_t>(p[1][0] - '1'), i = static_cast<std::size_t>(*z);
+            to.fingers[f].zones[i] = from.fingers[f].zones[i];
+            to.shift.zones[f][i] = from.shift.zones[f][i];
+            return true;
+        }
+    if ((p.size() == 2 && p[0] == "axis") || (p.size() == 3 && p[0] == "axes")) {
+        bool any = false;
+        for (std::size_t i = 1; i < p.size(); ++i)
+            if (const auto a = parseAxis(p[i])) {
+                to.axes[static_cast<std::size_t>(*a)] = from.axes[static_cast<std::size_t>(*a)];
+                any = true;
+            }
+        if (p.size() == 3)  // a whole stick, or both triggers (with their buttons): their loop too
+            if (const auto a = parseAxis(p[1])) {
+                const int source = *a == Axis::LeftX ? 0 : *a == Axis::RightX ? 1 : static_cast<int>(LoopSource::Triggers);
+                to.loops[static_cast<std::size_t>(source)] = from.loops[static_cast<std::size_t>(source)];
+                if (source == static_cast<int>(LoopSource::Triggers))
+                    for (Button b : {Button::LeftTrigger, Button::RightTrigger}) {
+                        to.buttons[static_cast<std::size_t>(b)] = from.buttons[static_cast<std::size_t>(b)];
+                        to.shift.buttons[static_cast<std::size_t>(b)] = from.shift.buttons[static_cast<std::size_t>(b)];
+                    }
+            }
+        return any;
+    }
+    auto finger = [&](int f) {
+        to.fingers[static_cast<std::size_t>(f)] = from.fingers[static_cast<std::size_t>(f)];
+        to.shift.zones[static_cast<std::size_t>(f)] = from.shift.zones[static_cast<std::size_t>(f)];
+        to.loops[static_cast<std::size_t>(2 + f)] = from.loops[static_cast<std::size_t>(2 + f)];
+    };
+    if (p.size() == 2 && p[0] == "finger" && (p[1] == "1" || p[1] == "2")) {
+        finger(p[1][0] - '1');
+        return true;
+    }
+    if (p.size() == 1 && p[0] == "fingers") {
+        finger(0);
+        finger(1);
+        return true;
+    }
+    if (p.size() == 1 && p[0] == "notes") {
+        to.loops[static_cast<std::size_t>(LoopSource::Notes)] = from.loops[static_cast<std::size_t>(LoopSource::Notes)];
+        return true;
+    }
+    return false;
+}
+
+// The parts of a mapping "Copy mapping" copies, a bit each.
+enum CopyPart : unsigned { kCopyButtons = 1, kCopyDpad = 2, kCopyLeftStick = 4, kCopyRightStick = 8, kCopyTriggers = 16, kCopyTouchpad = 32, kCopyLoops = 64 };
+constexpr std::pair<CopyPart, const char*> kCopyParts[] = {{kCopyButtons, "Buttons"},     {kCopyDpad, "D-pad"},       {kCopyLeftStick, "Left stick"},
+                                                           {kCopyRightStick, "Right stick"}, {kCopyTriggers, "Triggers"}, {kCopyTouchpad, "Touchpad"},
+                                                           {kCopyLoops, "Loop settings"}};
+
+void copyParts(const Mapping& from, Mapping& to, unsigned parts) {
+    if (parts & kCopyButtons)
+        for (int b = 0; b < kButtonCount; ++b)
+            if (!isDpad(static_cast<Button>(b)) && static_cast<Button>(b) != Button::LeftTrigger && static_cast<Button>(b) != Button::RightTrigger) {
+                to.buttons[static_cast<std::size_t>(b)] = from.buttons[static_cast<std::size_t>(b)];
+                to.shift.buttons[static_cast<std::size_t>(b)] = from.shift.buttons[static_cast<std::size_t>(b)];
+            }
+    if (parts & kCopyDpad) {
+        to.dpad = from.dpad;
+        to.shift.dpad = from.shift.dpad;
+    }
+    for (auto [part, a, b] : {std::tuple{kCopyLeftStick, Axis::LeftX, Axis::LeftY}, std::tuple{kCopyRightStick, Axis::RightX, Axis::RightY},
+                              std::tuple{kCopyTriggers, Axis::LeftTrigger, Axis::RightTrigger}})
+        if (parts & part) {
+            to.axes[static_cast<std::size_t>(a)] = from.axes[static_cast<std::size_t>(a)];
+            to.axes[static_cast<std::size_t>(b)] = from.axes[static_cast<std::size_t>(b)];
+        }
+    if (parts & kCopyTriggers)
+        for (Button b : {Button::LeftTrigger, Button::RightTrigger}) {
+            to.buttons[static_cast<std::size_t>(b)] = from.buttons[static_cast<std::size_t>(b)];
+            to.shift.buttons[static_cast<std::size_t>(b)] = from.shift.buttons[static_cast<std::size_t>(b)];
+        }
+    if (parts & kCopyTouchpad) {
+        to.fingers = from.fingers;
+        to.shift.zones = from.shift.zones;
+    }
+    if (parts & kCopyLoops)
+        to.loops = from.loops;
+}
+
 constexpr const char* kReleasesUrl = "https://github.com/Donmanouche/Arcadance/releases/latest";
 
 // Asks GitHub for the latest release (through curl, so MidiPad links no
@@ -509,10 +616,12 @@ private:
     NavConflict navConflict(int button) const;
     void toggleEdit(const LiveState& live);
     void openMenu(const PerformanceView::MenuTarget& target, const LiveState& live, bool fromController, ImVec2 at);
-    // The modulation menu of a loop (MenuTarget::ModPick): what it modulates, how deep, which way, as set
-    // there (modEdit_: the runtime answers a frame later). `step` 1: a click or Select (the depth up,
-    // after 100 % back to 10 %), 2 / -2: the depth up or down.
-    midipad::LoopModulation modEdit_;
+    // The modulation menu of a loop (MenuTarget::ModPick): the loops it modulates, each how deep and
+    // which way, as set there (modEdit_, per track: the runtime answers a frame later); the depth and
+    // direction rows set modFocus_'s. `step` 1: a click or Select (the depth up, after 100 % back to
+    // 10 %), 2 / -2: the depth up or down.
+    std::array<midipad::LoopModulation, Engine::kNoteTrack> modEdit_{};
+    int modFocus_ = -1;
     void fillModMenu(ContextMenu& menu, const LiveState& live) const;
     void changeModulation(int id, int step, const LiveState& live);
     void runMenu(const PerformanceView::MenuTarget& target, int id, const LiveState& live);
@@ -565,6 +674,16 @@ private:
     void drawOutputDialog();
     void drawOpenSessionDialog();
     void drawNewSongDialog();
+    // Copy mapping: into a channel, from another, the parts chosen (CopyPart bits).
+    void drawCopyDialog();
+    bool openCopyDialog_ = false;
+    int copyTo_ = 0, copyFrom_ = 0;
+    unsigned copyParts_ = 0x7F;
+    int copyControlFrom_ = -1;  // the channel a control's window copies from (-1: channel 1, or 2 on channel 1)
+    std::string channelLabel(int channel) const {
+        const std::string& name = preset_.channelNames[static_cast<std::size_t>(channel)];
+        return "Channel " + std::to_string(channel + 1) + (name.empty() ? "" : "  " + name);
+    }
     void drawAboutDialog();
 
     // Sessions: every channel's loops, the preset and the tonality, in a file.
@@ -987,8 +1106,14 @@ void GuiApp::update() {
     runtime_->setKey(settings_.key);
     if (const auto clear = editor_.takeClearLoopRequest())
         runtime_->clearLoop(clear->source, clear->axis);
-    if (const auto mod = editor_.takeModulationRequest())  // a loop's modulation, set in a control's window
-        runtime_->setLoopModulation(mod->source, mod->axis, mod->modulation);
+    if (const auto mod = editor_.takeModulationRequest()) {  // a loop's modulation, set in a control's window
+        if (mod->freed >= 0)
+            runtime_->setModulation(Engine::sourceOfTrack(mod->freed), Engine::axisOfTrack(mod->freed), {});
+        if (mod->sendsCc)
+            runtime_->setModulationSendsCc(Engine::sourceOfTrack(mod->track), Engine::axisOfTrack(mod->track), *mod->sendsCc);
+        else
+            runtime_->setModulation(Engine::sourceOfTrack(mod->track), Engine::axisOfTrack(mod->track), mod->modulation);
+    }
     if (const auto length = editor_.takeAxisLengthRequest())  // an axis loop's end dragged in a control's window
         runtime_->setAxisLoopLength(length->source, length->axis, length->length);
     while (runtime_->popReport()) {
@@ -1999,7 +2124,7 @@ enum MenuId : int {
     kCellEdit, kCellClear, kCellCopy, kCellPaste,
     kRestBarMore, kRestBarLess, kRestBeatMore, kRestBeatLess,
     kItemChange, kItemGlue, kItemLeft, kItemRight, kItemLoop, kItemKind, kItemDuplicate, kItemDelete, kAddToSong,
-    kModPick, kModStop, kModSendCc, kModDepth, kModDirection,
+    kModPick, kModStop, kModSendCc, kModDepth, kModDirection, kCopyMapping,
     kPick = 1000,  // + the clip (0-7) or 8 + the chain: what a song item plays
     kModTarget = 2000  // + the movement track a loop modulates
 };
@@ -2065,6 +2190,7 @@ void GuiApp::openMenu(const PerformanceView::MenuTarget& t, const LiveState& liv
         add("Rename\xE2\x80\xA6", kRename);
         if (t.slot == 1)
             break;
+        add("Copy mapping from\xE2\x80\xA6", kCopyMapping);
         if (chains.at >= 0)
             add("Chain off", kChainOff);
         else
@@ -2111,8 +2237,8 @@ void GuiApp::openMenu(const PerformanceView::MenuTarget& t, const LiveState& liv
         add("Back to 1x \xC2\xB7 100%", kResetShape, plays);
         if (lane && source != static_cast<int>(LoopSource::Notes)) {  // modulating another loop's amplitude
             add("Modulate the amplitude of\xE2\x80\xA6", kModPick, plays);
-            add("Stop modulating", kModStop, st.modTarget >= 0);
-            add(st.modSendsCc ? "Send its CC: on" : "Send its CC: off", kModSendCc, st.modTarget >= 0);
+            add("Stop modulating", kModStop, st.modTargets != 0);
+            add(st.modSendsCc ? "Send its CC: on" : "Send its CC: off", kModSendCc, st.modTargets != 0);
         }
         add("Settings\xE2\x80\xA6", kSettings);
         break;
@@ -2140,6 +2266,7 @@ void GuiApp::openMenu(const PerformanceView::MenuTarget& t, const LiveState& liv
         add("Next channel", kNextChannel);
         add("Previous channel", kPrevChannel);
         add("Rename\xE2\x80\xA6", kRename);
+        add("Copy mapping from\xE2\x80\xA6", kCopyMapping);
         break;
     case K::Section: {
         const int count = static_cast<int>(song_.sections.size());
@@ -2261,35 +2388,47 @@ void GuiApp::fillModMenu(ContextMenu& menu, const LiveState& live) const {
     for (int track = 0; track < Engine::kNoteTrack; ++track) {
         if (track == self)
             continue;
-        // Not a loop leading back to this one.
+        // Never a loop this one is modulated by, even through others.
         bool cycle = false;
-        for (int at = track, hops = 0; at >= 0 && hops < Engine::kNoteTrack && !cycle; ++hops) {
-            at = at == self ? modEdit_.target : statusOf(at).modTarget;
-            cycle = at == self;
+        for (int at = self, hops = 0; at >= 0 && hops < Engine::kNoteTrack && !cycle; ++hops) {
+            at = modEdit_[static_cast<std::size_t>(at)].source;
+            cycle = at == track;
         }
-        const bool plays = statusOf(track).state == LoopStatus::State::Playing;
-        menu.items.push_back({PerformanceView::trackName(track), kModTarget + track, plays && !cycle, modEdit_.target == track});
+        const LoopModulation& m = modEdit_[static_cast<std::size_t>(track)];
+        const bool routed = m.source == self;
+        const std::string label = std::string(PerformanceView::trackName(track)) +
+                                  (routed ? "   " + std::to_string(m.depth) + " %" + (m.inverted ? " \xC2\xB7 inverted" : "") : "");
+        menu.items.push_back({label, kModTarget + track, statusOf(track).state == LoopStatus::State::Playing && !cycle, routed});
     }
-    const bool on = modEdit_.target >= 0;
-    menu.items.push_back({"Depth: \xE2\x80\xB9 " + std::to_string(modEdit_.depth) + " % \xE2\x80\xBA", kModDepth, on});
-    menu.items.push_back({modEdit_.inverted ? "Direction: inverted" : "Direction: normal", kModDirection, on});
+    const bool on = modFocus_ >= 0;
+    const std::string focus = on ? std::string(" \xC2\xB7 ") + PerformanceView::trackName(modFocus_) : "";
+    const LoopModulation& f = modEdit_[static_cast<std::size_t>(std::max(modFocus_, 0))];
+    menu.items.push_back({"Depth" + focus + ": \xE2\x80\xB9 " + std::to_string(on ? f.depth : 100) + " % \xE2\x80\xBA", kModDepth, on});
+    menu.items.push_back({"Direction" + focus + (on && f.inverted ? ": inverted" : ": normal"), kModDirection, on});
 }
 
 void GuiApp::changeModulation(int id, int step, const LiveState& live) {
     if (!menu_ || menu_->target.kind != PerformanceView::MenuTarget::Kind::ModPick)
         return;
-    LoopModulation& m = modEdit_;
-    if (id >= kModTarget) {  // the loop chosen; chosen again, none
-        const int track = id - kModTarget;
-        m.target = m.target == track ? -1 : track;
-        if (m.target < 0)
-            m = {};
-    } else if (id == kModDepth) {
-        m.depth = step == 1 ? (m.depth >= 100 ? 10 : m.depth + 10) : std::clamp(m.depth + (step > 0 ? 10 : -10), 10, 100);
-    } else if (id == kModDirection) {
-        m.inverted = !m.inverted;
+    const int self = Engine::trackOf(menu_->target.source, menu_->target.axis);
+    int track = modFocus_;
+    if (id >= kModTarget) {  // a loop ticked (modulated from now on, fully) or unticked
+        track = id - kModTarget;
+        LoopModulation& m = modEdit_[static_cast<std::size_t>(track)];
+        m = m.source == self ? LoopModulation{} : LoopModulation{self, 100, false};
+        modFocus_ = m.source == self ? track : -1;
+    } else if (track >= 0 && id == kModDepth) {
+        int& depth = modEdit_[static_cast<std::size_t>(track)].depth;
+        depth = step == 1 ? (depth >= 100 ? 10 : depth + 10) : std::clamp(depth + (step > 0 ? 10 : -10), 10, 100);
+    } else if (track >= 0 && id == kModDirection) {
+        modEdit_[static_cast<std::size_t>(track)].inverted = !modEdit_[static_cast<std::size_t>(track)].inverted;
     }
-    runtime_->setLoopModulation(menu_->target.source, menu_->target.axis, m);
+    if (track >= 0)
+        runtime_->setModulation(Engine::sourceOfTrack(track), Engine::axisOfTrack(track), modEdit_[static_cast<std::size_t>(track)]);
+    if (modFocus_ < 0)  // the focus on another loop it modulates
+        for (int t = 0; t < Engine::kNoteTrack && modFocus_ < 0; ++t)
+            if (modEdit_[static_cast<std::size_t>(t)].source == self)
+                modFocus_ = t;
     const int selected = menu_->selected;
     fillModMenu(*menu_, live);
     menu_->selected = std::clamp(selected, 0, static_cast<int>(menu_->items.size()) - 1);
@@ -2425,16 +2564,28 @@ void GuiApp::runMenu(const PerformanceView::MenuTarget& t, int id, const LiveSta
         if (loopTarget)
             runtime_->clearLoop(t.source, axis);
         break;
-    case kModPick: {  // the menu of what it modulates, from what it does now
-        const LoopStatus& st = live.loops[static_cast<std::size_t>(t.source)].lanes[static_cast<std::size_t>(t.axis & 1)].status;
-        modEdit_ = {st.modTarget, st.modTarget >= 0 ? st.modDepth : 100, st.modInverted, st.modSendsCc};
+    case kModPick: {  // the menu of what it modulates, from what every loop does now
+        const int self = Engine::trackOf(t.source, t.axis & 1);
+        modFocus_ = -1;
+        for (int track = 0; track < Engine::kNoteTrack; ++track) {
+            const LoopStatus& st = live.loops[static_cast<std::size_t>(Engine::sourceOfTrack(track))].lanes[static_cast<std::size_t>(Engine::axisOfTrack(track))].status;
+            modEdit_[static_cast<std::size_t>(track)] = {st.modSource, st.modDepth, st.modInverted};
+            if (st.modSource == self && modFocus_ < 0)
+                modFocus_ = track;
+        }
         openMenu({K::ModPick, ch, 0, t.source, t.axis & 1}, live, menuFromController_, menuAt_);
         break;
     }
-    case kModStop: runtime_->setLoopModulation(t.source, t.axis & 1, {}); break;
+    case kModStop: {  // every loop it modulates plays its own amplitude again
+        const LoopStatus& st = live.loops[static_cast<std::size_t>(t.source)].lanes[static_cast<std::size_t>(t.axis & 1)].status;
+        for (int track = 0; track < Engine::kNoteTrack; ++track)
+            if ((st.modTargets >> track) & 1u)
+                runtime_->setModulation(Engine::sourceOfTrack(track), Engine::axisOfTrack(track), {});
+        break;
+    }
     case kModSendCc: {
         const LoopStatus& st = live.loops[static_cast<std::size_t>(t.source)].lanes[static_cast<std::size_t>(t.axis & 1)].status;
-        runtime_->setLoopModulation(t.source, t.axis & 1, {st.modTarget, st.modDepth, st.modInverted, !st.modSendsCc});
+        runtime_->setModulationSendsCc(t.source, t.axis & 1, !st.modSendsCc);
         break;
     }
     case kResetShape:
@@ -2443,6 +2594,11 @@ void GuiApp::runMenu(const PerformanceView::MenuTarget& t, int id, const LiveSta
                 runtime_->resetLoopShape(t.source, a);
         break;
     case kEditNotes: openWindow("notes"); break;
+    case kCopyMapping:
+        copyTo_ = ch;
+        copyFrom_ = ch == 0 ? 1 : 0;
+        openCopyDialog_ = true;
+        break;
     case kNextChannel: runtime_->setChannel((ch + 1) % kChannelCount); break;
     case kPrevChannel: runtime_->setChannel((ch + kChannelCount - 1) % kChannelCount); break;
     case kRename:
@@ -2591,11 +2747,29 @@ void GuiApp::menuEvent(Engine::SessionEvent e, const LiveState& live) {
                 break;
         }
     };
+    // In the modulation menu, a loop it modulates under the cursor takes the depth and direction rows.
+    auto focusRow = [&] {
+        if (menu_->target.kind != PerformanceView::MenuTarget::Kind::ModPick)
+            return;
+        const MenuEntry& row = menu_->items[static_cast<std::size_t>(menu_->selected)];
+        if (row.id >= kModTarget && row.checked && modFocus_ != row.id - kModTarget) {
+            modFocus_ = row.id - kModTarget;
+            const int selected = menu_->selected;
+            fillModMenu(*menu_, live);
+            menu_->selected = selected;
+        }
+    };
     switch (e) {
     case E::Down:
-    case E::ValueDown: move(1); break;
+    case E::ValueDown:
+        move(1);
+        focusRow();
+        break;
     case E::Up:
-    case E::ValueUp: move(-1); break;
+    case E::ValueUp:
+        move(-1);
+        focusRow();
+        break;
     case E::ValueLeft:
     case E::ValueRight:  // the depth, down or up
         if (menu_->items[static_cast<std::size_t>(menu_->selected)].id == kModDepth)
@@ -2726,7 +2900,7 @@ void GuiApp::drawHelpOverlay() {
     } else {
         rows = {{{rec}, "held: record what you play or move;  a tap: stop the loops, or overdub"},
                 {{shift}, "the Shift layer; with a stick or a finger: the loops' lengths"},
-                {{shift, "L3"}, "a stick: lengths or amplitudes"},
+                {{shift, "L3"}, "a stick: lengths, amplitudes or offsets"},
                 {{mode}, "the session screen (clips and chains); again: the song"},
                 {{shift, mode}, "edit mode: set things up from the controller"}};
         performance_.drawHelp("MAIN SCREEN", T::kBlue, closeHint, rows);
@@ -3282,8 +3456,11 @@ void GuiApp::drawPerformance(const LiveState& live) {
     if (const auto stretch = performance_.takeStretchRequest())  // Shift + wheel over a LOOP panel
         for (int track = 0; track < Engine::kNoteTrack; ++track)
             if (stretch->tracks & (1u << track)) {
-                if (stretch->amplitude)
+                using K = PerformanceView::StretchRequest::Kind;
+                if (stretch->kind == K::Amplitude)
                     runtime_->amplifyLoop(Engine::sourceOfTrack(track), Engine::axisOfTrack(track), stretch->steps);
+                else if (stretch->kind == K::Offset)
+                    runtime_->offsetLoop(Engine::sourceOfTrack(track), Engine::axisOfTrack(track), stretch->steps);
                 else
                     runtime_->stretchLoop(Engine::sourceOfTrack(track), Engine::axisOfTrack(track), stretch->steps);
             }
@@ -3996,6 +4173,28 @@ void GuiApp::drawMappingOverlay(const LiveState& live) {
         Mapping& target = own ? *own : first ? preset_.base : copy;
         const std::string channelName = "channel " + std::to_string(live.channel + 1);
         bool backToBase = false;  // done once the window no longer uses `own`
+        bool copied = false;
+        if (spec != "notes") {  // this control as another channel has it
+            int& from = copyControlFrom_;
+            if (from < 0 || from == live.channel)
+                from = live.channel == 0 ? 1 : 0;
+            ImGui::AlignTextToFramePadding();
+            ImGui::TextUnformatted("Copy from");
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(ImGui::GetFontSize() * 11);
+            if (ImGui::BeginCombo("##copyfrom", channelLabel(from).c_str())) {
+                for (int ch = 0; ch < kChannelCount; ++ch)
+                    if (ch != live.channel && ImGui::Selectable(channelLabel(ch).c_str(), ch == from))
+                        from = ch;
+                ImGui::EndCombo();
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Copy")) {
+                const Mapping source = preset_.forChannel(from);
+                copied = copyControl(source, target, spec);
+            }
+            ImGui::Separator();
+        }
         if (spec != "notes") {  // the note loop editor goes straight to its piano roll
             ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(Theme::kDim), "%s",
                                own     ? ("Editing the mapping of " + channelName + " (its own)").c_str()
@@ -4045,24 +4244,33 @@ void GuiApp::drawMappingOverlay(const LiveState& live) {
         ImGui::BeginDisabled(channelOneControl);
         if (spec == "notes") {  // the note loop's editor: a large piano roll, above its settings
             const float em = ImGui::GetFontSize();
-            ImGui::BeginDisabled(!settings_.key);
-            bool inScale = settings_.notesInScale;
-            if (ImGui::Checkbox("Move notes only onto the scale", &inScale)) {
-                settings_.notesInScale = inScale;
-                persistSettings();
+            // SCALE: notes move on the tonality's degrees; CHROMATIC (drums): by semitones, every row named.
+            const auto bit = static_cast<std::uint16_t>(1u << live.channel);
+            const bool chromatic = (preset_.chromaticChannels & bit) != 0;
+            for (int k = 0; k < 2; ++k) {
+                const bool on = (k == 1) == chromatic;
+                ImGui::PushStyleColor(ImGuiCol_Button, on ? ImVec4(0.24f, 0.86f, 0.52f, 0.35f) : ImVec4(0.2f, 0.21f, 0.23f, 1.0f));
+                ImGui::PushStyleColor(ImGuiCol_Border, on ? ImVec4(0.24f, 0.86f, 0.52f, 0.9f) : ImVec4(0.35f, 0.37f, 0.4f, 1.0f));
+                ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.0f);
+                if (ImGui::Button(k == 0 ? "SCALE" : "CHROMATIC") && !on) {
+                    preset_.chromaticChannels = static_cast<std::uint16_t>(preset_.chromaticChannels ^ bit);
+                    edited();
+                }
+                ImGui::PopStyleVar();
+                ImGui::PopStyleColor(2);
+                ImGui::SameLine(0, em * 0.25f);
             }
-            ImGui::EndDisabled();
-            ImGui::SameLine();
+            ImGui::SameLine(0, em);
             if (settings_.key)
                 ImGui::TextColored(ImVec4(0.55f, 0.75f, 1.0f, 1.0f), "%s %s", pitchName(settings_.key->root).c_str(),
                                    std::string(settings_.key->type().label).c_str());
             else
                 ImGui::TextColored(kHintColor, "(no tonality)");
-            performance_.setScaleMoves(settings_.notesInScale);
+            performance_.setScaleMoves(!chromatic);
             performance_.drawNoteEditor(target, live, em * 56, em * 24);
             ImGui::Spacing();
         }
-        if (editor_.drawControl(spec, target, live, settings_.key)) {
+        if (editor_.drawControl(spec, target, live, settings_.key) || copied) {
             if (!own && !first)
                 own = std::move(copy);  // its first change: the channel gets its own mapping
             edited();
@@ -4469,6 +4677,7 @@ void GuiApp::drawDialogs() {
     drawOutputDialog();
     drawOpenSessionDialog();
     drawNewSongDialog();
+    drawCopyDialog();
     drawAboutDialog();
 }
 
@@ -4604,6 +4813,48 @@ void GuiApp::drawNameDialog() {
         afterSave_ = nullptr;
         ImGui::CloseCurrentPopup();
     }
+    endDialog();
+}
+
+void GuiApp::drawCopyDialog() {
+    constexpr const char* kTitle = "Copy mapping";
+    if (openCopyDialog_) {
+        ImGui::OpenPopup(kTitle);
+        openCopyDialog_ = false;
+    }
+    if (!beginDialog(kTitle))
+        return;
+    ImGui::TextUnformatted(("To " + channelLabel(copyTo_)).c_str());
+    ImGui::Spacing();
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted("From");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 12);
+    if (ImGui::BeginCombo("##from", channelLabel(copyFrom_).c_str())) {
+        for (int ch = 0; ch < kChannelCount; ++ch)
+            if (ch != copyTo_ && ImGui::Selectable(channelLabel(ch).c_str(), ch == copyFrom_))
+                copyFrom_ = ch;
+        ImGui::EndCombo();
+    }
+    ImGui::Spacing();
+    for (auto [part, name] : kCopyParts) {
+        bool on = (copyParts_ & part) != 0;
+        if (ImGui::Checkbox(name, &on))
+            copyParts_ = on ? copyParts_ | part : copyParts_ & ~static_cast<unsigned>(part);
+    }
+    const int button = dialogButtons({"Copy", "Cancel"});
+    if (button == 0 && copyParts_ != 0) {
+        const Mapping from = preset_.forChannel(copyFrom_);  // a copy: the target may be the same mapping
+        auto& own = preset_.channels[static_cast<std::size_t>(copyTo_)];
+        if (copyTo_ != 0 && !own)
+            own = preset_.base;  // the channel gets its own mapping
+        copyParts(from, copyTo_ == 0 ? preset_.base : *own, copyParts_);
+        edited();
+        log("Mapping copied from channel " + std::to_string(copyFrom_ + 1) + " to channel " + std::to_string(copyTo_ + 1) + ".");
+        ImGui::CloseCurrentPopup();
+    }
+    if (button == 1 || ImGui::IsKeyPressed(ImGuiKey_Escape))
+        ImGui::CloseCurrentPopup();
     endDialog();
 }
 

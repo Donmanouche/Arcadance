@@ -80,11 +80,11 @@ public:
     // every lane), during the last draw(): the axis loops to stretch (a bit
     // per Engine track) and by how many steps (see Engine::stretchLoop; up
     // stretches, down compresses). Ctrl + wheel: their amplitude instead
-    // (Engine::amplifyLoop; up widens).
+    // (Engine::amplifyLoop; up widens); Alt + wheel: their offset (Engine::offsetLoop; up raises).
     struct StretchRequest {
+        enum class Kind : std::uint8_t { Stretch, Amplitude, Offset } kind = Kind::Stretch;
         std::uint16_t tracks = 0;
         int steps = 0;
-        bool amplitude = false;
     };
     std::optional<StretchRequest> takeStretchRequest() { return std::exchange(stretch_, std::nullopt); }
     // The session screen, in place of the modules: a column of clips per
@@ -210,7 +210,7 @@ public:
     // the selection. The edits come out of takeNoteEdit().
     void drawNoteEditor(const midipad::Mapping& mapping, const LiveState& live, float w, float h);
     // Moves up and down go by degrees of the tonality (when there is one).
-    void setScaleMoves(bool on) { scaleMoves_ = on; }
+    void setScaleMoves(bool on) { scaleMoves_ = on; }  // false: chromatic, every row named
     struct NoteEdit {
         std::vector<midipad::LoopNoteRef> notes;
         bool remove = false;
@@ -270,6 +270,7 @@ private:
     // The same for the amplitude (percent of the recorded swing): chip "AMP 60%", gauge 0-800 %.
     float drawAmplitudeChip(ImDrawList* dl, float right, float y, int amplitude, ImU32 color);
     void drawAmplitudeGauge(ImDrawList* dl, ImVec2 ga, ImVec2 gb, std::uint16_t tracks, int amplitude, ImU32 color);
+    void drawOffsetGauge(ImDrawList* dl, ImVec2 ga, ImVec2 gb, std::uint16_t tracks, int offset, ImU32 color);
     float drawChip(ImDrawList* dl, float right, float y, const std::string& label, ImU32 color);
 
     // Smooths a displayed value towards its target; `id` names it across frames.
@@ -357,6 +358,12 @@ private:
         std::array<int, 16> full{};
         full.fill(100);
         return full;
+    }();
+    std::array<int, 16> lastOffset_{};
+    std::array<double, 16> offsetShown_ = [] {  // per track: when its offset last changed
+        std::array<double, 16> never{};
+        never.fill(-1e9);
+        return never;
     }();
     std::array<double, 16> amplitudeShown_ = [] {  // per track: when its amplitude last changed
         std::array<double, 16> never{};

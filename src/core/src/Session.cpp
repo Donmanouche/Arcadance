@@ -107,9 +107,12 @@ Json sessionToJson(const Session& session) {
         } else {
             o["stretch"] = l.stretch;
             o["amplitude"] = l.amplitude;
-            if (l.modulation.target >= 0 && l.modulation.target < 10)
-                o["modulates"] = {{"target", kTrackNames[l.modulation.target]}, {"depth", l.modulation.depth},
-                                  {"inverted", l.modulation.inverted}, {"sends_cc", l.modulation.sendsCc}};
+            if (l.offset != 0)
+                o["offset"] = l.offset;
+            if (l.modulation.source >= 0 && l.modulation.source < 10)
+                o["modulated_by"] = {{"source", kTrackNames[l.modulation.source]}, {"depth", l.modulation.depth}, {"inverted", l.modulation.inverted}};
+            if (!l.sendsCc)
+                o["sends_cc"] = false;
             if (l.axis >= 0) {  // one axis
                 o["axis"] = l.axis == 0 ? "x" : "y";
                 o["samples"] = l.x;
@@ -213,6 +216,12 @@ Session sessionFromJson(const Json& j) {
     if (!j.contains("preset"))
         fail("session", "missing \"preset\"");
     s.preset = presetFromJson(j["preset"]);
+    struct Legacy {
+        std::size_t loop;
+        int target, depth;
+        bool inverted;
+    };
+    std::vector<Legacy> legacy;
     if (j.contains("loops")) {
         if (!j["loops"].is_array())
             fail("session.loops", "expected an array");
@@ -262,14 +271,25 @@ Session sessionFromJson(const Json& j) {
             } else {
                 l.stretch = readInt(o, "stretch", -38, 198, 0, where);
                 l.amplitude = readInt(o, "amplitude", 0, 800, 100, where);
-                if (o.contains("modulates") && o["modulates"].is_object()) {  // unknown targets are left out
-                    const Json& m = o["modulates"];
+                l.offset = readInt(o, "offset", -100, 100, 0, where);
+                auto trackNamed = [](const Json& v) {  // -1: unknown, left out
                     for (int t = 0; t < 10; ++t)
-                        if (m.contains("target") && m["target"] == kTrackNames[t])
-                            l.modulation.target = t;
-                    l.modulation.depth = readInt(m, "depth", 0, 100, 100, where + ".modulates");
+                        if (v == kTrackNames[t])
+                            return t;
+                    return -1;
+                };
+                if (o.contains("modulated_by") && o["modulated_by"].is_object()) {
+                    const Json& m = o["modulated_by"];
+                    l.modulation.source = m.contains("source") ? trackNamed(m["source"]) : -1;
+                    l.modulation.depth = readInt(m, "depth", 0, 100, 100, where + ".modulated_by");
                     l.modulation.inverted = m.contains("inverted") && m["inverted"].is_boolean() && m["inverted"].get<bool>();
-                    l.modulation.sendsCc = !m.contains("sends_cc") || !m["sends_cc"].is_boolean() || m["sends_cc"].get<bool>();
+                }
+                l.sendsCc = !o.contains("sends_cc") || !o["sends_cc"].is_boolean() || o["sends_cc"].get<bool>();
+                if (o.contains("modulates") && o["modulates"].is_object()) {  // 0.243: the source named its one target
+                    const Json& m = o["modulates"];
+                    legacy.push_back({s.loops.size(), m.contains("target") ? trackNamed(m["target"]) : -1, readInt(m, "depth", 0, 100, 100, where + ".modulates"),
+                                      m.contains("inverted") && m["inverted"].is_boolean() && m["inverted"].get<bool>()});
+                    l.sendsCc = !m.contains("sends_cc") || !m["sends_cc"].is_boolean() || m["sends_cc"].get<bool>();
                 }
                 if (o.contains("axis")) {
                     if (!o["axis"].is_string() || (o["axis"] != "x" && o["axis"] != "y"))
@@ -283,6 +303,13 @@ Session sessionFromJson(const Json& j) {
             }
             s.loops.push_back(std::move(l));
         }
+    }
+    for (const Legacy& m : legacy) {  // each to the loop of its target, in the same clip
+        const SessionLoop& from = s.loops[m.loop];
+        for (SessionLoop& to : s.loops)
+            if (m.target >= 0 && to.channel == from.channel && to.clip == from.clip && to.axis >= 0 && to.source != LoopSource::Notes &&
+                static_cast<int>(to.source) * 2 + to.axis == m.target)
+                to.modulation = {static_cast<int>(from.source) * 2 + std::max(from.axis, 0), m.depth, m.inverted};
     }
     if (j.contains("chains")) {
         if (!j["chains"].is_array())

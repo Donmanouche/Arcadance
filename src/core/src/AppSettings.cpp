@@ -115,7 +115,6 @@ AppSettings loadSettings(const std::filesystem::path& file, AppSettings s) {
     read(j, "beats_per_bar", s.beatsPerBar);
     s.beatsPerBar = std::clamp(s.beatsPerBar, 1, 16);
     read(j, "start_stop_sync", s.startStopSync);
-    read(j, "notes_in_scale", s.notesInScale);
     std::string theme;
     read(j, "theme", theme);
     s.theme = theme == "phosphor_blue" ? AppSettings::Theme::PhosphorBlue
@@ -179,7 +178,6 @@ void saveSettings(const AppSettings& s, const std::filesystem::path& file) {
     j["loop_snap"] = kSnapNames[static_cast<int>(s.loopSnap)];
     j["beats_per_bar"] = s.beatsPerBar;
     j["start_stop_sync"] = s.startStopSync;
-    j["notes_in_scale"] = s.notesInScale;
     static constexpr const char* kThemeNames[] = {"default", "phosphor_blue", "phosphor_green"};
     j["theme"] = kThemeNames[static_cast<int>(s.theme)];
     j["frame_rate"] = s.frameRate == 60 ? "60" : s.frameRate == 30 ? "30" : "screen";

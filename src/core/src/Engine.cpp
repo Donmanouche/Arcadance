@@ -336,7 +336,7 @@ void Engine::touchMoved(int finger, float x, float y) {
                     stretchFingerX_ += static_cast<float>(steps) * kStretchTouchStep;
                     stretchFingerY_ = y;
                     for (int t : {trackOf(2, 0), trackOf(3, 0)})
-                        fingerAmplitudes_ ? amplifyPausing(t, steps) : stretchPausing(t, steps);
+                        shapePausing(fingerShape_, t, steps);
                 }
             } else {
                 const int steps = static_cast<int>(dy / kStretchTouchStep);
@@ -344,7 +344,7 @@ void Engine::touchMoved(int finger, float x, float y) {
                     stretchFingerY_ -= static_cast<float>(steps) * kStretchTouchStep;
                     stretchFingerX_ = x;
                     for (int t : {trackOf(2, 1), trackOf(3, 1)})
-                        fingerAmplitudes_ ? amplifyPausing(t, steps) : stretchPausing(t, steps);
+                        shapePausing(fingerShape_, t, steps);
                 }
             }
         }
@@ -489,12 +489,13 @@ void Engine::press(int slot) {
     }
     if (stretchHeld() && recordHolders_.none() && !navigating()) {  // Shift + a click: lengths or amplitudes
         if (slot == slotOf(Button::LeftStick) || slot == slotOf(Button::RightStick)) {
-            auto& amplitudes = stickAmplitudes_[slot == slotOf(Button::LeftStick) ? 0 : 1];
-            amplitudes = !amplitudes;
+            auto next = [](ShapeMode m) { return static_cast<ShapeMode>((static_cast<int>(m) + 1) % 3); };
+            auto& mode = stickShape_[slot == slotOf(Button::LeftStick) ? 0 : 1];
+            mode = next(mode);
             return;
         }
         if (slot == slotOf(Button::Touchpad)) {
-            fingerAmplitudes_ = !fingerAmplitudes_;
+            fingerShape_ = static_cast<ShapeMode>((static_cast<int>(fingerShape_) + 1) % 3);
             return;
         }
     }
@@ -1013,6 +1014,8 @@ void Engine::runLoops() {
         loop.stretch = 0;
         loop.amplitude = 100;
         loop.amplitudeNow = 1;
+        loop.offset = 0;
+        loop.offsetNow = 0;
         loopShaping_[index] = -1.0f;
         loop.nextAt = now_;
         recordedThisHold_ = true;
@@ -1333,6 +1336,50 @@ void Engine::amplifyPausing(int track, int steps) {
         amplitudePausedUntil_[i] = now_ + static_cast<std::uint64_t>(kStretchPauseMs) * 1'000'000u;
 }
 
+// Moves a loop of the active channel up or down, waiting kStretchPauseMs at 0
+// when it gets there.
+void Engine::offsetPausing(int track, int steps) {
+    const auto i = static_cast<std::size_t>(track);
+    if (now_ < offsetPausedUntil_[i])
+        return;
+    const Loop& loop = loops_[loopIndex(channel_, track)];
+    const int before = loop.offset;
+    offsetLoop(channel_, sourceOfTrack(track), axisOfTrack(track), steps);
+    if (before != 0 && loop.offset == 0)
+        offsetPausedUntil_[i] = now_ + static_cast<std::uint64_t>(kStretchPauseMs) * 1'000'000u;
+}
+
+void Engine::shapePausing(ShapeMode mode, int track, int steps) {
+    if (mode == ShapeMode::Offset)
+        offsetPausing(track, steps);
+    else if (mode == ShapeMode::Amplitude)
+        amplifyPausing(track, steps);
+    else
+        stretchPausing(track, steps);
+}
+
+void Engine::offsetLoop(int channel, int source, int axis, int steps) {
+    if (source < 0 || source >= kLoopSourceCount || source == static_cast<int>(LoopSource::Notes))
+        return;
+    Loop& loop = loops_[loopIndex(std::clamp(channel, 0, kChannelCount - 1), trackOf(source, axis))];
+    if (loop.state != LoopStatus::State::Playing || steps == 0)
+        return;
+    const int to = std::clamp(loop.offset + steps * kOffsetStep, -kMaxOffset, kMaxOffset);
+    loop.offset = (loop.offset < 0 && to > 0) || (loop.offset > 0 && to < 0) ? 0 : to;  // across 0, it stops there
+}
+
+float Engine::shapeOffset(float v, float o) {
+    if (o == 0.0f)
+        return v;
+    float out = v + o;
+    const float k = 0.1f * std::min(1.0f, std::abs(o) * 4.0f);  // the knee grows up to a quarter of the travel moved
+    if (out > 1.0f - k)
+        out = 1.0f - k * std::exp(-(out - (1.0f - k)) / k);
+    else if (out < k)
+        out = k * std::exp((out - k) / k);
+    return std::clamp(out, 0.0f, 1.0f);
+}
+
 // Stretches a loop of the active channel, waiting kStretchPauseMs at 1x when it
 // gets there, so a stick held over makes it easy to stop on.
 void Engine::stretchPausing(int track, int steps) {
@@ -1372,13 +1419,13 @@ void Engine::stretchFromControls() {
         auto& turned = alongX ? rest : ampRest;
         (alongX ? ampRest : rest) = 0;
         const double t = static_cast<double>((out - kStretchDeadZone) / (1.0f - kStretchDeadZone));
-        const bool amplitudes = stickAmplitudes_[i];
-        const double rate = kStretchMinRate + ((amplitudes ? kAmplitudeMaxRate : kStretchMaxRate) - kStretchMinRate) * t * t;
+        const ShapeMode mode = stickShape_[i];
+        const double rate = kStretchMinRate + ((mode != ShapeMode::Length ? kAmplitudeMaxRate : kStretchMaxRate) - kStretchMinRate) * t * t;
         turned += (d > 0 ? rate : -rate) * dt;
         const int steps = static_cast<int>(turned);
         if (steps != 0) {
             turned -= steps;
-            amplitudes ? amplifyPausing(track, steps) : stretchPausing(track, steps);
+            shapePausing(mode, track, steps);
         }
     }
 }
@@ -1413,7 +1460,10 @@ void Engine::playMovementLoop(std::size_t index, LoopPlayback playback, const do
     const float ease = 0.1f * std::max(1.0f, std::max(target, loop.amplitudeNow) / 2.0f);
     loop.amplitudeNow += std::clamp(target - loop.amplitudeNow, -ease, ease);
     const float amplitude = loop.amplitudeNow * modulationFactor(index);
-    auto send = [&](float v) { sendLoopValue(index, stepped(index, shapeAmplitude(v, loop.middleX, amplitude))); };
+    // The offset eases in too, a fiftieth of the travel a step.
+    const float offset = static_cast<float>(loop.offset) / 100.0f;
+    loop.offsetNow += std::clamp(offset - loop.offsetNow, -0.02f, 0.02f);
+    auto send = [&](float v) { sendLoopValue(index, stepped(index, shapeOffset(shapeAmplitude(v, loop.middleX, amplitude), loop.offsetNow))); };
     double step = 1.0 / stretchFactor(loop.stretch);
     if (syncedPhase) {
         // Synced: the clock gives the point; the step is how far it moved since.
@@ -1515,7 +1565,7 @@ void Engine::sendLoopValue(std::size_t index, float p) {
             p = 1.0f - p;  // the touchpad's Y grows downwards, its CC upwards
     }
     loop.modValue = p;
-    if (loop.modulation.target >= 0 && !loop.modulation.sendsCc) {  // it only modulates
+    if (!loop.sendsCc && modulatesOthers(index)) {  // it only modulates
         loopShaping_[index] = -1.0f;
         return;
     }
@@ -2059,67 +2109,62 @@ LoopStatus Engine::loopStatus(int channel, int source, int axis) const {
 }
 
 void Engine::fillModulation(LoopStatus& status, std::size_t index) const {
-    if (trackOfLoop(index) == kNoteTrack)
-        return;
-    const LoopModulation& m = loops_[index].modulation;
-    status.modTarget = m.target;
-    status.modDepth = m.depth;
-    status.modInverted = m.inverted;
-    status.modSendsCc = m.sendsCc;
-    status.modFactor = modulationFactor(index, &status.modSource);
-    if (status.modSource >= 0)
-        status.modSourceDepth = loops_[slotIndex(channelOfLoop(index), slotOfLoop(index), status.modSource)].modulation.depth;
-}
-
-// The loop of the same clip modulating this one, playing: 1 - depth * (1 - its value).
-float Engine::modulationFactor(std::size_t index, int* source) const {
     const int track = trackOfLoop(index);
-    const int channel = channelOfLoop(index), slot = slotOfLoop(index);
-    for (int t = 0; t < kNoteTrack; ++t) {
-        const Loop& from = loops_[slotIndex(channel, slot, t)];
-        if (t == track || from.modulation.target != track)
-            continue;
-        if (source)
-            *source = t;
-        if (from.state != LoopStatus::State::Playing)
-            return 1.0f;
-        const float v = from.modulation.inverted ? 1.0f - from.modValue : from.modValue;
-        return 1.0f - static_cast<float>(std::clamp(from.modulation.depth, 0, 100)) / 100.0f * (1.0f - std::clamp(v, 0.0f, 1.0f));
-    }
-    if (source)
-        *source = -1;
-    return 1.0f;
+    if (track == kNoteTrack)
+        return;
+    const Loop& loop = loops_[index];
+    status.offset = loop.offset;
+    status.modSource = loop.modulation.source;
+    status.modDepth = loop.modulation.depth;
+    status.modInverted = loop.modulation.inverted;
+    status.modFactor = modulationFactor(index);
+    status.modSendsCc = loop.sendsCc;
+    for (int t = 0; t < kNoteTrack; ++t)
+        if (loops_[slotIndex(channelOfLoop(index), slotOfLoop(index), t)].modulation.source == track)
+            status.modTargets = static_cast<std::uint16_t>(status.modTargets | (1u << t));
 }
 
-bool Engine::setLoopModulation(int channel, int source, int axis, const LoopModulation& modulation) {
+// The source of a loop's modulation, playing: 1 - depth * (1 - its value).
+float Engine::modulationFactor(std::size_t index) const {
+    const LoopModulation& m = loops_[index].modulation;
+    if (m.source < 0 || m.source >= kNoteTrack)
+        return 1.0f;
+    const Loop& from = loops_[slotIndex(channelOfLoop(index), slotOfLoop(index), m.source)];
+    if (from.state != LoopStatus::State::Playing)
+        return 1.0f;
+    const float v = std::clamp(m.inverted ? 1.0f - from.modValue : from.modValue, 0.0f, 1.0f);
+    return 1.0f - static_cast<float>(std::clamp(m.depth, 0, 100)) / 100.0f * (1.0f - v);
+}
+
+bool Engine::modulatesOthers(std::size_t index) const {
+    const int track = trackOfLoop(index);
+    for (int t = 0; t < kNoteTrack; ++t)
+        if (loops_[slotIndex(channelOfLoop(index), slotOfLoop(index), t)].modulation.source == track)
+            return true;
+    return false;
+}
+
+bool Engine::setModulation(int channel, int source, int axis, const LoopModulation& modulation) {
     if (source < 0 || source >= kLoopSourceCount || source == static_cast<int>(LoopSource::Notes))
         return false;
     channel = std::clamp(channel, 0, kChannelCount - 1);
     const int track = trackOf(source, axis);
     const int slot = currentSlot_[static_cast<std::size_t>(channel)];
-    Loop& loop = loops_[slotIndex(channel, slot, track)];
     LoopModulation m = modulation;
     m.depth = std::clamp(m.depth, 0, 100);
-    if (m.target >= kNoteTrack || m.target == track)
+    if (m.source >= kNoteTrack || m.source == track)
         return false;
-    if (m.target >= 0) {
-        // Never a loop leading back to this one.
-        for (int t = m.target, hops = 0; t >= 0 && hops < kNoteTrack; ++hops) {
-            t = loops_[slotIndex(channel, slot, t)].modulation.target;
+    if (m.source >= 0)  // never a source modulated by this loop, even through others
+        for (int t = m.source, hops = 0; t >= 0 && hops < kNoteTrack; ++hops) {
+            t = loops_[slotIndex(channel, slot, t)].modulation.source;
             if (t == track)
                 return false;
         }
-        // The target leaves the loop that modulated it.
-        for (int t = 0; t < kNoteTrack; ++t) {
-            Loop& other = loops_[slotIndex(channel, slot, t)];
-            if (t != track && other.modulation.target == m.target)
-                other.modulation = {};
-        }
-    } else {
-        m = {};  // no target: it sends its CC again
-    }
-    loop.modulation = m;
-    loop.sentX = -1;  // sending again (or not): from scratch
+    else
+        m = {};
+    loops_[slotIndex(channel, slot, track)].modulation = m;
+    if (m.source >= 0)
+        loops_[slotIndex(channel, slot, m.source)].sentX = -1;
     return true;
 }
 
@@ -2127,6 +2172,14 @@ LoopModulation Engine::loopModulation(int channel, int source, int axis) const {
     if (source < 0 || source >= kLoopSourceCount || source == static_cast<int>(LoopSource::Notes))
         return {};
     return loops_[loopIndex(std::clamp(channel, 0, kChannelCount - 1), trackOf(source, axis))].modulation;
+}
+
+void Engine::setModulationSendsCc(int channel, int source, int axis, bool sends) {
+    if (source < 0 || source >= kLoopSourceCount || source == static_cast<int>(LoopSource::Notes))
+        return;
+    Loop& loop = loops_[loopIndex(std::clamp(channel, 0, kChannelCount - 1), trackOf(source, axis))];
+    loop.sendsCc = sends;
+    loop.sentX = -1;
 }
 
 bool Engine::loopLocked(int channel, int source) const {
@@ -2211,8 +2264,17 @@ void Engine::clearTrack(std::size_t index) {
     loop.amplitudeNow = 1;
     loopShaping_[index] = -1.0f;
     loop.locked = false;
+    loop.offset = 0;
+    loop.offsetNow = 0;
     loop.modulation = {};
+    loop.sendsCc = true;
     const int track = trackOfLoop(index);
+    if (track != kNoteTrack)  // the loops it modulated play their own amplitude again
+        for (int t = 0; t < kNoteTrack; ++t) {
+            Loop& other = loops_[slotIndex(channelOfLoop(index), slotOfLoop(index), t)];
+            if (other.modulation.source == track)
+                other.modulation = {};
+        }
     if (track == kNoteTrack && overdubChannel_ == channelOfLoop(index))
         overdubChannel_ = -1;
 }
@@ -2268,6 +2330,7 @@ void Engine::resetLoopShape(int channel, int source, int axis) {
     Loop& loop = loops_[loopIndex(std::clamp(channel, 0, kChannelCount - 1), trackOf(source, axis))];
     loop.stretch = 0;
     loop.amplitude = 100;  // eased in
+    loop.offset = 0;
 }
 
 void Engine::stopLoops(int channel) {
@@ -2960,6 +3023,8 @@ std::vector<SessionLoop> Engine::sessionLoops() const {
                     l.stretch = loop.stretch;
                     l.amplitude = loop.amplitude;
                     l.modulation = loop.modulation;
+                    l.sendsCc = loop.sendsCc;
+                    l.offset = loop.offset;
                     l.x.assign(loop.x.begin(), loop.x.begin() + loop.length);
                 }
                 out.push_back(std::move(l));
@@ -3016,10 +3081,13 @@ void Engine::loadSessionLoops(const std::vector<SessionLoop>& loops) {
                 loop.stretch = std::clamp(l.stretch, kMinStretch, kMaxStretch);
                 loop.amplitude = std::clamp(l.amplitude, 0, kMaxAmplitude);
                 loop.amplitudeNow = static_cast<float>(loop.amplitude) / 100.0f;
-                if (l.modulation.target >= 0 && l.modulation.target < kNoteTrack && l.modulation.target != track) {
+                if (l.modulation.source >= 0 && l.modulation.source < kNoteTrack && l.modulation.source != track) {
                     loop.modulation = l.modulation;
                     loop.modulation.depth = std::clamp(loop.modulation.depth, 0, 100);
                 }
+                loop.sendsCc = l.sendsCc;
+                loop.offset = std::clamp(l.offset, -100, 100);
+                loop.offsetNow = static_cast<float>(loop.offset) / 100.0f;
             }
             loop.length = l.length;
             loop.syncBeats = l.syncBeats;
