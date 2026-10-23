@@ -165,6 +165,8 @@ std::string MappingEditor::controlTitle(const std::string& spec) {
         return "Touchpad";
     if (p.size() == 1 && p[0] == "notes")
         return "Notes";
+    if (p.size() == 1 && p[0] == "tilt")
+        return "Tilt";
     return spec;
 }
 
@@ -278,6 +280,72 @@ bool MappingEditor::drawFingerForm(int finger, FingerBinding& f, const LiveState
     return changed;
 }
 
+// The tilt: on or off, what makes it move, how far it goes, its axes.
+bool MappingEditor::drawTiltForm(Mapping& m, const LiveState& live) {
+    TiltBinding& t = m.tilt;
+    bool changed = false;
+    ImGui::PushID("tilt");
+    // A button that is Shift is named so: held, it would be Shift too.
+    auto isShift = [&](Button b) { return m.buttons[static_cast<std::size_t>(b)].type == ActionType::Shift; };
+    auto holdName = [&](Button b) { return label(b) + (isShift(b) ? " (Shift)" : ""); };
+    if (ImGui::Checkbox("Enabled", &t.enabled)) {
+        changed = true;
+        // Turned on with Shift as its button: the first free one instead.
+        if (t.enabled && t.whileHeld && isShift(t.hold)) {
+            static constexpr Button kChoices[] = {Button::LeftShoulder, Button::RightShoulder, Button::LeftStick, Button::RightStick,
+                                                  Button::Back, Button::Misc1, Button::Touchpad, Button::Guide, Button::Start};
+            const Button* free = std::find_if(std::begin(kChoices), std::end(kChoices), [&](Button b) {
+                return live.has(b) && !m.buttons[static_cast<std::size_t>(b)].isSet();
+            });
+            if (free == std::end(kChoices))
+                free = std::find_if(std::begin(kChoices), std::end(kChoices), [&](Button b) { return live.has(b) && !isShift(b); });
+            if (free != std::end(kChoices))
+                t.hold = *free;
+        }
+    }
+    ImGui::BeginDisabled(!t.enabled);
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted("Active");
+    ImGui::SameLine();
+    if (ImGui::RadioButton("Always", !t.whileHeld) && t.whileHeld) {
+        t.whileHeld = false;
+        changed = true;
+    }
+    ImGui::SameLine();
+    if (ImGui::RadioButton("While held", t.whileHeld) && !t.whileHeld) {
+        t.whileHeld = true;
+        changed = true;
+    }
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!t.whileHeld);
+    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 10);
+    if (ImGui::BeginCombo("##hold", holdName(t.hold).c_str())) {
+        for (int b = 0; b < static_cast<int>(Button::LeftTrigger); ++b) {
+            const auto button = static_cast<Button>(b);
+            if (isDpad(button) || !live.has(button))
+                continue;
+            if (ImGui::Selectable(holdName(button).c_str(), t.hold == button) && t.hold != button) {
+                t.hold = button;
+                changed = true;
+            }
+        }
+        ImGui::EndCombo();
+    }
+    ImGui::EndDisabled();
+    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 14);
+    changed |= ImGui::SliderInt("Angle", &t.angle, kMinTiltAngle, kMaxTiltAngle, "%d\xC2\xB0 each way", ImGuiSliderFlags_AlwaysClamp);
+    ImGui::SameLine();
+    if (ImGui::Button("Center"))
+        recenterTiltRequest_ = true;
+    ImGui::SeparatorText("X (left side down -> right side down)");
+    changed |= drawAxisForm("x", t.x, live.tiltActive ? live.tiltX : 0.0f);
+    ImGui::SeparatorText("Y (towards you -> forward)");
+    changed |= drawAxisForm("y", t.y, live.tiltActive ? live.tiltY : 0.0f);
+    ImGui::EndDisabled();
+    ImGui::PopID();
+    return changed;
+}
+
 bool MappingEditor::drawControl(const std::string& spec, Mapping& m, const LiveState& live,
                                 const std::optional<Key>& key) {
     key_ = key;
@@ -329,6 +397,9 @@ bool MappingEditor::drawControl(const std::string& spec, Mapping& m, const LiveS
         changed |= drawLoopForm(2 + finger, m, live);
     } else if (p.size() == 1 && p[0] == "notes") {
         changed |= drawLoopForm(static_cast<int>(LoopSource::Notes), m, live);
+    } else if (p.size() == 1 && p[0] == "tilt") {
+        changed |= drawTiltForm(m, live);
+        changed |= drawLoopForm(static_cast<int>(LoopSource::Tilt), m, live);
     } else if (p.size() == 1 && p[0] == "fingers") {
         for (int f = 0; f < kFingerCount; ++f) {
             ImGui::SeparatorText(f == 0 ? "Finger 1" : "Finger 2");
@@ -468,7 +539,8 @@ void MappingEditor::drawModulationForm(int source, const LiveState& live) {
 bool MappingEditor::drawLoopForm(int source, Mapping& m, const LiveState& live) {
     static constexpr const char* kTitles[] = {"Left stick loop (recorded movement)", "Right stick loop (recorded movement)",
                                               "Finger 1 loop (recorded movement)", "Finger 2 loop (recorded movement)",
-                                              "Triggers loop (recorded travel)", "Note loop (recorded notes and chords)"};
+                                              "Triggers loop (recorded travel)", "Tilt loop (recorded movement)",
+                                              "Note loop (recorded notes and chords)"};
     bool changed = false;
     LoopBinding& loop = m.loops[static_cast<std::size_t>(source)];
     ImGui::PushID(source);
@@ -506,8 +578,9 @@ bool MappingEditor::drawLoopForm(int source, Mapping& m, const LiveState& live) 
     }
     const Axis axisX = triggers ? Axis::LeftTrigger : source == 0 ? Axis::LeftX : Axis::RightX;
     const Axis axisY = triggers ? Axis::RightTrigger : source == 0 ? Axis::LeftY : Axis::RightY;
-    const AxisBinding& own = finger ? f->x : m.axes[static_cast<std::size_t>(axisX)];
-    const AxisBinding& ownY = finger ? f->y : m.axes[static_cast<std::size_t>(axisY)];
+    const bool tilt = source == static_cast<int>(LoopSource::Tilt);
+    const AxisBinding& own = finger ? f->x : tilt ? m.tilt.x : m.axes[static_cast<std::size_t>(axisX)];
+    const AxisBinding& ownY = finger ? f->y : tilt ? m.tilt.y : m.axes[static_cast<std::size_t>(axisY)];
     // Each axis of the loop: on its loop CC, or as the Velocity / Transpose its axis is set to.
     auto shapesAs = [](const AxisBinding& axis) -> const char* {
         if (axis.enabled && axis.mode == AxisMode::Velocity)
@@ -542,9 +615,13 @@ bool MappingEditor::drawLoopForm(int source, Mapping& m, const LiveState& live) 
             check(other.y, "finger " + std::to_string(k + 1) + " Y");
         }
     }
+    if (m.tilt.enabled) {
+        check(m.tilt.x, "tilt X");
+        check(m.tilt.y, "tilt Y");
+    }
     {
         ImGui::PushStyleColor(ImGuiCol_Text, kHintColor);
-        const char* what = finger ? "finger" : triggers ? "triggers" : "stick";
+        const char* what = finger ? "finger" : triggers ? "triggers" : tilt ? "tilt" : "stick";
         auto plays = [&](const AxisBinding& axis, int cc) {
             const char* as = shapesAs(axis);
             return as ? std::string("as ") + as : "on CC " + std::to_string(cc);
@@ -586,7 +663,8 @@ void MappingEditor::drawAxisLanes(int source, const Mapping& m, const LiveState&
         return;
     const bool finger = source == 2 || source == 3;
     const bool triggers = source == static_cast<int>(LoopSource::Triggers);
-    const ImU32 base = source == 0 ? T::kBlue : source == 1 ? T::kOrange : triggers ? T::kPink : source == 2 ? T::kCyan : T::kOrange;
+    const ImU32 base = source == 0 ? T::kBlue : source == 1 ? T::kOrange : triggers ? T::kPink : source == 2 ? T::kCyan
+                     : source == static_cast<int>(LoopSource::Tilt) ? T::kViolet : T::kOrange;
     const ImU32 kViolet = IM_COL32(0xB0, 0x8C, 0xFF, 255);
     auto alpha = [](ImU32 c, float a) {
         return (c & ~IM_COL32_A_MASK) | (static_cast<ImU32>(static_cast<float>((c >> IM_COL32_A_SHIFT) & 0xFF) * a) << IM_COL32_A_SHIFT);
@@ -785,7 +863,7 @@ bool MappingEditor::drawStepsForm(int source, Mapping& m) {
 bool MappingEditor::drawTriggerEditor(TriggerBinding& b) {
     bool changed = false;
     static const char* kTypes[] = {"No action", "Note", "CC", "Chord", "Transport", "Channel change", "Axis freeze",
-                                   "Loop record", "Program change", "Shift", "Tap tempo", "Mode (session, edit)"};
+                                   "Loop record", "Program change", "Shift", "Tap tempo", "Mode (session, edit)", "Recenter tilt"};
     int type = static_cast<int>(b.type);
     ImGui::SetNextItemWidth(ImGui::GetFontSize() * 14);
     if (ImGui::Combo("Action", &type, kTypes, IM_ARRAYSIZE(kTypes)) && type != static_cast<int>(b.type)) {
@@ -889,6 +967,7 @@ bool MappingEditor::drawTriggerEditor(TriggerBinding& b) {
         changed |= modeRadio(b.mode);
         break;
     case ActionType::SessionScreen:
+    case ActionType::RecenterTilt:
         break;
     case ActionType::TapTempo:
         break;

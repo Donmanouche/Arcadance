@@ -3,6 +3,7 @@
 #include <SDL3/SDL.h>
 
 #include <algorithm>
+#include <cmath>
 
 using namespace midipad;
 
@@ -62,6 +63,9 @@ void GamepadInput::poll(std::uint64_t nowNs) {
         }
     }
 
+    if (hasAccel_)
+        readMotion(nowNs);
+
     if (!hasTouchpad_)
         return;
     for (int f = 0; f < kFingerCount; ++f) {
@@ -76,6 +80,36 @@ void GamepadInput::poll(std::uint64_t nowNs) {
             engine_.touchReleased(f);
         before = now;
     }
+}
+
+// The tilt from the motion sensors, the controller held in front, flat: its
+// accelerometer reads (0, +g, 0) at rest, X to the right, Y up, Z towards the
+// player. The gyroscope follows quick moves, the accelerometer corrects its
+// drift (a complementary filter); no yaw, which nothing could correct.
+void GamepadInput::readMotion(std::uint64_t nowNs) {
+    std::array<float, 3> accel{}, gyro{};
+    if (!SDL_GetGamepadSensorData(pad_, SDL_SENSOR_ACCEL, accel.data(), 3))
+        return;
+    if (hasGyro_ && !SDL_GetGamepadSensorData(pad_, SDL_SENSOR_GYRO, gyro.data(), 3))
+        gyro = {};
+    if (accel[0] == 0 && accel[1] == 0 && accel[2] == 0)
+        return;  // no reading yet
+    const float accelRoll = std::atan2(-accel[0], accel[1]);
+    const float accelPitch = std::atan2(accel[2], accel[1]);
+    const float dt = motionStarted_ ? std::min(static_cast<float>(nowNs - lastMotionNs_) * 1e-9f, 0.1f) : 0.0f;
+    lastMotionNs_ = nowNs;
+    if (!motionStarted_ || !hasGyro_) {
+        roll_ = accelRoll;
+        pitch_ = accelPitch;
+        motionStarted_ = true;
+    } else {
+        // The accelerometer pulls the angle to it in about a quarter of a second, whatever the poll rate.
+        constexpr float kSettleSeconds = 0.25f;
+        const float share = kSettleSeconds / (kSettleSeconds + dt);
+        roll_ = share * (roll_ - gyro[2] * dt) + (1.0f - share) * accelRoll;
+        pitch_ = share * (pitch_ - gyro[0] * dt) + (1.0f - share) * accelPitch;
+    }
+    engine_.tiltMoved(roll_, pitch_);
 }
 
 std::string GamepadInput::name() const {
@@ -114,6 +148,9 @@ void GamepadInput::tryOpen() {
         return;
 
     hasTouchpad_ = SDL_GetNumGamepadTouchpads(pad_) > 0;
+    hasAccel_ = SDL_GamepadHasSensor(pad_, SDL_SENSOR_ACCEL) && SDL_SetGamepadSensorEnabled(pad_, SDL_SENSOR_ACCEL, true);
+    hasGyro_ = hasAccel_ && SDL_GamepadHasSensor(pad_, SDL_SENSOR_GYRO) && SDL_SetGamepadSensorEnabled(pad_, SDL_SENSOR_GYRO, true);
+    motionStarted_ = false;
     // Its family: from its type; else Nintendo's and Valve's own (Xbox-like)
     // by their vendor; else a PlayStation or Nintendo labelling; else generic,
     // named by place (SDL calls an unknown pad's face buttons A, B, X, Y even
@@ -161,7 +198,8 @@ void GamepadInput::tryOpen() {
         presentButtons_ |= 1u << static_cast<int>(midipad::Button::RightTrigger);
     const char* name = SDL_GetGamepadName(pad_);
     std::string message = std::string("Gamepad connected: ") + (name ? name : "unnamed");
-    message += hasTouchpad_ ? " (touchpad active)" : " (no touchpad)";
+    message += hasTouchpad_ ? " (touchpad active" : " (no touchpad";
+    message += hasAccel_ ? ", motion sensors)" : ")";
     log_(message);
     if (!hasTouchpad_ && touchpadExpected_)
         log_("  The DualSense touchpad needs access to /dev/hidraw*: see the udev rule in the README.");
@@ -177,6 +215,7 @@ void GamepadInput::close() {
     axes_.fill(0);
     fingers_ = {};
     hasTouchpad_ = false;
+    hasGyro_ = hasAccel_ = false;
 }
 
 void GamepadInput::captureBaseline() {

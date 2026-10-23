@@ -95,6 +95,8 @@ void Engine::buttonChanged(Button button, bool pressed) {
     if (button >= Button::LeftTrigger)  // digital triggers come from axisMoved()
         return;
     if (!isDpad(button)) {
+        const auto bit = 1u << static_cast<int>(button);
+        buttonsDown_ = pressed ? buttonsDown_ | bit : buttonsDown_ & ~bit;
         pressed ? press(static_cast<int>(button)) : release(static_cast<int>(button));
         return;
     }
@@ -306,6 +308,32 @@ void Engine::axisMoved(Axis axis, float value) {
     const bool atRest = isTrigger(axis) ? position < 0.04f : std::abs(position - 0.5f) < 0.06f;
     if (binding.enabled && !isFrozen(axis))
         sendAxis(binding, position, static_cast<int>(axis), atRest);
+}
+
+void Engine::tiltMoved(float roll, float pitch) {
+    if (std::isnan(roll) || std::isnan(pitch))
+        return;
+    const TiltBinding& t = mapping_->tilt;
+    const bool active = t.enabled && (!t.whileHeld || ((buttonsDown_ >> static_cast<int>(t.hold)) & 1u));
+    if (!active) {
+        tiltActive_ = false;
+        return;
+    }
+    const float range = static_cast<float>(std::clamp(t.angle, kMinTiltAngle, kMaxTiltAngle)) * 3.14159265f / 180.0f;
+    if (!tiltCentered_) {  // the center: where it is now
+        tiltCenter_ = {roll, pitch};
+        tiltPosition_ = {0.5f, 0.5f};
+        tiltCentered_ = true;
+    } else if (!tiltActive_) {  // held again: on from where it was
+        tiltCenter_ = {roll - (tiltPosition_[0] - 0.5f) * 2.0f * range, pitch - (tiltPosition_[1] - 0.5f) * 2.0f * range};
+    }
+    tiltActive_ = true;
+    tiltPosition_ = {std::clamp(0.5f + (roll - tiltCenter_[0]) / (2.0f * range), 0.0f, 1.0f),
+                     std::clamp(0.5f + (pitch - tiltCenter_[1]) / (2.0f * range), 0.0f, 1.0f)};
+    if (t.x.enabled)
+        sendAxis(t.x, tiltPosition_[0], kTiltControl, false);
+    if (t.y.enabled)
+        sendAxis(t.y, tiltPosition_[1], kTiltControl + 1, false);
 }
 
 void Engine::touchMoved(int finger, float x, float y) {
@@ -568,6 +596,9 @@ void Engine::press(int slot) {
         if (const auto tempo = tapTempo_.tap(now_))
             tappedTempo_ = tempo;
         return;
+    case ActionType::RecenterTilt:
+        recenterTilt();
+        return;
     case ActionType::Shift:
         if (!stretchHeld()) {
             stickStretchRest_ = {};
@@ -777,6 +808,11 @@ bool Engine::sourcePosition(int source, float& x, float& y) const {
         x = y = 0;
         return false;
     }
+    if (source == static_cast<int>(LoopSource::Tilt)) {
+        x = tiltPosition_[0];
+        y = tiltPosition_[1];
+        return tiltActive_;
+    }
     const auto f = static_cast<std::size_t>(source - 2);
     x = fingerPosition_[f][0];
     y = fingerPosition_[f][1];
@@ -803,6 +839,8 @@ bool Engine::trackEnabled(int channel, int track) const {
         return m.axes[static_cast<std::size_t>(source * 2 + axis)].enabled;
     if (source == static_cast<int>(LoopSource::Triggers))
         return m.axes[static_cast<std::size_t>(axis == 0 ? Axis::LeftTrigger : Axis::RightTrigger)].enabled;
+    if (source == static_cast<int>(LoopSource::Tilt))
+        return m.tilt.enabled && (axis == 0 ? m.tilt.x : m.tilt.y).enabled;
     const FingerBinding& f = m.fingers[static_cast<std::size_t>(source - 2)];
     return f.mode == TouchMode::Axis && (axis == 0 ? f.x : f.y).enabled;
 }
@@ -1282,6 +1320,15 @@ Engine::Shaping Engine::shaping(int channel) const {
             add(a, loopShaping_[loopIndex(channel, trackOf(2 + f, xy))], false, false);
         }
     }
+    if (m.tilt.enabled)  // the tilt: where it leans (live, while active), its loop
+        for (int xy = 0; xy < 2; ++xy) {
+            const AxisBinding& a = xy == 0 ? m.tilt.x : m.tilt.y;
+            if (a.mode != AxisMode::Velocity && a.mode != AxisMode::Transpose)
+                continue;
+            if (live && tiltActive_)
+                add(a, tiltPosition_[static_cast<std::size_t>(xy)], false, false);
+            add(a, loopShaping_[loopIndex(channel, trackOf(static_cast<int>(LoopSource::Tilt), xy))], false, false);
+        }
     sh.velocity = std::clamp(sh.velocity, -1.0f, 1.0f);
     sh.velocityLoop = std::clamp(sh.velocityLoop, -1.0f, 1.0f);
     return sh;
@@ -1558,6 +1605,8 @@ void Engine::sendLoopValue(std::size_t index, float p) {
         a = &m.axes[static_cast<std::size_t>(source * 2 + axis)];
     } else if (source == static_cast<int>(LoopSource::Triggers)) {
         a = &m.axes[static_cast<std::size_t>(axis == 0 ? Axis::LeftTrigger : Axis::RightTrigger)];
+    } else if (source == static_cast<int>(LoopSource::Tilt)) {
+        a = axis == 0 ? &m.tilt.x : &m.tilt.y;
     } else {
         const FingerBinding& f = m.fingers[static_cast<std::size_t>(source - 2)];
         a = axis == 0 ? &f.x : &f.y;

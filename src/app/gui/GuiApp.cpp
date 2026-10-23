@@ -259,14 +259,19 @@ bool copyControl(const Mapping& from, Mapping& to, const std::string& spec) {
         to.loops[static_cast<std::size_t>(LoopSource::Notes)] = from.loops[static_cast<std::size_t>(LoopSource::Notes)];
         return true;
     }
+    if (p.size() == 1 && p[0] == "tilt") {
+        to.tilt = from.tilt;
+        to.loops[static_cast<std::size_t>(LoopSource::Tilt)] = from.loops[static_cast<std::size_t>(LoopSource::Tilt)];
+        return true;
+    }
     return false;
 }
 
 // The parts of a mapping "Copy mapping" copies, a bit each.
-enum CopyPart : unsigned { kCopyButtons = 1, kCopyDpad = 2, kCopyLeftStick = 4, kCopyRightStick = 8, kCopyTriggers = 16, kCopyTouchpad = 32, kCopyLoops = 64 };
+enum CopyPart : unsigned { kCopyButtons = 1, kCopyDpad = 2, kCopyLeftStick = 4, kCopyRightStick = 8, kCopyTriggers = 16, kCopyTouchpad = 32, kCopyLoops = 64, kCopyTilt = 128 };
 constexpr std::pair<CopyPart, const char*> kCopyParts[] = {{kCopyButtons, "Buttons"},     {kCopyDpad, "D-pad"},       {kCopyLeftStick, "Left stick"},
                                                            {kCopyRightStick, "Right stick"}, {kCopyTriggers, "Triggers"}, {kCopyTouchpad, "Touchpad"},
-                                                           {kCopyLoops, "Loop settings"}};
+                                                           {kCopyTilt, "Tilt"},             {kCopyLoops, "Loop settings"}};
 
 void copyParts(const Mapping& from, Mapping& to, unsigned parts) {
     if (parts & kCopyButtons)
@@ -294,6 +299,8 @@ void copyParts(const Mapping& from, Mapping& to, unsigned parts) {
         to.fingers = from.fingers;
         to.shift.zones = from.shift.zones;
     }
+    if (parts & kCopyTilt)
+        to.tilt = from.tilt;
     if (parts & kCopyLoops)
         to.loops = from.loops;
 }
@@ -428,6 +435,10 @@ LiveState demoLive(double t) {
     s.axes[static_cast<std::size_t>(Axis::LeftTrigger)] = axis(0.5 + 0.45 * std::sin(t * 2 * w));
     s.axes[static_cast<std::size_t>(Axis::RightTrigger)] = axis(0.25 + 0.25 * std::sin(t * 3 * w + 1.0));
     s.fingers[0] = {true, static_cast<float>(0.5 + 0.25 * std::cos(t * w)), static_cast<float>(0.5 + 0.25 * std::sin(t * 2 * w))};
+    s.hasGyro = true;
+    s.tiltActive = true;
+    s.tiltX = static_cast<float>(0.5 + 0.3 * std::sin(t * w));
+    s.tiltY = static_cast<float>(0.5 + 0.25 * std::sin(t * 2 * w + 1.0));
     s.frozenAxes = static_cast<std::uint8_t>((1u << static_cast<int>(Axis::RightX)) | (1u << static_cast<int>(Axis::RightY)));
 
     // Presses: Cross and Triangle in turn, the D-pad's Up latched, L1 and L2 held.
@@ -683,7 +694,7 @@ private:
     void drawCopyDialog();
     bool openCopyDialog_ = false;
     int copyTo_ = 0, copyFrom_ = 0;
-    unsigned copyParts_ = 0x7F;
+    unsigned copyParts_ = 0xFF;
     int copyControlFrom_ = -1;  // the channel a control's window copies from (-1: channel 1, or 2 on channel 1)
     std::string channelLabel(int channel) const {
         const std::string& name = preset_.channelNames[static_cast<std::size_t>(channel)];
@@ -1121,6 +1132,8 @@ void GuiApp::update() {
     }
     if (const auto length = editor_.takeAxisLengthRequest())  // an axis loop's end dragged in a control's window
         runtime_->setAxisLoopLength(length->source, length->axis, length->length);
+    if (editor_.takeRecenterTiltRequest())
+        runtime_->recenterTilt();
     while (runtime_->popReport()) {
     }
     // The notes sent, for the piano roll, at the time they were sent.
@@ -2154,7 +2167,7 @@ void GuiApp::openMenu(const PerformanceView::MenuTarget& t, const LiveState& liv
     const bool runs = chains.at >= 0 && chains.playing == shown;
     const std::string chainName = "CHAIN " + PerformanceView::chainLetter(shown) +
                                   (chainNames_[c][static_cast<std::size_t>(shown)].empty() ? "" : "  " + chainNames_[c][static_cast<std::size_t>(shown)]);
-    static constexpr const char* kSourceNames[] = {"LEFT STICK", "RIGHT STICK", "FINGER 1", "FINGER 2", "TRIGGERS", "NOTES"};
+    static constexpr const char* kSourceNames[] = {"LEFT STICK", "RIGHT STICK", "FINGER 1", "FINGER 2", "TRIGGERS", "TILT", "NOTES"};
     const int source = std::clamp(t.source, 0, kLoopSourceCount - 1);
     switch (t.kind) {
     case K::Clip: {

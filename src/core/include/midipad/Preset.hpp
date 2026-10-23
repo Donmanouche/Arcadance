@@ -17,7 +17,8 @@ enum class Mode : std::uint8_t {
 
 enum class ActionType : std::uint8_t {
     None, Note, ControlChange, Chord, Transport, ChannelStep, Freeze, LoopRecord, ProgramChange, Shift, TapTempo,
-    SessionScreen  // opens and closes the session screen
+    SessionScreen,  // opens and closes the session screen
+    RecenterTilt    // the tilt's center: where the controller is held now
 };
 
 enum class TransportCommand : std::uint8_t { Start, Stop, Continue };
@@ -86,6 +87,7 @@ struct AxisBinding {
     VelocityTarget velocityTarget = VelocityTarget::Notes;
 
     bool sendsCc() const { return mode == AxisMode::Cc; }
+    friend bool operator==(const AxisBinding&, const AxisBinding&) = default;
 };
 
 // A stick movement recorded by a LoopRecord button and played back in a loop,
@@ -113,18 +115,19 @@ struct LoopBinding {
 };
 
 // What a loop records: a stick (X, Y), a touchpad finger (X, Y or its pads),
-// the triggers' travel (L2 as X, R2 as Y), or the notes and chords played by
-// the buttons, the D-pad and the triggers as buttons.
-enum class LoopSource : std::uint8_t { LeftStick, RightStick, Finger1, Finger2, Triggers, Notes };
-inline constexpr int kLoopSourceCount = 6;
+// the triggers' travel (L2 as X, R2 as Y), the tilt (X, Y), or the notes and
+// chords played by the buttons, the D-pad and the triggers as buttons.
+enum class LoopSource : std::uint8_t { LeftStick, RightStick, Finger1, Finger2, Triggers, Tilt, Notes };
+inline constexpr int kLoopSourceCount = 7;
 
-// By default on CC 70/71, 72/73 (sticks), 74/75, 76/77 (fingers) and 78/79
-// (triggers); a note loop sends the notes it recorded, its CCs are unused.
+// By default on CC 70/71, 72/73 (sticks), 74/75, 76/77 (fingers), 78/79
+// (triggers) and 80/81 (tilt); a note loop sends the notes it recorded, its CCs are unused.
 inline constexpr std::array<LoopBinding, kLoopSourceCount> kDefaultLoops{{{LoopPlayback::Forward, 70, 71, {}},
                                                                           {LoopPlayback::Forward, 72, 73, {}},
                                                                           {LoopPlayback::Forward, 74, 75, {}},
                                                                           {LoopPlayback::Forward, 76, 77, {}},
                                                                           {LoopPlayback::Forward, 78, 79, {}},
+                                                                          {LoopPlayback::Forward, 80, 81, {}},
                                                                           {LoopPlayback::Forward, 0, 0, {}}}};
 
 enum class TouchMode : std::uint8_t { Off, Axis, Zones };
@@ -143,12 +146,27 @@ struct ShiftLayer {
     std::array<std::array<TriggerBinding, kZoneCount>, kFingerCount> zones;
 };
 
+// The controller's tilt (its gyroscope and accelerometer): left-right as X,
+// back-forward as Y, each an axis like a stick's. Off unless enabled; active
+// always, or only while `hold` is held (it then goes on from where it was,
+// without a jump). `angle`: the degrees each way that span an axis.
+struct TiltBinding {
+    bool enabled = false;
+    bool whileHeld = true;
+    Button hold = Button::LeftShoulder;
+    int angle = 45;  // 15 to 90
+    AxisBinding x{true, 64, 0, 127, false}, y{true, 65, 0, 127, false};
+    friend bool operator==(const TiltBinding&, const TiltBinding&) = default;
+};
+inline constexpr int kMinTiltAngle = 15, kMaxTiltAngle = 90;
+
 struct Mapping {
     std::array<TriggerBinding, kButtonCount> buttons;  // D-pad entries unused: see dpad
     std::array<TriggerBinding, kHatDirCount> dpad;
     std::array<AxisBinding, kAxisCount> axes;
     std::array<FingerBinding, kFingerCount> fingers;
     std::array<LoopBinding, kLoopSourceCount> loops = kDefaultLoops;  // by LoopSource
+    TiltBinding tilt;
     ShiftLayer shift;
 };
 

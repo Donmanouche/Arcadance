@@ -184,6 +184,8 @@ TriggerBinding triggerFromJson(const Json& j, const std::string& where) {
         b.type = ActionType::TapTempo;
     } else if (type == "session") {
         b.type = ActionType::SessionScreen;
+    } else if (type == "recenter_tilt") {
+        b.type = ActionType::RecenterTilt;
     } else if (type == "freeze") {
         b.type = ActionType::Freeze;
         if (!j.contains("axes"))
@@ -262,6 +264,9 @@ Json triggerToJson(const TriggerBinding& b) {
         return j;
     case ActionType::SessionScreen:
         j["type"] = "session";
+        return j;
+    case ActionType::RecenterTilt:
+        j["type"] = "recenter_tilt";
         return j;
     case ActionType::ProgramChange:
         j["type"] = "program";
@@ -447,6 +452,40 @@ Mapping mappingFromJson(const Json& j, const std::string& where) {
             }
         }
     }
+    if (j.contains("tilt")) {
+        const std::string at = where + ".tilt";
+        const Json& tj = requireObject(j["tilt"], at);
+        TiltBinding& t = m.tilt;
+        if (tj.contains("enabled")) {
+            if (!tj["enabled"].is_boolean())
+                fail(at + ".enabled", "expected true or false");
+            t.enabled = tj["enabled"].get<bool>();
+        }
+        const std::string active = readString(tj, "active", "held", at);
+        if (active == "held")
+            t.whileHeld = true;
+        else if (active == "always")
+            t.whileHeld = false;
+        else
+            fail(at + ".active", "expected \"held\" or \"always\"");
+        if (tj.contains("hold")) {
+            const std::string name = readString(tj, "hold", nullptr, at);
+            auto button = parseButton(name);
+            if (!button)
+                fail(at + ".hold", "unknown button");
+            t.hold = *button;
+        }
+        if (tj.contains("angle")) {
+            if (!tj["angle"].is_number_integer() || tj["angle"].get<int>() < kMinTiltAngle || tj["angle"].get<int>() > kMaxTiltAngle)
+                fail(at + ".angle", "expected 15 to 90");
+            t.angle = tj["angle"].get<int>();
+        }
+        // An axis turned off is written as null; a missing one keeps its default.
+        if (tj.contains("x"))
+            t.x = tj["x"].is_null() ? AxisBinding{} : axisFromJson(tj["x"], at + ".x");
+        if (tj.contains("y"))
+            t.y = tj["y"].is_null() ? AxisBinding{} : axisFromJson(tj["y"], at + ".y");
+    }
     if (j.contains("shift")) {
         const std::string at = where + ".shift";
         const Json& sj = requireObject(j["shift"], at);
@@ -481,10 +520,10 @@ Mapping mappingFromJson(const Json& j, const std::string& where) {
     if (j.contains("loops")) {
         for (const auto& [key, value] : requireObject(j["loops"], where + ".loops").items()) {
             const std::string at = where + ".loops." + key;
-            static constexpr std::string_view kKeys[] = {"left", "right", "finger1", "finger2", "triggers", "notes"};
+            static constexpr std::string_view kKeys[] = {"left", "right", "finger1", "finger2", "triggers", "tilt", "notes"};
             const auto found = std::find(std::begin(kKeys), std::end(kKeys), key);
             if (found == std::end(kKeys))
-                fail(at, "expected \"left\", \"right\", \"finger1\", \"finger2\", \"triggers\" or \"notes\"");
+                fail(at, "expected \"left\", \"right\", \"finger1\", \"finger2\", \"triggers\", \"tilt\" or \"notes\"");
             const auto source = found - std::begin(kKeys);
             requireObject(value, at);
             LoopBinding& loop = m.loops[static_cast<std::size_t>(source)];
@@ -573,6 +612,18 @@ Json mappingToJson(const Mapping& m) {
     if (!touchpad.empty())
         j["touchpad"] = touchpad;
 
+    if (m.tilt != TiltBinding{}) {
+        const TiltBinding& t = m.tilt;
+        Json tj;
+        tj["enabled"] = t.enabled;
+        tj["active"] = t.whileHeld ? "held" : "always";
+        tj["hold"] = toString(t.hold);
+        tj["angle"] = t.angle;
+        tj["x"] = t.x.enabled ? axisToJson(t.x) : Json(nullptr);
+        tj["y"] = t.y.enabled ? axisToJson(t.y) : Json(nullptr);
+        j["tilt"] = tj;
+    }
+
     Json shift = Json::object();
     {
         Json sb = Json::object(), sd = Json::object(), st = Json::object();
@@ -616,7 +667,7 @@ Json mappingToJson(const Mapping& m) {
             if (grid.on)
                 lj[axis == 0 ? "steps_x" : "steps_y"] = Json{{"levels", grid.levels}, {"step", kStepNames[static_cast<std::size_t>(std::clamp(grid.step, 0, kStepChoices - 1))]}};
         }
-        static constexpr const char* kKeys[] = {"left", "right", "finger1", "finger2", "triggers", "notes"};
+        static constexpr const char* kKeys[] = {"left", "right", "finger1", "finger2", "triggers", "tilt", "notes"};
         loops[kKeys[s]] = lj;
     }
     if (!loops.empty())

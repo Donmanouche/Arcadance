@@ -177,6 +177,8 @@ std::string describe(const TriggerBinding& b, bool flats) {
         return "Tap tempo";
     case ActionType::SessionScreen:
         return "Mode";
+    case ActionType::RecenterTilt:
+        return "Recenter tilt";
     case ActionType::ProgramChange:
         if (b.programStep != 0)
             return std::string("Program ") + (b.programStep > 0 ? "+1" : "-1");

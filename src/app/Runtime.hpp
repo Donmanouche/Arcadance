@@ -50,6 +50,10 @@ struct LiveState {
     std::uint32_t presentButtons = ~0u;
     std::uint8_t presentAxes = 0xFF;
     bool touchpadExpected = true;  // GamepadInput::touchpadExpected
+    bool hasGyro = false;          // GamepadInput::hasGyro
+    // The tilt (Engine::tiltX, tiltY), 0-1, and whether it moves now.
+    float tiltX = 0.5f, tiltY = 0.5f;
+    bool tiltActive = false;
     bool has(midipad::Button b) const { return (presentButtons >> static_cast<int>(b)) & 1u; }
     bool has(midipad::Axis a) const { return (presentAxes >> static_cast<int>(a)) & 1u; }
     std::uint32_t buttons = 0;  // bit per SDL gamepad button
@@ -201,6 +205,7 @@ public:
     void setOutput(std::shared_ptr<MidiOutput> output);
     void setChannel(int channel);
     void panic();  // also stops the loops, on every channel
+    void recenterTilt();  // Engine::recenterTilt
     void clearLoop(int source, int axis = -1);  // a LoopSource (one axis, or -1 both), on the active channel
     void toggleLoopLock(int source, int axis = -1);  // see Engine::toggleLoopLock, on the active channel; -1: both axes
     // Clips (Engine::launchClip, stopClip, setRecordSlot), on any channel.
@@ -303,7 +308,7 @@ private:
     struct Command {
         enum class Kind : std::uint8_t {
             SetChannel, Panic, ClearLoop, ToggleLock, ChainStep, ChainThen, ChainGo, ChainStop, ClearClip, CopyClip, ResetShape, LaunchClip, RecordSlot, StretchLoop, AmplifyLoop, AxisLength, PauseLoops, PlayLoops,
-            SaveLoops, LoadLoops, LoadChains, LoadSong, SongPlay, SongStop, SongLoop, Mute, Solo, MuteSolo, Modulation, ModulationCc, OffsetLoop, EditNotes
+            SaveLoops, LoadLoops, LoadChains, LoadSong, SongPlay, SongStop, SongLoop, Mute, Solo, MuteSolo, Modulation, ModulationCc, OffsetLoop, EditNotes, RecenterTilt
         } kind;
         int channel = 0;
         int value = 0;
@@ -354,7 +359,8 @@ private:
     std::vector<NoteEdit> noteEdits_;  // under sessionMutex_, oldest first
 
     // Published by the input thread after each poll.
-    std::atomic<bool> connected_{false}, hasTouchpad_{false}, touchpadExpected_{true};
+    std::atomic<bool> connected_{false}, hasTouchpad_{false}, touchpadExpected_{true}, hasGyro_{false}, tiltActive_{false};
+    std::atomic<float> tiltX_{0.5f}, tiltY_{0.5f};
     std::atomic<std::uint8_t> family_{0}, presentAxes_{0xFF};
     std::atomic<std::uint32_t> presentButtons_{~0u};
     std::atomic<std::uint32_t> buttons_{0};

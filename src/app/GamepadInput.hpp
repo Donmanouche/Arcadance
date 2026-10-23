@@ -44,6 +44,7 @@ public:
     // State as of the last poll(), for display.
     bool connected() const { return pad_ != nullptr; }
     bool hasTouchpad() const { return hasTouchpad_; }
+    bool hasGyro() const { return hasGyro_; }  // motion sensors, for the tilt
     // What the controller is and has, found when it connects: the family its
     // buttons are named after, a bit per midipad::Button it has (the triggers
     // as buttons when it has their axes) and per axis.
@@ -61,6 +62,7 @@ private:
     void tryOpen();
     void close();
     void captureBaseline();
+    void readMotion(std::uint64_t nowNs);
 
     midipad::Engine& engine_;
     Log log_;
@@ -73,6 +75,11 @@ private:
     std::array<Sint16, SDL_GAMEPAD_AXIS_COUNT> axes_{};
     std::array<Finger, midipad::kFingerCount> fingers_{};
     bool hasTouchpad_ = false;
+    bool hasGyro_ = false, hasAccel_ = false;
+    // The tilt, in radians: roll (right side down +), pitch (forward +).
+    float roll_ = 0, pitch_ = 0;
+    bool motionStarted_ = false;
+    std::uint64_t lastMotionNs_ = 0;
     midipad::ControllerFamily family_ = midipad::ControllerFamily::PlayStation;
     std::uint32_t presentButtons_ = 0;
     std::uint8_t presentAxes_ = 0;

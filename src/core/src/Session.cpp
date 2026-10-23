@@ -17,7 +17,7 @@ constexpr std::string_view kFormatName = "arcadance-session";
 constexpr std::string_view kFormerFormatName = "midipad-session";  // Arcadance's former name: still read
 constexpr int kFormatVersion = 1;
 // As the preset's "loops" keys, by LoopSource.
-constexpr const char* kSources[] = {"left", "right", "finger1", "finger2", "triggers", "notes"};
+constexpr const char* kSources[] = {"left", "right", "finger1", "finger2", "triggers", "tilt", "notes"};
 constexpr int kMaxSamples = 60 * 200;  // Engine::kMaxLoopSamples
 constexpr int kMaxNotes = 4096;        // Engine::kMaxNoteEvents
 
@@ -56,7 +56,7 @@ std::vector<std::uint16_t> readSamples(const Json& loop, const char* key, int le
 }
 
 // The movement tracks (Engine::trackOf), as a modulation names its target.
-constexpr const char* kTrackNames[] = {"left_x", "left_y", "right_x", "right_y", "finger1_x", "finger1_y", "finger2_x", "finger2_y", "l2", "r2"};
+constexpr const char* kTrackNames[] = {"left_x", "left_y", "right_x", "right_y", "finger1_x", "finger1_y", "finger2_x", "finger2_y", "l2", "r2", "tilt_x", "tilt_y"};
 
 }  // namespace
 
@@ -109,7 +109,7 @@ Json sessionToJson(const Session& session) {
             o["amplitude"] = l.amplitude;
             if (l.offset != 0)
                 o["offset"] = l.offset;
-            if (l.modulation.source >= 0 && l.modulation.source < 10)
+            if (l.modulation.source >= 0 && l.modulation.source < static_cast<int>(std::size(kTrackNames)))
                 o["modulated_by"] = {{"source", kTrackNames[l.modulation.source]}, {"depth", l.modulation.depth}, {"inverted", l.modulation.inverted}};
             if (!l.sendsCc)
                 o["sends_cc"] = false;
@@ -273,7 +273,7 @@ Session sessionFromJson(const Json& j) {
                 l.amplitude = readInt(o, "amplitude", 0, 800, 100, where);
                 l.offset = readInt(o, "offset", -100, 100, 0, where);
                 auto trackNamed = [](const Json& v) {  // -1: unknown, left out
-                    for (int t = 0; t < 10; ++t)
+                    for (int t = 0; t < static_cast<int>(std::size(kTrackNames)); ++t)
                         if (v == kTrackNames[t])
                             return t;
                     return -1;

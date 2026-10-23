@@ -193,7 +193,7 @@ public:
     // when that recording starts.
     static constexpr int kClipSlots = 8;
     // A clip's tracks: each movement source's X and Y (source * 2 + axis), then the note loop.
-    static constexpr int kTrackCount = 11, kNoteTrack = 10;
+    static constexpr int kTrackCount = 13, kNoteTrack = 12;
     static constexpr int trackOf(int source, int axis) {
         return source == static_cast<int>(LoopSource::Notes) ? kNoteTrack : source * 2 + (axis & 1);
     }
@@ -487,6 +487,17 @@ public:
     // Normalized position, origin at the top-left corner of the touchpad.
     void touchMoved(int finger, float x, float y);
     void touchReleased(int finger);
+    // The controller's tilt, from its sensors: roll (right side down: positive)
+    // and pitch (forward: positive), in radians. With the mapping's tilt
+    // enabled and active (always, or while its button is held), X and Y go
+    // from 0 to 1 across the mapping's angle each way around the center: the
+    // position held when it first moved, or when recenterTilt() was asked
+    // (a RecenterTilt button). Held, it goes on from where it was, no jump.
+    void tiltMoved(float roll, float pitch);
+    void recenterTilt() { tiltCentered_ = false; }
+    bool tiltActive() const { return tiltActive_; }
+    float tiltX() const { return tiltPosition_[0]; }
+    float tiltY() const { return tiltPosition_[1]; }
 
     // Turns off every note and CC still on, latched or held, at once: humanized
     // notes not started yet are dropped.
@@ -764,7 +775,8 @@ private:
     // Program Change: the last one sent per channel (-1: none yet), and for
     // axes choosing one, the program waiting to settle, its bank and since when.
     std::array<int, kChannelCount> program_{};
-    static constexpr int kProgramControls = kAxisCount + kFingerCount * 2;
+    static constexpr int kTiltControl = kAxisCount + kFingerCount * 2;  // the tilt's X, then Y
+    static constexpr int kProgramControls = kTiltControl + 2;
     static constexpr std::uint64_t kProgramSettleNs = 150'000'000;
     std::array<int, kProgramControls> pendingProgram_{};
     std::array<std::array<std::int16_t, 2>, kProgramControls> pendingBank_{};  // MSB, LSB
@@ -774,6 +786,9 @@ private:
     std::array<std::array<float, 2>, kFingerCount> fingerPosition_{};  // raw touchpad X, Y
     std::array<bool, kFingerCount> fingerDown_{};
     std::array<float, 4> stickPosition_{0.5f, 0.5f, 0.5f, 0.5f};  // [0, 1], LeftX..RightY
+    std::array<float, 2> tiltPosition_{0.5f, 0.5f}, tiltCenter_{};  // X, Y in [0, 1]; roll, pitch at the center
+    bool tiltActive_ = false, tiltCentered_ = false;
+    std::uint32_t buttonsDown_ = 0;  // a bit per Button held (not the D-pad's)
     std::array<float, 2> triggerPosition_{};                       // [0, 1], L2 and R2
     std::bitset<kSlotCount> recordHolders_;
     // LoopStretch: who holds it, the stick turns not yet a whole step, the

@@ -46,17 +46,20 @@ public:
         static constexpr ImU32 kRed = IM_COL32(0xFF, 0x3B, 0x4E, 255);
         static constexpr ImU32 kIce = IM_COL32(0xAE, 0xE3, 0xFF, 255);
         static constexpr ImU32 kCyan = IM_COL32(0x78, 0xDC, 0xFF, 255);
+        static constexpr ImU32 kViolet = IM_COL32(0xB0, 0x8C, 0xFF, 255);
     };
 
     // The look of the frames and screens: the classic one, or a phosphor
     // screen's (lines on black; GuiApp then tints every colour).
     enum class Look { Classic, PhosphorGreen, PhosphorBlue };
     static void setLook(Look look);
-    // A movement track's name (Engine::trackOf): Left stick X ... R2 (the controller's names of the triggers).
+    // A movement track's name (Engine::trackOf): Left stick X ... R2 (the controller's names of the triggers), Tilt X, Tilt Y.
     static std::string trackName(int track) {
         static constexpr const char* kNames[] = {"Left stick X", "Left stick Y", "Right stick X", "Right stick Y", "Finger 1 X", "Finger 1 Y", "Finger 2 X", "Finger 2 Y"};
         if (track == 8 || track == 9)
             return midipad::label(track == 8 ? midipad::Button::LeftTrigger : midipad::Button::RightTrigger);
+        if (track == 10 || track == 11)
+            return track == 10 ? "Tilt X" : "Tilt Y";
         return track >= 0 && track < 8 ? kNames[track] : "";
     }
 
@@ -239,6 +242,9 @@ private:
     void drawTriggers(const midipad::Mapping& m, const LiveState& live, float x, float y, float w, float h);
     void drawDpad(const midipad::Mapping& m, const LiveState& live, float x, float y, float w, float h);
     void drawTouchpad(const midipad::Mapping& m, const LiveState& live, float x, float y, float w, float h);
+    void drawTilt(const midipad::Mapping& m, const LiveState& live, float x, float y, float w, float h);
+    // A controller with a touchpad and motion sensors: TOUCHPAD · TILT tabs in the header.
+    void drawModuleTabs(ImDrawList* dl, float x, float y);
     void drawButtons(const midipad::Mapping& m, const LiveState& live, float x, float y, float w, float h);
     void drawScale(const std::optional<midipad::Key>& key, float x, float y, float w, float h);
     void drawChannel(const LiveState& live, float x, float y, float w, float h);
@@ -286,6 +292,7 @@ private:
     int beatsPerBar_ = 4;  // of the sync, for the loops' beat grids
     std::optional<StretchRequest> stretch_;
     std::optional<LockRequest> clearRequest_;
+    bool tabbed_ = false, tiltTab_ = false;  // the TOUCHPAD · TILT tabs, and the one shown
     std::optional<MenuRequest> menuRequest_;
     std::optional<int> channelRequest_;
     std::optional<int> renameRequest_;

@@ -44,6 +44,8 @@ public:
         int source = 0, axis = 0, length = 0;
     };
     std::optional<AxisLength> takeAxisLengthRequest() { return std::exchange(axisLength_, std::nullopt); }
+    // The tilt window's Center button.
+    bool takeRecenterTiltRequest() { return std::exchange(recenterTiltRequest_, false); }
     // Escape, during the last drawControl(), cancelled a drag: the panel should stay open.
     bool tookEscape() const { return escapeTaken_; }
 
@@ -67,6 +69,7 @@ private:
     bool drawStepsForm(int source, midipad::Mapping& m);
     bool drawAxisForm(const char* id, midipad::AxisBinding& a, float position, bool trigger = false);
     bool drawFingerForm(int finger, midipad::FingerBinding& f, const LiveState& live);
+    bool drawTiltForm(midipad::Mapping& m, const LiveState& live);
     const std::vector<midipad::KeyChord>& keyChords();
     bool flats() const { return key_ && midipad::prefersFlats(*key_); }
 
@@ -81,6 +84,7 @@ private:
     std::optional<Modulation> modulationRequest_;
     void drawModulationForm(int source, const LiveState& live);
     std::optional<AxisLength> axisLength_;
+    bool recenterTiltRequest_ = false;
     std::string layerSpec_;    // the control whose layers were shown last
     bool shiftLayer_ = false;  // its Shift layer was
     // An axis loop's end being dragged: which, where the mouse took it, the

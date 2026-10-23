@@ -10,6 +10,9 @@ once, notes and gestures alike, on as many channels as you like. Then arrange
 your loops into clips, chain them, and lay them out into a whole song, right
 from the controller.
 
+Xbox, Nintendo and other controllers work too: Arcadance names their buttons
+as printed on them and leaves out what a controller lacks.
+
 Arcadance runs on Linux; Windows and macOS versions are planned.
 
 - **Download**: a ready-to-run Linux version is attached to each
@@ -50,7 +53,8 @@ Arcadance runs on Linux; Windows and macOS versions are planned.
   inversion closest to the one before, so the voices move smoothly.
 - **Expressive controls.** Two sticks, two analog triggers and two touchpad
   fingers, each with its own controller number, range and direction. Freeze a
-  stick at its current value; split the touchpad into four pads.
+  stick at its current value; split the touchpad into four pads. Tilt the
+  controller (with motion sensors) to move two more controls and loop them.
 - **A Shift layer.** Hold or latch a Shift button and the buttons, the D-pad
   and the touchpad pads play a second layout, while the sticks and fingers
   reshape your loops.
@@ -176,8 +180,9 @@ The user manual walks through every step, with your DAW on Linux.
 
 ### Touchpad access (Linux)
 
-To use the touchpad, Linux needs a one-time permission. Without it the
-controller works, but without the touchpad, and Arcadance says so. Create the
+To use the touchpad and the motion sensors (tilt), Linux needs a one-time
+permission. Without it the controller works, but without the touchpad, and
+Arcadance says so. Create the
 file `/etc/udev/rules.d/70-dualsense.rules` with:
 
 ```

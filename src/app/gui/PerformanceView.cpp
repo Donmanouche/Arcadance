@@ -122,6 +122,7 @@ std::string compact(const TriggerBinding& b, bool flats) {
     case ActionType::Shift: return "Shift";
     case ActionType::TapTempo: return "Tap";
     case ActionType::SessionScreen: return "Session";
+    case ActionType::RecenterTilt: return "Center";
     case ActionType::ProgramChange:
         return b.programStep != 0 ? std::string("PC ") + (b.programStep > 0 ? "+1" : "-1") : "PC " + std::to_string(b.number + 1);
     }
@@ -173,13 +174,15 @@ void led(ImDrawList* dl, ImVec2 c, float r, ImU32 col, bool on) {
 
 // A movement track's colour (its module's) and short name, for the badges of a modulation.
 ImU32 trackColor(int track) {
-    static constexpr ImU32 kColors[] = {T::kBlue, T::kOrange, T::kCyan, T::kOrange, T::kPink};
-    return kColors[std::clamp(track / 2, 0, 4)];
+    static constexpr ImU32 kColors[] = {T::kBlue, T::kOrange, T::kCyan, T::kOrange, T::kPink, T::kViolet};
+    return kColors[std::clamp(track / 2, 0, 5)];
 }
 std::string trackShortName(int track) {
     static constexpr const char* kNames[] = {"LEFT X", "LEFT Y", "RIGHT X", "RIGHT Y", "F1 X", "F1 Y", "F2 X", "F2 Y"};
     if (track == 8 || track == 9)
         return label(track == 8 ? Button::LeftTrigger : Button::RightTrigger);
+    if (track == 10 || track == 11)
+        return track == 10 ? "TILT X" : "TILT Y";
     return track >= 0 && track < 8 ? kNames[track] : "";
 }
 
@@ -213,7 +216,7 @@ ImU32 accentFor(const std::string& title) {
     if (gLook == 1)
         return kNeon;
     return title == "LEFT STICK" ? T::kBlue : title == "RIGHT STICK" ? T::kOrange : title == "TRIGGERS" ? T::kPink
-         : title == "TOUCHPAD" ? T::kCyan : T::kLabel;
+         : title == "TOUCHPAD" ? T::kCyan : title == "TILT" ? T::kViolet : T::kLabel;
 }
 
 // A CRT-like screen: dark glass, content, scanlines and a vignette.
@@ -1138,8 +1141,17 @@ std::optional<std::string> PerformanceView::draw(const Mapping& normalMapping, c
     drawDpad(mapping, live, x, origin.y, colW, moduleH);
     drawScale(key, x, lowY, colW, lowH);
     x += colW + gap;
-    drawTouchpad(mapping, live, x, origin.y, colW, moduleH);
-    off(x, live.connected && !live.hasTouchpad && !live.touchpadExpected);  // a DualSense's may only lack the access
+    // The tilt, with motion sensors: in place of a touchpad the controller has
+    // not, else beside it, under a tab.
+    const bool touchpad = !live.connected || live.hasTouchpad || live.touchpadExpected;
+    const bool tilt = live.connected && live.hasGyro;
+    tabbed_ = tilt && touchpad;
+    if (tilt && (!touchpad || tiltTab_)) {
+        drawTilt(mapping, live, x, origin.y, colW, moduleH);
+    } else {
+        drawTouchpad(mapping, live, x, origin.y, colW, moduleH);
+        off(x, live.connected && !live.hasTouchpad && !live.touchpadExpected);  // a DualSense's may only lack the access
+    }
     drawChannel(live, x, lowY, colW, lowH);
     drawButtons(mapping, live, origin.x, origin.y + topH + gap, avail.x, stripH);
 
@@ -3574,7 +3586,9 @@ void PerformanceView::drawDpad(const Mapping& m, const LiveState& live, float x,
 void PerformanceView::drawTouchpad(const Mapping& m, const LiveState& live, float x, float y, float w, float h) {
     ImDrawList* dl = ImGui::GetWindowDrawList();
     const bool any = m.fingers[0].mode != TouchMode::Off || m.fingers[1].mode != TouchMode::Off;
-    const float top = panel(dl, x, y, w, h, "TOUCHPAD", live.connected && live.hasTouchpad && any);
+    const float top = panel(dl, x, y, w, h, tabbed_ ? "" : "TOUCHPAD", live.connected && live.hasTouchpad && any);
+    if (tabbed_)
+        drawModuleTabs(dl, x, y);
     const ScreenBox s = screenBox(x, top, w, h);
     const ImU32 fingerColors[] = {T::kCyan, T::kOrange};
 
@@ -3728,6 +3742,106 @@ void PerformanceView::drawTouchpad(const Mapping& m, const LiveState& live, floa
     drawLoopPanel(dl, x, w, loopY, boxBottom, st, m.loops[static_cast<std::size_t>(2 + shown)].playback, lanes, laneCount,
                   fingerColors[shown], artFor(live.channel, 3), "REC  \xC2\xB7  touch to record", "##touchloop", "fingers",
                   static_cast<int>(LoopSource::Finger1) + shown);
+}
+
+void PerformanceView::drawModuleTabs(ImDrawList* dl, float x, float y) {
+    const float size = px(gLook == 2 ? 12.5f : 13.5f), midY = y + px(18);
+    const ImU32 lit = gLook == 1 ? IM_COL32(0xB8, 0xEC, 0xFF, 255) : T::kText;
+    const float padW = textWidth(gBold, size, "TOUCHPAD"), tiltX = x + px(24) + padW;
+    text(dl, gBold, size, x + px(12), midY, tiltTab_ ? T::kDim : lit, "TOUCHPAD", H::Left, V::Middle);
+    text(dl, gBold, size, tiltX - px(6), midY, T::kDim, "\xC2\xB7", H::Center, V::Middle);
+    text(dl, gBold, size, tiltX, midY, tiltTab_ ? lit : T::kDim, "TILT", H::Left, V::Middle);
+    const float tabX = tiltTab_ ? tiltX : x + px(12), tabW = tiltTab_ ? textWidth(gBold, size, "TILT") : padW;
+    dl->AddLine(ImVec2(tabX, y + px(29)), ImVec2(tabX + tabW, y + px(29)), tiltTab_ ? T::kViolet : T::kCyan, px(2));
+    if (hoverButton("##tabTouchpad", ImVec2(x + px(6), y + px(4)), ImVec2(tiltX - px(10), y + px(32))))
+        tiltTab_ = false;
+    if (hoverButton("##tabTilt", ImVec2(tiltX - px(4), y + px(4)), ImVec2(tiltX + textWidth(gBold, size, "TILT") + px(6), y + px(32))))
+        tiltTab_ = true;
+}
+
+// The tilt: a ball rolling in a dish towards the side that dips (dimmed
+// while the tilt waits for its button, or is off), its CCs, what makes it
+// move, and the loops of its movements.
+void PerformanceView::drawTilt(const Mapping& m, const LiveState& live, float x, float y, float w, float h) {
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const ImU32 accent = T::kViolet;
+    const TiltBinding& t = m.tilt;
+    const bool on = t.enabled, active = on && live.tiltActive;
+    const float top = panel(dl, x, y, w, h, tabbed_ ? "" : "TILT", live.connected && on);
+    if (tabbed_)
+        drawModuleTabs(dl, x, y);
+    const ScreenBox s = screenBox(x, top, w, h);
+    const float tx = smooth(60, (live.tiltX - 0.5f) * 2.0f, 14.0f), ty = smooth(61, (live.tiltY - 0.5f) * 2.0f, 14.0f);
+    screen(dl, s.a, s.b, accent, [&] {
+        const float rw = (s.b.x - s.a.x) * 0.5f, rh = (s.b.y - s.a.y) * 0.5f;
+        const float lit = active ? 1.0f : on ? 0.55f : 0.3f;
+        const ImVec2 bc((s.a.x + s.b.x) * 0.5f, (s.a.y + s.b.y) * 0.5f + rh * 0.12f);
+        for (int k = 5; k >= 1; --k) {  // the dish
+            const float f = static_cast<float>(k) / 5.0f;
+            dl->AddEllipseFilled(bc, ImVec2(rw * 0.9f * f, rh * 0.42f * f), alpha(accent, (0.05f + 0.05f * (1 - f)) * lit));
+            dl->AddEllipse(bc, ImVec2(rw * 0.9f * f, rh * 0.42f * f), alpha(accent, 0.35f * lit), 0, 48, px(1));
+        }
+        // The ball, its shadow under it: forward rolls it away, up the screen,
+        // smaller; towards the player, larger.
+        const float br = rh * 0.2f * (1.0f - 0.28f * ty);
+        const ImVec2 at(bc.x + tx * rw * 0.62f, bc.y - ty * rh * 0.3f - br * 0.6f);
+        dl->AddEllipseFilled(ImVec2(at.x, at.y + br * 0.95f), ImVec2(br * 0.9f, br * 0.28f), IM_COL32(0, 0, 0, static_cast<int>(110 * lit)));
+        for (int k = 8; k >= 1; --k) {
+            const float f = static_cast<float>(k) / 8.0f;
+            dl->AddCircleFilled(ImVec2(at.x - br * 0.3f * (1 - f), at.y - br * 0.3f * (1 - f)), br * f, alpha(mix(accent, T::kText, 1 - f), lit));
+        }
+        if (!on)
+            badge(dl, gBold, px(12), bc.x, s.b.y - px(30), px(22), "OFF", T::kLabel, IM_COL32(0x2A, 0x2D, 0x32, 255), T::kDim);
+    });
+    if (hoverButton("##tiltscreen", s.a, s.b))
+        click("tilt");
+
+    // What it sends.
+    const float midiY = s.b.y + px(18);
+    section(dl, x, w, midiY, "MIDI");
+    const float chipTop = midiY + px(12), chipH = px(20);
+    const float cw = (w - px(30)) * 0.5f;
+    auto chip = [&](float cx0, const AxisBinding& b, const char* name, const char* id) {
+        const std::string text = std::string(name) + "  " + axisTarget(b, live) + (b.invert ? "  inv" : "");
+        const bool lit = on && b.enabled;
+        badge(dl, gCondensed, px(13), cx0 + cw * 0.5f, chipTop, chipH, text, lit ? T::kText : T::kDim, alpha(accent, lit ? 0.22f : 0.06f),
+              lit ? accent : T::kDim);
+        if (hoverButton(id, ImVec2(cx0, chipTop - px(2)), ImVec2(cx0 + cw, chipTop + chipH + px(2))))
+            click("tilt");
+    };
+    chip(x + px(12), t.x, "X", "##tiltX");
+    chip(x + px(18) + cw, t.y, "Y", "##tiltY");
+
+    // What makes it move: always, or while its button is held.
+    const float fy = chipTop + chipH + px(8), fh = px(28);
+    if (fy + fh > y + h - px(10))
+        return;
+    row(dl, x + px(12), fy, w - px(24), fh, active ? alpha(accent, 0.18f) : T::kRow, active ? accent : T::kRowBorder);
+    const ImVec2 dot(x + px(28), fy + fh * 0.5f);
+    if (active)
+        dl->AddCircleFilled(dot, px(5.5f), accent);
+    else
+        dl->AddCircle(dot, px(5.5f), on ? accent : T::kDim, 0, px(2));
+    const std::string how = !on ? "tilt off" : t.whileHeld ? "while " + label(t.hold) + " held" : "always";
+    text(dl, gBold, px(13), x + px(42), fy + fh * 0.5f, on ? T::kText : T::kDim, how, H::Left, V::Middle);
+    if (on)
+        text(dl, active ? gBold : gMedium, px(12), x + w - px(22), fy + fh * 0.5f, active ? accent : T::kLabel, active ? "active" : "idle",
+             H::Right, V::Middle);
+    if (hoverButton("##tilthow", ImVec2(x + px(12), fy), ImVec2(x + w - px(12), fy + fh)))
+        click("tilt");
+
+    // Loop: the tilt's movements a Loop record button captured.
+    const float loopY = s.b.y + loopOffset();
+    if (y + h - px(10) - (loopY + px(10)) < px(28))
+        return;
+    constexpr int kSource = static_cast<int>(LoopSource::Tilt);
+    const LiveState::Loop& loop = live.loops[static_cast<std::size_t>(kSource)];
+    const LoopBinding& lb = m.loops[static_cast<std::size_t>(kSource)];
+    const LaneLook lanes[2] = {
+        {&loop.lanes[0], Engine::trackOf(kSource, 0), accent, "X", on && t.x.enabled, t.x.invert, false, laneTarget(t.x, lb.ccX), lb.steps[0]},
+        {&loop.lanes[1], Engine::trackOf(kSource, 1), mix(accent, T::kText, 0.5f), "Y", on && t.y.enabled, t.y.invert, false, laneTarget(t.y, lb.ccY), lb.steps[1]}};
+    drawLoopPanel(dl, x, w, loopY, y + h - px(10), loop.status, lb.playback, lanes, 2, accent, artFor(live.channel, 3),
+                  "REC  \xC2\xB7  tilt to record", "##looptilt", "tilt", kSource);
 }
 
 // The touchpad's LOOP panel in 4-pad mode: the pads' notes in the note loop,
