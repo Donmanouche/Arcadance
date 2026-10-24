@@ -668,8 +668,10 @@ void Runtime::run(std::stop_token stop, Options options, std::shared_ptr<const P
             } else if (command->kind == Command::Kind::AxisLength) {
                 engine.setAxisLoopLength(engine.channel(), command->channel, std::max(command->axis, 0), command->value);
             } else if (command->kind == Command::Kind::EditNotes) {
+                // Every edit waiting, in order: a command lost to a full queue
+                // never leaves the next edits one behind.
                 std::lock_guard lock(sessionMutex_);
-                if (!noteEdits_.empty()) {
+                while (!noteEdits_.empty()) {
                     const NoteEdit& edit = noteEdits_.front();
                     if (edit.loopLength > 0)
                         engine.setNoteLoopLength(engine.channel(), edit.loopLength);
