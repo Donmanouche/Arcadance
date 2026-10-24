@@ -102,7 +102,7 @@ struct LiveState {
         static constexpr int kCurvePoints = 24, kNotes = 24;
         std::uint8_t sources = 0;  // a bit per LoopSource holding a loop
         bool recording = false;
-        // Left stick, right stick, triggers, touchpad: the axis that moves most, 0-255.
+        // Left stick, right stick, triggers, touchpad (or tilt): the axis that moves most, 0-255.
         std::array<std::array<std::uint8_t, kCurvePoints>, 4> curves{};
         int noteCount = 0;
         std::array<std::array<std::uint8_t, 3>, kNotes> notes{};  // start, end (0-255 of the loop), pitch

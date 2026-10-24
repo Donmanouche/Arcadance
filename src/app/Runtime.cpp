@@ -518,8 +518,10 @@ void Runtime::publish(const GamepadInput& gamepad, const Engine& engine, std::ui
                 }
             if (!clip.sources)
                 continue;
-            // A curve per module: the axis of its loop (a finger: finger 1's, else 2's) that moves most.
-            static constexpr int kCurveSource[4][2] = {{0, 0}, {1, 1}, {4, 4}, {2, 3}};
+            // A curve per module: the axis of its loop (the last box: finger 1's,
+            // else 2's, else the tilt's) that moves most.
+            constexpr int kTilt = static_cast<int>(LoopSource::Tilt);
+            static constexpr int kCurveSource[4][3] = {{0, 0, 0}, {1, 1, 1}, {4, 4, 4}, {2, 3, kTilt}};
             for (int m = 0; m < 4; ++m) {
                 // Each axis over its own length; the one with the widest swing.
                 std::array<float, LiveState::Clip::kCurvePoints> best{}, v{};
