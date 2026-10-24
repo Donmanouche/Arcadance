@@ -319,7 +319,7 @@ LiveState Runtime::live() const {
     {
         std::lock_guard lock(loopsMutex_);
         s.loops = loops_;
-        s.noteLoop = noteLoop_;
+        std::copy_n(noteLoop_.begin(), noteLoopCount_, s.noteLoop.begin());  // only the notes there are
         s.noteLoopCount = noteLoopCount_;
         s.clips = clips_;
         s.currentClip = currentClip_;

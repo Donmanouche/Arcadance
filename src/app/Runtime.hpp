@@ -91,7 +91,7 @@ struct LiveState {
     std::array<midipad::Engine::ShapeMode, 2> stickShapes{};
     midipad::Engine::ShapeMode fingerShape = midipad::Engine::ShapeMode::Length;
     // The active channel's note loop, as notes (in loop samples).
-    static constexpr int kMaxNoteLoopNotes = 128;
+    static constexpr int kMaxNoteLoopNotes = 1024;  // 64 bars of 16th notes
     std::array<midipad::NoteInterval, kMaxNoteLoopNotes> noteLoop{};
     int noteLoopCount = 0;
     // Every channel's clips, for the session screen: what each holds and a
