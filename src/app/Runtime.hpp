@@ -322,7 +322,7 @@ private:
     static std::uint64_t pack(const midipad::Humanize& h);
     static midipad::Humanize unpack(std::uint64_t word);
     void report(const Report& r);
-    void publish(const class GamepadInput& gamepad, const midipad::Engine& engine);
+    void publish(const class GamepadInput& gamepad, const midipad::Engine& engine, std::uint64_t nowNs);
 
     Log log_;
     std::atomic<bool> reportMidi_, reportButtons_;
@@ -400,6 +400,10 @@ private:
     std::array<std::array<float, midipad::Engine::kChains>, midipad::kChannelCount> chainBeats_{};
     std::array<std::uint8_t, midipad::kChannelCount> chainOpen_{};
     int clipSketchCountdown_ = 0;  // polls until the clips' sketches are drawn again
+    // The loops' curves and the chains' and clips' lengths, for display only:
+    // taken again every few milliseconds, not at every poll.
+    std::uint64_t nextCurvesNs_ = 0;
+    int curvesChannel_ = -1;
     mutable std::mutex nameMutex_;
     std::string gamepadName_;
 

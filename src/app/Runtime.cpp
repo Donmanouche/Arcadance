@@ -370,7 +370,7 @@ Humanize Runtime::unpack(std::uint64_t w) {
     return h;
 }
 
-void Runtime::publish(const GamepadInput& gamepad, const Engine& engine) {
+void Runtime::publish(const GamepadInput& gamepad, const Engine& engine, std::uint64_t nowNs) {
     const bool connected = gamepad.connected();
     if (connected != connected_.load(std::memory_order_relaxed)) {
         std::lock_guard lock(nameMutex_);  // rare: only when a gamepad comes or goes
@@ -420,6 +420,13 @@ void Runtime::publish(const GamepadInput& gamepad, const Engine& engine) {
     if (!lock.owns_lock())
         return;
     const int channel = engine.channel();  // the loops shown are the active channel's
+    // Their states at every poll; the curves, the chains and the lengths 250 times a second.
+    constexpr std::uint64_t kCurvesNs = 4'000'000;
+    const bool curves = nowNs >= nextCurvesNs_ || channel != curvesChannel_;
+    if (curves) {
+        nextCurvesNs_ = nowNs + kCurvesNs;
+        curvesChannel_ = channel;
+    }
     for (int s = 0; s < kLoopSourceCount; ++s) {
         LiveState::Loop& loop = loops_[static_cast<std::size_t>(s)];
         loop.status = engine.loopStatus(channel, s);
@@ -430,6 +437,8 @@ void Runtime::publish(const GamepadInput& gamepad, const Engine& engine) {
             lane.status = engine.loopStatus(channel, s, axis);
             lane.stepSamples = engine.loopStepSamples(channel, s, axis);
             const int length = lane.status.length;
+            if (!curves && lane.points == std::min(length, LiveState::Lane::kPoints))
+                continue;  // a length that changed is drawn at once
             lane.points = std::min(length, LiveState::Lane::kPoints);
             for (int i = 0; i < lane.points; ++i) {
                 const int at = lane.points > 1 ? static_cast<int>(static_cast<long long>(i) * (length - 1) / (lane.points - 1)) : 0;
@@ -461,7 +470,7 @@ void Runtime::publish(const GamepadInput& gamepad, const Engine& engine) {
         recordSlot_[ci] = static_cast<std::int8_t>(engine.recordSlot(c));
         clipProgress_[ci] = engine.clipProgress(c);
         LiveState::Chains& chains = chains_[ci];
-        for (int n = 0; n < Engine::kChains; ++n) {
+        for (int n = 0; curves && n < Engine::kChains; ++n) {
             LiveState::Chain& chain = chains.list[static_cast<std::size_t>(n)];
             for (int k = 0; k < Engine::kChainSteps; ++k) {
                 const Engine::ChainStep st = engine.chainStep(c, n, k);
@@ -476,14 +485,15 @@ void Runtime::publish(const GamepadInput& gamepad, const Engine& engine) {
         chains.nextChain = static_cast<std::int8_t>(engine.chainNextChain(c));
         chains.turns = engine.chainTurns(c);
         chains.clipNow = static_cast<std::int8_t>(engine.chainClip(c));
-        chainOpen_[ci] = 0;
-        for (int n = 0; n < Engine::kChains; ++n) {
+        if (curves)
+            chainOpen_[ci] = 0;
+        for (int n = 0; curves && n < Engine::kChains; ++n) {
             bool open = false;
             chainBeats_[ci][static_cast<std::size_t>(n)] = static_cast<float>(engine.chainBeats(c, n, open));
             if (open)
                 chainOpen_[ci] = static_cast<std::uint8_t>(chainOpen_[ci] | (1u << n));
         }
-        for (int k = 0; k < Engine::kClipSlots; ++k)
+        for (int k = 0; curves && k < Engine::kClipSlots; ++k)
             clipBeats_[ci][static_cast<std::size_t>(k)] = static_cast<float>(engine.clipBeats(c, k));
         if (engine.clipPlaying(c))
             clipsPlaying_ = static_cast<std::uint16_t>(clipsPlaying_ | (1u << c));
@@ -824,7 +834,7 @@ void Runtime::run(std::stop_token stop, Options options, std::shared_ptr<const P
         gamepad.poll(start);
         while (const auto e = engine.takeSessionEvent())
             sessionEvents_.push(*e);
-        publish(gamepad, engine);
+        publish(gamepad, engine, start);
 
         const std::uint64_t end = SDL_GetTicksNS();
         ticks_.fetch_add(1, std::memory_order_relaxed);
