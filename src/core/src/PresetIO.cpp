@@ -1,5 +1,6 @@
 #include "midipad/PresetIO.hpp"
 
+#include "midipad/Files.hpp"
 #include "midipad/Notes.hpp"
 
 #include <nlohmann/json.hpp>
@@ -800,18 +801,14 @@ Preset loadPreset(const std::filesystem::path& file) {
 }
 
 void savePreset(const Preset& preset, const std::filesystem::path& file) {
-    // Write next to the target, then rename, so a crash never leaves half a preset.
-    std::filesystem::path temp = file;
-    temp += ".tmp";
-    {
-        std::ofstream out(temp);
-        if (!out)
-            throw PresetError(temp.string() + ": cannot write");
-        out << presetToJson(preset).dump(4) << '\n';
-        if (!out)
-            throw PresetError(temp.string() + ": write failed");
+    const std::string text = presetToJson(preset).dump(4) + '\n';
+    try {
+        writeFileAtomically(file, text);  // a crash never leaves half a preset
+    } catch (const std::filesystem::filesystem_error&) {
+        throw;
+    } catch (const std::runtime_error& e) {
+        throw PresetError(e.what());
     }
-    std::filesystem::rename(temp, file);
 }
 
 }  // namespace midipad

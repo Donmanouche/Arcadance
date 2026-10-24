@@ -1,5 +1,6 @@
 #include "midipad/AppSettings.hpp"
 #include "midipad/Controls.hpp"
+#include "midipad/Files.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -191,11 +192,9 @@ void saveSettings(const AppSettings& s, const std::filesystem::path& file) {
         j["migrated_from_midipad"] = true;
     j["quantize_notes"] = s.quantize == 2 ? "1/8" : s.quantize == 4 ? "1/16" : s.quantize == 8 ? "1/32" : "off";
 
-    std::filesystem::create_directories(file.parent_path());
-    std::ofstream out(file);
-    if (!out)
-        throw std::runtime_error(file.string() + ": cannot write");
-    out << j.dump(4) << '\n';
+    // Through a temporary file: a crash, a full disk or a failed dump never
+    // empties the settings in place.
+    writeFileAtomically(file, j.dump(4) + '\n');
 }
 
 }  // namespace midipad

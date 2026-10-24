@@ -1,5 +1,6 @@
 #include "midipad/Session.hpp"
 
+#include "midipad/Files.hpp"
 #include "midipad/PresetIO.hpp"
 
 #include <algorithm>
@@ -450,19 +451,14 @@ Session sessionFromJson(const Json& j) {
 }
 
 void saveSession(const Session& session, const std::filesystem::path& file) {
-    // Write next to the target, then rename, so a crash never leaves half a session.
-    std::filesystem::create_directories(file.parent_path());
-    std::filesystem::path temp = file;
-    temp += ".tmp";
-    {
-        std::ofstream out(temp);
-        if (!out)
-            throw SessionError(temp.string() + ": cannot write");
-        out << sessionToJson(session).dump() << '\n';  // compact: the loops are long
-        if (!out)
-            throw SessionError(temp.string() + ": write failed");
+    const std::string text = sessionToJson(session).dump() + '\n';  // compact: the loops are long
+    try {
+        writeFileAtomically(file, text);  // a crash never leaves half a session
+    } catch (const std::filesystem::filesystem_error&) {
+        throw;
+    } catch (const std::runtime_error& e) {
+        throw SessionError(e.what());
     }
-    std::filesystem::rename(temp, file);
 }
 
 Session loadSession(const std::filesystem::path& file) {

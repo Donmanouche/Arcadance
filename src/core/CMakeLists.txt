@@ -3,6 +3,7 @@ add_library(midipad_core STATIC
     src/Chords.cpp
     src/Controls.cpp
     src/Engine.cpp
+    src/Files.cpp
     src/Labels.cpp
     src/Notes.cpp
     src/PresetIO.cpp

@@ -13,6 +13,7 @@
 #include "gui/PerformanceView.hpp"
 
 #include "midipad/AppSettings.hpp"
+#include "midipad/Files.hpp"
 #include "midipad/Labels.hpp"
 #include "midipad/PresetIO.hpp"
 #include "midipad/PresetLibrary.hpp"
@@ -103,14 +104,7 @@ void renameFormerFiles(const fs::path& presetsDir, const fs::path& sessionsDir) 
             if (!j.is_object() || j.value("format", std::string()) != oldFormat)
                 return;
             j["format"] = newFormat;
-            const fs::path temp = to.string() + ".tmp";
-            {
-                std::ofstream out(temp);
-                out << (indent > 0 ? j.dump(indent) : j.dump()) << '\n';
-                if (!out)
-                    return;
-            }
-            fs::rename(temp, to);
+            writeFileAtomically(to, (indent > 0 ? j.dump(indent) : j.dump()) + '\n');
             if (from != to)
                 fs::remove(from);
         } catch (const std::exception&) {
