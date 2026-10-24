@@ -3230,7 +3230,15 @@ void GuiApp::drawPerformance(const LiveState& live) {
             if (on) {  // the beats of the bar: the one playing lit, the first white
                 const int beats = std::clamp(live.beatsPerBar, 1, 8);
                 const int now = static_cast<int>(std::floor(live.beat)) % std::max(live.beatsPerBar, 1);
-                const float sq = px(8), gap = px(4);
+                // In the room the text leaves, narrower when the bar has many beats.
+                float sq = px(8), gap = px(4);
+                const float room = q.x + lw - px(10) - (tx + isz.x + px(8));
+                const float needed = static_cast<float>(beats) * (sq + gap) - gap;
+                if (needed > room && room > 0) {
+                    const float scale = std::max(room / needed, 0.25f);
+                    sq *= scale;
+                    gap *= scale;
+                }
                 float x = q.x + lw - px(10) - static_cast<float>(beats) * (sq + gap) + gap;
                 for (int b = 0; b < beats; ++b, x += sq + gap) {
                     const ImU32 c = b == now ? (b == 0 ? IM_COL32_WHITE : Theme::kGreen) : IM_COL32(0x3A, 0x3E, 0x45, 255);
