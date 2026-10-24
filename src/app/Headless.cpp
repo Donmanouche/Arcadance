@@ -89,7 +89,7 @@ std::variant<Options, int> parseArgs(const std::vector<std::string>& args) {
             return 0;
         } else if (arg == "-c" || arg == "--connect") {
             o.connect = value();
-            if (!o.connect)
+            if (!o.connect || o.connect->empty())  // empty: every port would match
                 return fail(arg + " expects a port name");
         } else if (arg == "-n" || arg == "--port-name") {
             auto v = value();
