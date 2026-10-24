@@ -924,9 +924,8 @@ bool Engine::finishRecording(int channel) {
             const double recorded = beatAt(now_) - loop.startBeat;
             loop.syncBeats = std::max(1.0, std::round(recorded / snap)) * snap;
             loop.anchorBeat = std::round(loop.startBeat / snap) * snap;
-            int dir = 1;
+            int dir = 1;  // (its direction is set below)
             syncedPhase(loop, playback, beatAt(now_), loop.phase, dir);
-            loop.direction = dir;
             loop.position = std::clamp(static_cast<int>(loop.phase), 0, loop.length - 1);
             if (source == static_cast<int>(LoopSource::Notes)) {
                 quantizeNoteLoop(channel);
@@ -1074,7 +1073,6 @@ void Engine::runLoops() {
         if (loopsPaused_)
             playLoops();
         const std::size_t index = loopIndex(holdChannel_, track);
-        silenceLoop(index);
         Loop& loop = loops_[index];
         loop.state = LoopStatus::State::Recording;
         loop.length = 0;
@@ -2291,12 +2289,6 @@ void Engine::setModulationSendsCc(int channel, int source, int axis, bool sends)
     Loop& loop = loops_[loopIndex(std::clamp(channel, 0, kChannelCount - 1), trackOf(source, axis))];
     loop.sendsCc = sends;
     loop.sentX = -1;
-}
-
-bool Engine::loopLocked(int channel, int source) const {
-    channel = std::clamp(channel, 0, kChannelCount - 1);
-    source = std::clamp(source, 0, kLoopSourceCount - 1);
-    return loops_[loopIndex(channel, trackOf(source, 0))].locked || loops_[loopIndex(channel, trackOf(source, 1))].locked;
 }
 
 bool Engine::toggleLoopLock(int channel, int source) {

@@ -239,7 +239,6 @@ public:
     void setChainStep(int channel, int step, ChainStep s) { setChainStep(channel, 0, step, s); }
     ChainStep chainStep(int channel, int step) const { return chainStep(channel, 0, step); }
     void setChainLoop(int channel, bool on) { setChainThen(channel, 0, on ? kThenLoop : kThenStop); }
-    bool chainLoop(int channel) const { return chainThen(channel, 0) == kThenLoop; }
     void chainGoTo(int channel, int step) { chainGoTo(channel, 0, step); }
     void stopChain(int channel);
     int chainPlaying(int channel) const { return chainAt(channel) < 0 ? -1 : chainIndex_[static_cast<std::size_t>(std::clamp(channel, 0, kChannelCount - 1))]; }  // the chain running, -1: none
@@ -352,7 +351,6 @@ public:
     // unlocks that one; without, the source's (both axes: unlocked if either
     // is locked, else those that play). Only a loop that plays can be locked;
     // false when there is none.
-    bool loopLocked(int channel, int source) const;  // either axis
     bool toggleLoopLock(int channel, int source);
     bool toggleLoopLock(int channel, int source, int axis);
     // A movement loop (not the note loop) played slower or faster, in steps

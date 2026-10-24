@@ -15,7 +15,6 @@ class PresetLibrary {
 public:
     explicit PresetLibrary(std::filesystem::path directory);
 
-    const std::filesystem::path& directory() const { return directory_; }
 
     std::vector<std::string> names() const;  // sorted, case-insensitive
     bool contains(std::string_view name) const;

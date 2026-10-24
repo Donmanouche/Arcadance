@@ -96,8 +96,8 @@ struct LiveState {
     int noteLoopCount = 0;
     // Every channel's clips, for the session screen: what each holds and a
     // sketch of it (refreshed a few times a second), the current clip, the
-    // one waiting to start (kClipSlots: a stop), the record slot, which
-    // channels play and how far their clip is in its turn.
+    // one waiting to start (kClipSlots: a stop), which channels play and how
+    // far their clip is in its turn.
     struct Clip {
         static constexpr int kCurvePoints = 24, kNotes = 24;
         std::uint8_t sources = 0;  // a bit per LoopSource holding a loop
@@ -108,7 +108,7 @@ struct LiveState {
         std::array<std::array<std::uint8_t, 3>, kNotes> notes{};  // start, end (0-255 of the loop), pitch
     };
     std::array<Clip, midipad::kChannelCount * midipad::Engine::kClipSlots> clips{};
-    std::array<std::int8_t, midipad::kChannelCount> currentClip{}, queuedClip{}, recordSlot{};
+    std::array<std::int8_t, midipad::kChannelCount> currentClip{}, queuedClip{};
     std::uint16_t clipsPlaying = 0;
     std::uint16_t muted = 0, soloed = 0;  // Engine::setMuted, setSoloed: a bit per channel
     std::array<float, midipad::kChannelCount> clipProgress{};
@@ -265,8 +265,6 @@ public:
     void transportPlay(int section);
     void transportStop();
     void setTransportSong(int section) { transportSong_.store(section, std::memory_order_relaxed); }
-    void setReportMidi(bool on) { reportMidi_.store(on, std::memory_order_relaxed); }
-    void setReportButtons(bool on) { reportButtons_.store(on, std::memory_order_relaxed); }
     void setDpadSettle(int pressMs, int releaseMs) {
         dpadSettlePress_.store(pressMs, std::memory_order_relaxed);
         dpadSettleRelease_.store(releaseMs, std::memory_order_relaxed);
@@ -392,7 +390,7 @@ private:
     std::array<midipad::NoteInterval, LiveState::kMaxNoteLoopNotes> noteLoop_{};
     int noteLoopCount_ = 0;
     std::array<LiveState::Clip, midipad::kChannelCount * midipad::Engine::kClipSlots> clips_{};
-    std::array<std::int8_t, midipad::kChannelCount> currentClip_{}, queuedClip_{}, recordSlot_{};
+    std::array<std::int8_t, midipad::kChannelCount> currentClip_{}, queuedClip_{};
     std::uint16_t clipsPlaying_ = 0;
     std::array<float, midipad::kChannelCount> clipProgress_{};
     std::array<LiveState::Chains, midipad::kChannelCount> chains_{};

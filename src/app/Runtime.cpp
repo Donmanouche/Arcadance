@@ -327,7 +327,6 @@ LiveState Runtime::live() const {
         s.clips = clips_;
         s.currentClip = currentClip_;
         s.queuedClip = queuedClip_;
-        s.recordSlot = recordSlot_;
         s.clipsPlaying = clipsPlaying_;
         s.clipProgress = clipProgress_;
         s.chains = chains_;
@@ -470,7 +469,6 @@ void Runtime::publish(const GamepadInput& gamepad, const Engine& engine, std::ui
         const auto ci = static_cast<std::size_t>(c);
         currentClip_[ci] = static_cast<std::int8_t>(engine.currentClip(c));
         queuedClip_[ci] = static_cast<std::int8_t>(engine.queuedClip(c));
-        recordSlot_[ci] = static_cast<std::int8_t>(engine.recordSlot(c));
         clipProgress_[ci] = engine.clipProgress(c);
         LiveState::Chains& chains = chains_[ci];
         for (int n = 0; curves && n < Engine::kChains; ++n) {
