@@ -663,8 +663,9 @@ void MappingEditor::drawAxisLanes(int source, const Mapping& m, const LiveState&
         return;
     const bool finger = source == 2 || source == 3;
     const bool triggers = source == static_cast<int>(LoopSource::Triggers);
+    const bool tilt = source == static_cast<int>(LoopSource::Tilt);
     const ImU32 base = source == 0 ? T::kBlue : source == 1 ? T::kOrange : triggers ? T::kPink : source == 2 ? T::kCyan
-                     : source == static_cast<int>(LoopSource::Tilt) ? T::kViolet : T::kOrange;
+                     : tilt ? T::kViolet : T::kOrange;
     const ImU32 kViolet = IM_COL32(0xB0, 0x8C, 0xFF, 255);
     auto alpha = [](ImU32 c, float a) {
         return (c & ~IM_COL32_A_MASK) | (static_cast<ImU32>(static_cast<float>((c >> IM_COL32_A_SHIFT) & 0xFF) * a) << IM_COL32_A_SHIFT);
@@ -682,11 +683,11 @@ void MappingEditor::drawAxisLanes(int source, const Mapping& m, const LiveState&
         const ImU32 color = axis == 0 ? base : ImGui::ColorConvertFloat4ToU32(ImVec4((c.x + 1) * 0.5f, (c.y + 1) * 0.5f, (c.z + 1) * 0.5f, 1));
         const std::string nameText = triggers ? label(axis == 0 ? Button::LeftTrigger : Button::RightTrigger) : axis == 0 ? "X" : "Y";
         const char* name = nameText.c_str();
-        const Axis own = triggers ? (axis == 0 ? Axis::LeftTrigger : Axis::RightTrigger)
-                                  : static_cast<Axis>(source * 2 + axis);  // sticks only
         const AxisBinding& binding = finger ? (axis == 0 ? m.fingers[static_cast<std::size_t>(source - 2)].x
                                                          : m.fingers[static_cast<std::size_t>(source - 2)].y)
-                                            : m.axes[static_cast<std::size_t>(own)];
+                                   : tilt     ? (axis == 0 ? m.tilt.x : m.tilt.y)
+                                   : triggers ? m.axes[static_cast<std::size_t>(axis == 0 ? Axis::LeftTrigger : Axis::RightTrigger)]
+                                              : m.axes[static_cast<std::size_t>(source * 2 + axis)];  // a stick
         const ImVec2 a = ImGui::GetCursorScreenPos(), b(a.x + width, a.y + laneH);
         ImGui::PushID(axis);
         ImGui::InvisibleButton("##lane", ImVec2(width, laneH));
