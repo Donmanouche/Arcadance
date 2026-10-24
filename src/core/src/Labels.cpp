@@ -2,6 +2,8 @@
 
 #include "midipad/Notes.hpp"
 
+#include <algorithm>
+
 namespace midipad {
 
 namespace {
@@ -179,6 +181,9 @@ std::string describe(const TriggerBinding& b, bool flats) {
         return "Mode";
     case ActionType::RecenterTilt:
         return "Recenter tilt";
+    case ActionType::Retrigger:
+        return "Retrigger \xC3\x97" + std::to_string(b.retriggers) + ", " +
+               std::string(kRetriggerEveryNames[static_cast<std::size_t>(std::clamp<int>(b.retriggerEvery, 0, kRetriggerChoices - 1))]);
     case ActionType::ProgramChange:
         if (b.programStep != 0)
             return std::string("Program ") + (b.programStep > 0 ? "+1" : "-1");

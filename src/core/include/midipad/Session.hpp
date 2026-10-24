@@ -53,7 +53,7 @@ struct SessionLoop {
 
 // A chain of a channel's clips (Engine::setChainStep): which of its chains
 // (0 to 7, A to H), its steps, each a clip slot (-1: empty; 8,
-// Engine::kChainRandom: any, at random) and its repeats (0: forever), what
+// Engine::kChainRandom: any, at random; Engine::kChainSilence: bars of silence) and its repeats (0: forever), what
 // comes after its last step (Engine::setChainThen: -1 back to its first step,
 // -2 stop, or another chain), its name, and whether it is the one the session
 // screen shows for the channel.

@@ -285,21 +285,31 @@ bool MappingEditor::drawTiltForm(Mapping& m, const LiveState& live) {
     TiltBinding& t = m.tilt;
     bool changed = false;
     ImGui::PushID("tilt");
+    // The buttons that may make it move: L1, R1, L2, R2 and the D-pad's four arrows.
+    static constexpr Button kHolds[] = {Button::LeftShoulder, Button::RightShoulder, Button::LeftTrigger, Button::RightTrigger,
+                                        Button::DpadUp, Button::DpadDown, Button::DpadLeft, Button::DpadRight};
+    auto binding = [&](Button b) -> const TriggerBinding& {  // a D-pad arrow's is under its direction
+        switch (b) {
+        case Button::DpadUp: return m.dpad[static_cast<std::size_t>(HatDir::Up)];
+        case Button::DpadDown: return m.dpad[static_cast<std::size_t>(HatDir::Down)];
+        case Button::DpadLeft: return m.dpad[static_cast<std::size_t>(HatDir::Left)];
+        case Button::DpadRight: return m.dpad[static_cast<std::size_t>(HatDir::Right)];
+        default: return m.buttons[static_cast<std::size_t>(b)];
+        }
+    };
     // A button that is Shift is named so: held, it would be Shift too.
-    auto isShift = [&](Button b) { return m.buttons[static_cast<std::size_t>(b)].type == ActionType::Shift; };
+    auto isShift = [&](Button b) { return binding(b).type == ActionType::Shift; };
     auto holdName = [&](Button b) { return label(b) + (isShift(b) ? " (Shift)" : ""); };
     if (ImGui::Checkbox("Enabled", &t.enabled)) {
         changed = true;
         // Turned on with Shift as its button: the first free one instead.
         if (t.enabled && t.whileHeld && isShift(t.hold)) {
-            static constexpr Button kChoices[] = {Button::LeftShoulder, Button::RightShoulder, Button::LeftStick, Button::RightStick,
-                                                  Button::Back, Button::Misc1, Button::Touchpad, Button::Guide, Button::Start};
-            const Button* free = std::find_if(std::begin(kChoices), std::end(kChoices), [&](Button b) {
-                return live.has(b) && !m.buttons[static_cast<std::size_t>(b)].isSet();
+            const Button* free = std::find_if(std::begin(kHolds), std::end(kHolds), [&](Button b) {
+                return live.has(b) && !binding(b).isSet();
             });
-            if (free == std::end(kChoices))
-                free = std::find_if(std::begin(kChoices), std::end(kChoices), [&](Button b) { return live.has(b) && !isShift(b); });
-            if (free != std::end(kChoices))
+            if (free == std::end(kHolds))
+                free = std::find_if(std::begin(kHolds), std::end(kHolds), [&](Button b) { return live.has(b) && !isShift(b); });
+            if (free != std::end(kHolds))
                 t.hold = *free;
         }
     }
@@ -320,9 +330,8 @@ bool MappingEditor::drawTiltForm(Mapping& m, const LiveState& live) {
     ImGui::BeginDisabled(!t.whileHeld);
     ImGui::SetNextItemWidth(ImGui::GetFontSize() * 10);
     if (ImGui::BeginCombo("##hold", holdName(t.hold).c_str())) {
-        for (int b = 0; b < static_cast<int>(Button::LeftTrigger); ++b) {
-            const auto button = static_cast<Button>(b);
-            if (isDpad(button) || !live.has(button))
+        for (const Button button : kHolds) {
+            if (!live.has(button))
                 continue;
             if (ImGui::Selectable(holdName(button).c_str(), t.hold == button) && t.hold != button) {
                 t.hold = button;
@@ -864,7 +873,8 @@ bool MappingEditor::drawStepsForm(int source, Mapping& m) {
 bool MappingEditor::drawTriggerEditor(TriggerBinding& b) {
     bool changed = false;
     static const char* kTypes[] = {"No action", "Note", "CC", "Chord", "Transport", "Channel change", "Axis freeze",
-                                   "Loop record", "Program change", "Shift", "Tap tempo", "Mode (session, edit)", "Recenter tilt"};
+                                   "Loop record", "Program change", "Shift", "Tap tempo", "Mode (session, edit)", "Recenter tilt",
+                                   "MIDI retrigger"};
     int type = static_cast<int>(b.type);
     ImGui::SetNextItemWidth(ImGui::GetFontSize() * 14);
     if (ImGui::Combo("Action", &type, kTypes, IM_ARRAYSIZE(kTypes)) && type != static_cast<int>(b.type)) {
@@ -970,6 +980,41 @@ bool MappingEditor::drawTriggerEditor(TriggerBinding& b) {
     case ActionType::SessionScreen:
     case ActionType::RecenterTilt:
         break;
+    case ActionType::Retrigger: {
+        int count = b.retriggers;
+        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 8);
+        if (ImGui::InputInt("Retriggers", &count)) {
+            b.retriggers = static_cast<std::uint8_t>(std::clamp(count, 1, kMaxRetriggers));
+            changed = true;
+        }
+        static constexpr const char* kEvery[kRetriggerChoices] = {"1/8", "1/8 triplet", "1/16", "1/16 triplet", "1/32", "1/32 triplet", "1/64"};
+        int every = std::clamp<int>(b.retriggerEvery, 0, kRetriggerChoices - 1);
+        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 8);
+        if (ImGui::Combo("Every", &every, kEvery, kRetriggerChoices) && every != b.retriggerEvery) {
+            b.retriggerEvery = static_cast<std::uint8_t>(every);
+            changed = true;
+        }
+        // What it plays: a note sounding, then its retriggers on two beats' grid of 16ths.
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        const float em = ImGui::GetFontSize();
+        const ImVec2 o = ImGui::GetCursorScreenPos();
+        const float w = em * 22, h = em * 3.2f, perBeat = (w - 4) / 2.0f;
+        ImGui::Dummy(ImVec2(w, h + em * 0.4f));
+        dl->AddRectFilled(o, ImVec2(o.x + w, o.y + h), IM_COL32(0x20, 0x22, 0x26, 255), 4);
+        for (int i = 0; i <= 8; ++i) {
+            const float x = o.x + 2 + perBeat * 0.25f * static_cast<float>(i);
+            dl->AddLine(ImVec2(x, o.y + 2), ImVec2(x, o.y + h - 2), i % 4 == 0 ? IM_COL32(255, 255, 255, 50) : IM_COL32(255, 255, 255, 18));
+        }
+        const float step = perBeat * static_cast<float>(kRetriggerEveryBeats[static_cast<std::size_t>(every)]), noteY = o.y + h * 0.5f;
+        dl->AddRectFilled(ImVec2(o.x + 2, noteY - 6), ImVec2(o.x + w - 2, noteY + 6), IM_COL32(0x4D, 0xB2, 0xFF, 120), 3);
+        for (int r = 1; r <= b.retriggers; ++r) {
+            const float x = o.x + 2 + step * static_cast<float>(r);
+            if (x > o.x + w - 4)
+                break;
+            dl->AddRectFilled(ImVec2(x - 2, noteY - 9), ImVec2(x + 2, noteY + 9), IM_COL32(0xFF, 0xB0, 0x20, 255), 2);
+        }
+        break;
+    }
     case ActionType::TapTempo:
         break;
     case ActionType::LoopRecord:

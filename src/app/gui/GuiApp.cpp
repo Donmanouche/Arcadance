@@ -1741,7 +1741,7 @@ void GuiApp::chainEvent(Engine::SessionEvent e, const LiveState& live) {
         if (onCell)  // another chain: up the previous, down the next
             showChain(ch, shown + (e == E::ValueUp ? -1 : 1));
         else
-            setChainStep(ch, chainCursor_, std::clamp(clip + (e == E::ValueUp ? 1 : -1), -1, Engine::kChainRandom), clip >= 0 ? repeats : 1);
+            setChainStep(ch, chainCursor_, std::clamp(clip + (e == E::ValueUp ? 1 : -1), -1, Engine::kChainSilence), clip >= 0 ? repeats : 1);
         break;
     case E::ValueLeft:
     case E::ValueRight:
@@ -2135,7 +2135,7 @@ namespace {
 
 enum MenuId : int {
     kLaunch, kStop, kRecordHere, kDuplicate, kAddToChain, kClearClip,
-    kStartHere, kRandom, kInsertStep, kDeleteStep, kEmptyStep,
+    kStartHere, kRandom, kSilence, kInsertStep, kDeleteStep, kEmptyStep,
     kChannelStop, kChannelMute, kChannelSolo, kChainOn, kChainOff, kThenLoop, kThenStop, kThenNext, kPrevChain, kNextChain, kDuplicateChain, kRenameChain, kClearChain,
     kLock, kUnlock, kClearLoop, kResetShape, kSettings, kEditNotes, kPrevChannel, kNextChannel, kRename,
     kSongPlay, kSongStop, kSongLoop, kSectionRename, kSectionFit, kSectionDuplicate, kSectionInsert, kSectionUp, kSectionDown, kSectionDelete,
@@ -2194,6 +2194,7 @@ void GuiApp::openMenu(const PerformanceView::MenuTarget& t, const LiveState& liv
         menu.title = "STEP " + std::to_string(t.slot + 1) + "\nchain " + PerformanceView::chainLetter(shown);
         add("Start from here", kStartHere, has);
         add("Random (R)", kRandom);
+        add("Silence (S)", kSilence);
         add("Insert a step", kInsertStep);
         add("Delete the step", kDeleteStep);
         add("Empty it", kEmptyStep, has);
@@ -2519,6 +2520,9 @@ void GuiApp::runMenu(const PerformanceView::MenuTarget& t, int id, const LiveSta
     case kStartHere: runtime_->chainGoTo(ch, shown, t.slot); break;
     case kRandom:
         setChainStep(ch, t.slot, Engine::kChainRandom, std::max<int>(chain.repeats[static_cast<std::size_t>(t.slot)], 0));
+        break;
+    case kSilence:
+        setChainStep(ch, t.slot, Engine::kChainSilence, std::max<int>(chain.repeats[static_cast<std::size_t>(t.slot)], 0));
         break;
     case kInsertStep:
         steps.insert(steps.begin() + t.slot, {-1, 1});

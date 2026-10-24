@@ -94,6 +94,15 @@ void Engine::setChannel(int channel) {
 
 bool Engine::isFrozen(Axis axis) const { return frozen_[static_cast<std::size_t>(channel_)] & axisBit(axis); }
 
+// Whether a control is held down now: a button, a D-pad arrow, a trigger past its press point.
+bool Engine::held(Button button) const {
+    if (button == Button::LeftTrigger || button == Button::RightTrigger)
+        return triggerDown_[button == Button::LeftTrigger ? 0 : 1];
+    if (isDpad(button))
+        return (dpadBits_ >> (static_cast<int>(button) - static_cast<int>(Button::DpadUp))) & 1u;
+    return (buttonsDown_ >> static_cast<int>(button)) & 1u;
+}
+
 void Engine::buttonChanged(Button button, bool pressed) {
     if (button >= Button::LeftTrigger)  // digital triggers come from axisMoved()
         return;
@@ -158,6 +167,7 @@ void Engine::tick(std::uint64_t nowNs) {
         pushSessionEvent(SessionEvent::HelpOn);
     }
     runLoops();
+    runRetriggers();
     stretchFromControls();
     navigate();
     // Programs chosen by axes, once settled.
@@ -221,6 +231,14 @@ void Engine::emit(const MidiMessage& message, bool fromLoop) {
             if (kind == 0x90 && !noteOff)
                 sounding.set(note);
         }
+    }
+    if (kind == 0x90 || kind == 0x80) {  // what sounds, for a retrigger
+        const auto channel = static_cast<std::size_t>(message.bytes[0] & 0x0F);
+        const auto note = static_cast<std::size_t>(message.bytes[1] & 0x7F);
+        const bool on = kind == 0x90 && message.bytes[2] > 0;
+        soundingNotes_[channel].set(note, on);
+        if (on)
+            soundingVelocity_[channel][note] = message.bytes[2];
     }
     sink_.send(message);
     if (observer_ && (kind == 0x90 || kind == 0x80))
@@ -323,7 +341,7 @@ void Engine::tiltMoved(float roll, float pitch) {
     if (std::isnan(roll) || std::isnan(pitch))
         return;
     const TiltBinding& t = mapping_->tilt;
-    const bool active = t.enabled && (!t.whileHeld || ((buttonsDown_ >> static_cast<int>(t.hold)) & 1u));
+    const bool active = t.enabled && (!t.whileHeld || held(t.hold));
     if (!active) {
         tiltActive_ = false;
         return;
@@ -420,7 +438,66 @@ void Engine::touchReleased(int finger) {
     current.reset();
 }
 
+void Engine::startRetrigger(const TriggerBinding& binding) {
+    RetriggerRun& run = retriggerRuns_[static_cast<std::size_t>(channel_)];
+    run.notes = soundingNotes_[static_cast<std::size_t>(channel_)];
+    run.left = run.notes.any() ? std::clamp<int>(binding.retriggers, 1, kMaxRetriggers) : 0;
+    const double beats = kRetriggerEveryBeats[static_cast<std::size_t>(std::clamp<int>(binding.retriggerEvery, 0, kRetriggerChoices - 1))];
+    run.interval = static_cast<std::uint64_t>(beats * 60e9 / std::max(clock_.tempo, 1.0));
+    run.nextAt = now_ + run.interval;
+}
+
+std::uint32_t Engine::livePress(int channel, int note) const {
+    auto find = [&](const Sounding& s) {
+        if (!s.active() || s.type == ActionType::ControlChange || s.channel != channel)
+            return false;
+        for (std::size_t i = 0; i < s.notes.count; ++i)
+            if (s.notes.notes[i] == note)
+                return true;
+        return false;
+    };
+    for (const Sounding& s : held_)
+        if (find(s))
+            return s.press;
+    for (const Sounding& s : latched_[static_cast<std::size_t>(channel)])
+        if (find(s))
+            return s.press;
+    return 0;
+}
+
+// Each retrigger due: its notes still sounding end and start again, at their
+// velocity, a loop's as the loop's (so a channel muted meanwhile stays silent).
+// A note played live is recorded so into the note loop, when it records or
+// overdubs (as the press it came from, which its release ends); a loop's own
+// notes are not, so the loop never cuts its notes.
+void Engine::runRetriggers() {
+    for (int channel = 0; channel < kChannelCount; ++channel) {
+        RetriggerRun& run = retriggerRuns_[static_cast<std::size_t>(channel)];
+        if (run.left <= 0 || now_ < run.nextAt)
+            continue;
+        const auto c = static_cast<std::size_t>(channel);
+        run.notes &= soundingNotes_[c];  // those that ended meanwhile are done
+        for (int n = 0; n < 128; ++n) {
+            if (!run.notes.test(static_cast<std::size_t>(n)))
+                continue;
+            const bool fromLoop = loopSounding_[c].test(static_cast<std::size_t>(n));
+            const int velocity = std::max<int>(soundingVelocity_[c][static_cast<std::size_t>(n)], 1);
+            if (!fromLoop)
+                if (const std::uint32_t press = livePress(channel, n)) {
+                    recordNote(channel, n, 0, now_, press);
+                    recordNote(channel, n, velocity, now_, press);
+                }
+            emit(MidiMessage::noteOff(channel, n), fromLoop);
+            emit(MidiMessage::noteOn(channel, n, velocity), fromLoop);
+        }
+        run.left = run.notes.any() ? run.left - 1 : 0;
+        run.nextAt += run.interval;
+    }
+}
+
 void Engine::releaseAll() {
+    for (RetriggerRun& run : retriggerRuns_)  // a retrigger stops with the notes
+        run.left = 0;
     // Releases still waiting go out now; notes not started yet never will.
     for (std::size_t i = 0; i < delayedCount_; ++i)
         if ((delayed_[i].message.bytes[0] & 0xF0) == 0x80)
@@ -621,6 +698,9 @@ void Engine::press(int slot) {
         return;
     case ActionType::RecenterTilt:
         recenterTilt();
+        return;
+    case ActionType::Retrigger:
+        startRetrigger(binding);
         return;
     case ActionType::Shift:
         if (!stretchHeld()) {
@@ -2620,6 +2700,13 @@ void Engine::queueClip(int channel, int slot) {
 
 float Engine::clipProgress(int channel) const {
     channel = std::clamp(channel, 0, kChannelCount - 1);
+    const auto c = static_cast<std::size_t>(channel);
+    if (chainAt_[c] >= 0 && chainSilent_[c] && chainSilenceStartNs_[c] != 0) {  // a bar of silence
+        if (clock_.on && !std::isnan(chainSilenceEndBeat_[c]))
+            return static_cast<float>(std::clamp(1.0 - (chainSilenceEndBeat_[c] - beatAt(now_)) / beatsPerBar_, 0.0, 1.0));
+        const double span = static_cast<double>(chainSilenceEndNs_[c] - chainSilenceStartNs_[c]);
+        return span > 0 ? static_cast<float>(std::clamp(static_cast<double>(now_ - chainSilenceStartNs_[c]) / span, 0.0, 1.0)) : 0.0f;
+    }
     double turns = 0;
     if (!clipPlaying_[static_cast<std::size_t>(channel)] || !clipTurns(channel, turns))
         return -1.0f;
@@ -2749,7 +2836,7 @@ void Engine::enterRecordSlot(int channel) {
 void Engine::setChainStep(int channel, int chain, int step, ChainStep s) {
     if (step < 0 || step >= kChainSteps || chain < 0 || chain >= kChains)
         return;
-    s.clip = s.clip < 0 ? -1 : std::min(s.clip, kChainRandom);
+    s.clip = s.clip < 0 ? -1 : std::min(s.clip, kChainSilence);
     s.repeats = std::clamp(s.repeats, 0, kMaxRepeats);
     chains_[static_cast<std::size_t>(std::clamp(channel, 0, kChannelCount - 1))][static_cast<std::size_t>(chain)][static_cast<std::size_t>(step)] = s;
 }
@@ -2775,6 +2862,22 @@ int Engine::chainThen(int channel, int chain) const {
 }
 
 bool Engine::chainStepPlays(int channel, int chain, int step) const {
+    return chainStepHasClip(channel, chain, step) || chainStepSilent(channel, chain, step);
+}
+
+bool Engine::chainStepSilent(int channel, int chain, int step) const {
+    const auto& steps = chains_[static_cast<std::size_t>(channel)][static_cast<std::size_t>(chain)];
+    if (steps[static_cast<std::size_t>(step)].clip == kChainSilence)
+        return true;
+    if (chainStepHasClip(channel, chain, step))
+        return false;
+    for (int k = step + 1; k < kChainSteps; ++k)  // empty: silent before the last step that plays or is silent
+        if (steps[static_cast<std::size_t>(k)].clip == kChainSilence || chainStepHasClip(channel, chain, k))
+            return true;
+    return false;
+}
+
+bool Engine::chainStepHasClip(int channel, int chain, int step) const {
     const ChainStep& s = chains_[static_cast<std::size_t>(channel)][static_cast<std::size_t>(chain)][static_cast<std::size_t>(step)];
     if (s.clip == kChainRandom) {
         for (int slot = 0; slot < kClipSlots; ++slot)
@@ -2782,11 +2885,30 @@ bool Engine::chainStepPlays(int channel, int chain, int step) const {
                 return true;
         return false;
     }
-    return s.clip >= 0 && clipHasLoops(channel, s.clip);
+    return s.clip >= 0 && s.clip < kClipSlots && clipHasLoops(channel, s.clip);
+}
+
+void Engine::startChainSilenceBar(int channel) {
+    const auto c = static_cast<std::size_t>(channel);
+    const double beats = static_cast<double>(beatsPerBar_);
+    chainSilenceStartNs_[c] = now_;
+    chainSilenceEndNs_[c] = now_ + static_cast<std::uint64_t>(beats * 60e9 / std::max(clock_.tempo, 1.0));
+    chainSilenceEndBeat_[c] = clock_.on ? beatAt(now_) + beats : std::nan("");
+}
+
+bool Engine::chainSilenceBarDone(int channel) const {
+    const auto c = static_cast<std::size_t>(channel);
+    if (clock_.on && !std::isnan(chainSilenceEndBeat_[c]))
+        return beatAt(now_) >= chainSilenceEndBeat_[c] - 1e-9;
+    return now_ >= chainSilenceEndNs_[c];
 }
 
 int Engine::chainPick(int channel, int chain, int step) {
     const ChainStep& s = chains_[static_cast<std::size_t>(channel)][static_cast<std::size_t>(chain)][static_cast<std::size_t>(step)];
+    if (!chainStepHasClip(channel, chain, step)) {  // silent: no clip
+        chainClip_[static_cast<std::size_t>(channel)] = -1;
+        return -1;
+    }
     int clip = s.clip;
     if (clip == kChainRandom) {
         std::array<int, kClipSlots> recorded{};
@@ -2830,6 +2952,19 @@ void Engine::chainGoTo(int channel, int chain, int step) {
     chainAt_[c] = at;
     chainJump_[c] = chainJumpChain_[c] = -1;
     chainTurns_[c] = 0;
+    if (chainStepSilent(channel, chain, at)) {  // silence first: once what plays stops, at the end of its turn
+        chainPick(channel, chain, at);
+        chainSilent_[c] = true;
+        chainStarting_[c] = false;
+        chainSilenceEndNs_[c] = 0;
+        chainSilenceEndBeat_[c] = std::nan("");
+        chainSilenceStartNs_[c] = 0;
+        queueClip(channel, kClipSlots);
+        if (queued_[c] < 0)  // nothing played: silent from now
+            startChainSilenceBar(channel);
+        return;
+    }
+    chainSilent_[c] = false;
     chainStarting_[c] = true;  // counts once its clip plays
     queueClip(channel, chainPick(channel, chain, at));
 }
@@ -2838,6 +2973,7 @@ void Engine::stopChain(int channel) {
     const auto c = static_cast<std::size_t>(std::clamp(channel, 0, kChannelCount - 1));
     chainAt_[c] = chainJump_[c] = chainJumpChain_[c] = chainClip_[c] = -1;
     chainStarting_[c] = false;
+    chainSilent_[c] = false;
 }
 
 void Engine::loadSessionChains(const std::vector<SessionChain>& chains) {
@@ -2868,28 +3004,39 @@ void Engine::runChains() {
         if (chainAt_[c] < 0 || queued_[c] >= 0)
             continue;
         double turns = 0;
-        if (!clipPlaying_[c] || !clipTurns(channel, turns)) {
-            if (!chainStarting_[c])
-                stopChain(channel);  // stopped, or nothing left to play
-            continue;
-        }
-        const auto whole = static_cast<long long>(std::floor(turns));
-        if (chainStarting_[c]) {  // its first clip plays: count from here
-            chainStarting_[c] = false;
+        if (chainSilent_[c]) {  // a silent step: a turn a bar
+            if (chainSilenceStartNs_[c] == 0) {  // what played before has stopped: from now
+                startChainSilenceBar(channel);
+                continue;
+            }
+            if (!chainSilenceBarDone(channel))
+                continue;
+        } else {
+            if (!clipPlaying_[c] || !clipTurns(channel, turns)) {
+                if (!chainStarting_[c])
+                    stopChain(channel);  // stopped, or nothing left to play
+                continue;
+            }
+            const auto whole = static_cast<long long>(std::floor(turns));
+            if (chainStarting_[c]) {  // its first clip plays: count from here
+                chainStarting_[c] = false;
+                chainMark_[c] = whole;
+                continue;
+            }
+            if (whole <= chainMark_[c])
+                continue;
             chainMark_[c] = whole;
-            continue;
         }
-        if (whole <= chainMark_[c])
-            continue;
-        chainMark_[c] = whole;
         ++chainTurns_[c];
         const int chain = chainIndex_[c];
         const ChainStep& now = chains_[c][static_cast<std::size_t>(chain)][static_cast<std::size_t>(chainAt_[c])];
+        // An empty step's silence is a bar; a silence step's, its repeats.
+        const int repeats = chainSilent_[c] && now.clip != kChainSilence ? 1 : now.repeats;
         int nextChain = chain, next = -1;
         if (chainJump_[c] >= 0) {
             nextChain = chainJumpChain_[c] >= 0 ? chainJumpChain_[c] : chain;
             next = chainFind(channel, nextChain, chainJump_[c]);
-        } else if (now.repeats > 0 && chainTurns_[c] >= now.repeats) {
+        } else if (repeats > 0 && chainTurns_[c] >= repeats) {
             next = chainFind(channel, chain, chainAt_[c] + 1, false);
             if (next < 0) {  // past the last step
                 const int then = chainThen_[c][static_cast<std::size_t>(chain)];
@@ -2902,6 +3049,8 @@ void Engine::runChains() {
                 next = chainFind(channel, nextChain, 0);
             }
         } else {
+            if (chainSilent_[c])  // one more bar of it
+                startChainSilenceBar(channel);
             continue;
         }
         chainJump_[c] = chainJumpChain_[c] = -1;
@@ -2912,6 +3061,15 @@ void Engine::runChains() {
         chainIndex_[c] = nextChain;
         chainAt_[c] = next;
         chainTurns_[c] = 0;
+        if (chainStepSilent(channel, nextChain, next)) {  // silence: the channel stops, a bar starts
+            chainPick(channel, nextChain, next);
+            if (clipPlaying_[c])
+                switchClip(channel, kClipSlots);
+            chainSilent_[c] = true;
+            startChainSilenceBar(channel);
+            continue;
+        }
+        chainSilent_[c] = false;
         switchClip(channel, chainPick(channel, nextChain, next));
         if (clipTurns(channel, turns))
             chainMark_[c] = static_cast<long long>(std::floor(turns));
@@ -2954,7 +3112,14 @@ double Engine::chainBeats(int channel, int chain, bool& open) const {
     if (chain < 0 || chain >= kChains)
         return 0;
     double total = 0;
-    for (const ChainStep& s : chains_[static_cast<std::size_t>(channel)][static_cast<std::size_t>(chain)]) {
+    for (int k = 0; k < kChainSteps; ++k) {
+        const ChainStep& s = chains_[static_cast<std::size_t>(channel)][static_cast<std::size_t>(chain)][static_cast<std::size_t>(k)];
+        if (chainStepSilent(channel, chain, k)) {  // its bars
+            if (s.clip == kChainSilence && s.repeats == 0)
+                open = true;
+            total += static_cast<double>(beatsPerBar_) * (s.clip == kChainSilence ? std::max(s.repeats, 1) : 1);
+            continue;
+        }
         double turn = 0;
         if (s.clip == kChainRandom) {
             int count = 0;

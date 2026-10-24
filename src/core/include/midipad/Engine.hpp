@@ -222,11 +222,14 @@ public:
     // another clip, PANIC and stopChain turn the chains off; their steps stay.
     // A step's clip may be kChainRandom: each time the chain comes to that
     // step it picks one of the channel's clips that hold loops, at random,
-    // and plays it its repeats.
-    static constexpr int kChains = 8, kChainSteps = 8, kMaxRepeats = 64, kChainRandom = kClipSlots;
+    // and plays it its repeats. Or kChainSilence: the channel is silent for
+    // `repeats` bars (0: until asked to go on). An empty step (no clip, an
+    // empty one) before the chain's last step that plays or is silent is a
+    // bar of silence; after it, it is skipped.
+    static constexpr int kChains = 8, kChainSteps = 8, kMaxRepeats = 64, kChainRandom = kClipSlots, kChainSilence = kClipSlots + 1;
     static constexpr int kThenLoop = -1, kThenStop = -2;
     struct ChainStep {
-        int clip = -1;    // -1: empty; kChainRandom: any
+        int clip = -1;    // -1: empty; kChainRandom: any; kChainSilence: bars of silence
         int repeats = 1;  // 1 to kMaxRepeats; 0: forever
         friend bool operator==(const ChainStep&, const ChainStep&) = default;
     };
@@ -553,6 +556,20 @@ private:
     void beginRecordHold();
     void endRecordHold();
     bool finishRecording(int channel);
+    bool held(Button button) const;
+    // Every note sounding, per channel (whoever sent it), at its velocity; and
+    // each channel's retrigger running: its notes, the times left, the next.
+    std::array<std::bitset<128>, kChannelCount> soundingNotes_{};
+    std::array<std::array<std::uint8_t, 128>, kChannelCount> soundingVelocity_{};
+    struct RetriggerRun {
+        std::bitset<128> notes;
+        int left = 0;
+        std::uint64_t nextAt = 0, interval = 0;
+    };
+    std::array<RetriggerRun, kChannelCount> retriggerRuns_{};
+    void startRetrigger(const TriggerBinding& binding);
+    void runRetriggers();
+    std::uint32_t livePress(int channel, int note) const;  // the press a note played live sounds from; 0: none
     void runLoops();
     void playMovementLoop(std::size_t loop, LoopPlayback playback, const double* syncedPhase = nullptr, int syncedDirection = 1);
     double beatAt(std::uint64_t t) const { return clock_.beat + (static_cast<double>(t) - static_cast<double>(clockAt_)) * clock_.tempo / 60e9; }
@@ -698,7 +715,16 @@ private:
     std::array<bool, kChannelCount> chainStarting_{};
     std::array<int, kChannelCount> chainClip_ = [] { std::array<int, kChannelCount> a{}; a.fill(-1); return a; }();
     int chainPick(int channel, int chain, int step);  // the clip a step plays: its own, or one picked at random
-    bool chainStepPlays(int channel, int chain, int step) const;
+    bool chainStepPlays(int channel, int chain, int step) const;   // takes its turn: a clip that plays, or silence
+    bool chainStepHasClip(int channel, int chain, int step) const;  // a clip with loops (or a random one, with some)
+    bool chainStepSilent(int channel, int chain, int step) const;   // a silence step, or an empty step before the last that plays
+    // A silent step running: its bar ends at chainSilenceEndBeat_ (on the beat
+    // clock) or chainSilenceEndNs_ (free); 0 / NaN: waiting for the clip before to stop.
+    void startChainSilenceBar(int channel);
+    bool chainSilenceBarDone(int channel) const;
+    std::array<bool, kChannelCount> chainSilent_{};
+    std::array<std::uint64_t, kChannelCount> chainSilenceStartNs_{}, chainSilenceEndNs_{};
+    std::array<double, kChannelCount> chainSilenceEndBeat_{};
     int chainFind(int channel, int chain, int from, bool wrap = true) const;  // the first step from there that plays, -1 none
     void runChains();
     // The song.

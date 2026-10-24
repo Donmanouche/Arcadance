@@ -127,13 +127,14 @@ Json sessionToJson(const Session& session) {
         loops.push_back(std::move(o));
     }
     j["loops"] = std::move(loops);
-    // The chains: [clip, repeats] per step (clip from 1, or "random"; repeats 0: forever), null when empty.
+    // The chains: [clip, repeats] per step (clip from 1, "random" or "silence"; repeats 0: forever), null when empty.
     if (!session.chains.empty()) {
         Json chains = Json::array();
         for (const SessionChain& c : session.chains) {
             Json steps = Json::array();
             for (const SessionChain::Step& st : c.steps)
                 steps.push_back(st.clip < 0 ? Json(nullptr)
+                                : st.clip == Engine::kChainSilence ? Json::array({"silence", st.repeats})
                                 : st.clip >= 8 ? Json::array({"random", st.repeats})
                                                : Json::array({st.clip + 1, st.repeats}));
             Json o;
@@ -363,10 +364,11 @@ Session sessionFromJson(const Json& j) {
                     if (!steps[k].is_null()) {
                         const Json& v = steps[k];
                         const bool random = v.is_array() && v.size() == 2 && v[0] == "random";
-                        if (!v.is_array() || v.size() != 2 || (!random && (!v[0].is_number_integer() || v[0].get<int>() < 1 || v[0].get<int>() > 8)) ||
+                        const bool silence = v.is_array() && v.size() == 2 && v[0] == "silence";
+                        if (!v.is_array() || v.size() != 2 || (!random && !silence && (!v[0].is_number_integer() || v[0].get<int>() < 1 || v[0].get<int>() > 8)) ||
                             !v[1].is_number_integer() || v[1].get<int>() < 0 || v[1].get<int>() > 64)
-                            fail(where + ".steps[" + std::to_string(k) + "]", "expected [clip 1-8 or \"random\", repeats 0-64] or null");
-                        st.clip = random ? 8 : v[0].get<int>() - 1;
+                            fail(where + ".steps[" + std::to_string(k) + "]", "expected [clip 1-8, \"random\" or \"silence\", repeats 0-64] or null");
+                        st.clip = random ? Engine::kChainRandom : silence ? Engine::kChainSilence : v[0].get<int>() - 1;
                         st.repeats = v[1].get<int>();
                     }
                     c.steps.push_back(st);

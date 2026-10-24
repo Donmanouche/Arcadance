@@ -60,6 +60,10 @@ enum class V { Top, Middle };
 
 float textWidth(ImFont* f, float size, const std::string& s) { return f->CalcTextSizeA(size, FLT_MAX, 0, s.c_str()).x; }
 
+// The right edge of a note's bar in the piano roll: a hair short of where it
+// ends, so a note played again at once (a retrigger) reads as a new one.
+float noteBarEnd(float start, float end, bool ended) { return std::max(ended ? end - px(1.5f) : end, start + px(2)); }
+
 void text(ImDrawList* dl, ImFont* f, float size, float x, float y, ImU32 col, const std::string& s, H h = H::Left,
           V v = V::Top) {
     const ImVec2 sz = f->CalcTextSizeA(size, FLT_MAX, 0, s.c_str());
@@ -123,6 +127,7 @@ std::string compact(const TriggerBinding& b, bool flats) {
     case ActionType::TapTempo: return "Tap";
     case ActionType::SessionScreen: return "Session";
     case ActionType::RecenterTilt: return "Center";
+    case ActionType::Retrigger: return "Retrig \xC3\x97" + std::to_string(b.retriggers);
     case ActionType::ProgramChange:
         return b.programStep != 0 ? std::string("PC ") + (b.programStep > 0 ? "+1" : "-1") : "PC " + std::to_string(b.number + 1);
     }
@@ -1356,7 +1361,7 @@ void PerformanceView::drawPianoRoll(const Mapping& m, const LiveState& live, flo
             const float yb = yOf(n.note);
             const float a = 0.14f + 0.08f * static_cast<float>(n.velocity) / 127.0f;
             dl->AddRectFilled(ImVec2(std::max(xAtTime(n.start), gx0), yb - rowH + 0.5f),
-                              ImVec2(std::max(xAtTime(end), xAtTime(n.start) + px(2)), yb - 0.5f), alpha(T::kCyan, a), px(1));
+                              ImVec2(noteBarEnd(xAtTime(n.start), xAtTime(end), !n.sounding), yb - 0.5f), alpha(T::kCyan, a), px(1));
         }
         if (liveShown)
             dl->AddLine(ImVec2(ax1 - px(1), ay0), ImVec2(ax1 - px(1), ay1), alpha(T::kCyan, 0.3f), px(1.2f));
@@ -1438,7 +1443,7 @@ void PerformanceView::drawPianoRoll(const Mapping& m, const LiveState& live, flo
             const bool cut = n.start >= newLength;  // past the loop's new end: it goes
             const ImU32 fill = alpha(cut ? IM_COL32(0xFF, 0x5C, 0x5C, 255) : chosen ? kMauve : IM_COL32_WHITE,
                                      (cut ? 0.75f : 0.1f) + (cut ? 0.25f : 0.9f) * static_cast<float>(n.velocity) / 127.0f);
-            dl->AddRectFilled(na, nb, dragged ? alpha(IM_COL32_WHITE, 0.12f) : fill, px(1));
+            dl->AddRectFilled(na, ImVec2(noteBarEnd(na.x, nb.x, true), nb.y), dragged ? alpha(IM_COL32_WHITE, 0.12f) : fill, px(1));
             if (!dragged && chosen)
                 dl->AddRect(ImVec2(na.x - 1, na.y - 1), ImVec2(nb.x + 1, nb.y + 1), T::kCyan, px(1), px(1.5f));
         }
@@ -1543,7 +1548,7 @@ void PerformanceView::drawPianoRoll(const Mapping& m, const LiveState& live, flo
             const float yb = yOf(n.note);
             const float a = 0.55f + 0.45f * static_cast<float>(n.velocity) / 127.0f;
             dl->AddRectFilled(ImVec2(std::max(xAtTime(n.start), gx0), yb - rowH + 0.5f),
-                              ImVec2(std::max(xAtTime(end), xAtTime(n.start) + px(2)), yb - 0.5f), alpha(n.fromLoop ? kViolet : kLive, a), px(1));
+                              ImVec2(noteBarEnd(xAtTime(n.start), xAtTime(end), !n.sounding), yb - 0.5f), alpha(n.fromLoop ? kViolet : kLive, a), px(1));
         }
     }
     dl->PopClipRect();
@@ -2118,6 +2123,17 @@ std::optional<PerformanceView::SessionAction> PerformanceView::drawChainStrip(Im
     const float stepW = (w - px(24) - gap * static_cast<float>(Engine::kChainSteps) - endW) / static_cast<float>(Engine::kChainSteps);
     const float y0 = at.y + px(30), y1 = at.y + h - px(8);
     const ImGuiIO& io = ImGui::GetIO();
+    // An empty step before the last that plays (or is silent) is a bar of silence.
+    int lastFilled = -1;
+    for (int q = 0; q < Engine::kChainSteps; ++q) {
+        const int cq = chain.clip[static_cast<std::size_t>(q)];
+        bool anyClip = false;
+        for (int slot = 0; slot < Engine::kClipSlots && cq == Engine::kChainRandom; ++slot)
+            anyClip = anyClip || live.clips[c * Engine::kClipSlots + static_cast<std::size_t>(slot)].sources != 0;
+        if (cq == Engine::kChainSilence || anyClip ||
+            (cq >= 0 && cq < Engine::kClipSlots && live.clips[c * Engine::kClipSlots + static_cast<std::size_t>(cq)].sources != 0))
+            lastFilled = q;
+    }
     for (int k = 0; k < Engine::kChainSteps; ++k) {
         const auto kk = static_cast<std::size_t>(k);
         const float x0 = at.x + px(12) + static_cast<float>(k) * (stepW + gap), x1 = x0 + stepW;
@@ -2142,7 +2158,7 @@ std::optional<PerformanceView::SessionAction> PerformanceView::drawChainStrip(Im
         if (hovered && io.MouseWheel != 0.0f) {  // over its number: the clip; over its chip: the repeats
             const int notch = io.MouseWheel > 0 ? 1 : -1;
             if (io.MousePos.x < x0 + stepW * 0.45f || clipSlot < 0)
-                action = SessionAction{SessionAction::Kind::ChainSet, ch, k, std::clamp(clipSlot + notch, -1, Engine::kChainRandom),
+                action = SessionAction{SessionAction::Kind::ChainSet, ch, k, std::clamp(clipSlot + notch, -1, Engine::kChainSilence),
                                        clipSlot >= 0 ? repeats : 1};
             else
                 action = SessionAction{SessionAction::Kind::ChainSet, ch, k, clipSlot, nextRepeats(repeats, notch)};
@@ -2150,8 +2166,40 @@ std::optional<PerformanceView::SessionAction> PerformanceView::drawChainStrip(Im
         ImGui::PopID();
         const bool playsNow = runs && chains.at == k;
         const bool isNext = nextHere && chains.next == k;
-        if (clipSlot < 0) {
-            // Empty: skipped. A dashed outline and a +.
+        if (clipSlot == Engine::kChainSilence) {  // a silence step: a rest, its bars
+            constexpr ImU32 kRest = IM_COL32(0x78, 0x82, 0x96, 255);
+            screen(dl, a, b, kRest, [&] {
+                const ImU32 ink = playsNow ? T::kText : T::kLabel;
+                const float rx = x0 + px(24), ry = y0 + px(14), u = px(4);  // a quarter rest
+                const ImVec2 rest[] = {{rx, ry}, {rx + u * 1.6f, ry + u * 2.0f}, {rx + u * 0.2f, ry + u * 3.6f}, {rx + u * 1.8f, ry + u * 5.8f},
+                                       {rx + u * 0.4f, ry + u * 5.4f}, {rx + u * 1.2f, ry + u * 7.4f}};
+                dl->AddPolyline(rest, 6, ink, px(2.2f));
+                text(dl, gBold, px(7.5f), x0 + px(12), y1 - px(10), T::kDim, "SILENCE", H::Left, V::Middle);
+                const std::string label = playsNow && repeats > 0 ? std::to_string(chains.turns + 1) + "/" + std::to_string(repeats)
+                                          : repeats == 0          ? "\xE2\x88\x9E"
+                                                                  : "\xC3\x97" + std::to_string(repeats);
+                const float size = repeats == 0 && !playsNow ? px(17) : px(13);
+                const float tw = std::max(textWidth(gBold, size, label) + px(18), px(34));
+                const ImVec2 ca(x1 - px(5) - tw, y0 + px(4)), cb(x1 - px(5), y0 + px(27));
+                const ImU32 chip = playsNow ? T::kGreen : kRest;
+                dl->AddRectFilled(ca, cb, alpha(chip, 0.22f), px(11));
+                dl->AddRect(ca, cb, alpha(chip, 0.85f), px(11), px(1.2f));
+                text(dl, gBold, size, (ca.x + cb.x) * 0.5f, (ca.y + cb.y) * 0.5f, T::kText, label, H::Center, V::Middle);
+                if (repeats > 0)
+                    text(dl, gMedium, px(10), x1 - px(10), y1 - px(12), T::kDim, repeats == 1 ? "1 bar" : std::to_string(repeats) + " bars", H::Right,
+                         V::Middle);
+                if (playsNow) {  // how far in its bar
+                    const float p = std::clamp(live.clipProgress[c], 0.0f, 1.0f);
+                    const ImVec2 ta(x0 + px(6), y1 - px(6.5f)), tb(x0 + stepW - px(6), y1 - px(3));
+                    dl->AddRectFilled(ta, tb, IM_COL32(0, 0, 0, 170), px(2));
+                    dl->AddRectFilled(ta, ImVec2(ta.x + (tb.x - ta.x) * p, tb.y), T::kGreen, px(2));
+                }
+            });
+            const ImU32 outline = playsNow ? T::kGreen : isNext ? alpha(T::kGreen, blink ? 0.9f : 0.3f) : hovered ? T::kControlBorder : 0;
+            if (outline)
+                dl->AddRect(a, b, outline, px(4), px(playsNow || isNext ? 2.0f : 1.0f));
+        } else if (clipSlot < 0) {
+            // Empty: a dashed outline and a +; before the last step that plays, a bar of silence.
             const ImU32 dash = hovered ? T::kControlBorder : IM_COL32(0x4A, 0x4F, 0x57, 255);
             for (float t = 0; t < stepW; t += px(8)) {
                 dl->AddLine(ImVec2(x0 + t, y0), ImVec2(std::min(x0 + t + px(4), x1), y0), dash, px(1));
@@ -2161,7 +2209,19 @@ std::optional<PerformanceView::SessionAction> PerformanceView::drawChainStrip(Im
                 dl->AddLine(ImVec2(x0, y0 + t), ImVec2(x0, std::min(y0 + t + px(4), y1)), dash, px(1));
                 dl->AddLine(ImVec2(x1, y0 + t), ImVec2(x1, std::min(y0 + t + px(4), y1)), dash, px(1));
             }
-            text(dl, gBold, px(16), (x0 + x1) * 0.5f, (y0 + y1) * 0.5f, IM_COL32(0x5A, 0x5F, 0x67, 255), "+", H::Center, V::Middle);
+            const bool bar = k < lastFilled;
+            text(dl, gBold, px(16), (x0 + x1) * 0.5f, (y0 + y1) * 0.5f - (bar ? px(6) : 0.0f), IM_COL32(0x5A, 0x5F, 0x67, 255), "+", H::Center,
+                 V::Middle);
+            if (bar)
+                text(dl, gMedium, px(10), (x0 + x1) * 0.5f, y1 - px(14), playsNow ? T::kGreen : IM_COL32(0x6A, 0x70, 0x78, 255), "1 bar", H::Center,
+                     V::Middle);
+            if (playsNow) {  // its bar of silence, playing
+                const float p = std::clamp(live.clipProgress[c], 0.0f, 1.0f);
+                const ImVec2 ta(x0 + px(6), y1 - px(6.5f)), tb(x1 - px(6), y1 - px(3));
+                dl->AddRectFilled(ta, tb, IM_COL32(0, 0, 0, 170), px(2));
+                dl->AddRectFilled(ta, ImVec2(ta.x + (tb.x - ta.x) * p, tb.y), T::kGreen, px(2));
+                dl->AddRect(a, b, T::kGreen, px(4), px(2.0f));
+            }
         } else {
             // A random step: R, and while it plays the clip it picked.
             const bool random = clipSlot == Engine::kChainRandom;
@@ -3399,11 +3459,14 @@ void PerformanceView::drawLane(ImDrawList* dl, ImVec2 a, ImVec2 b, const LaneLoo
         const std::string length = st.beats > 0 ? beatsText(st.beats, beatsPerBar_) : durationText(seconds * Engine::stretchFactor(st.stretch));
         const float chipY = nameY;
         float right = drawChip(dl, b.x - px(4), chipY, length, look.color) - px(4);
-        if (b.y - a.y >= px(34)) {  // room for the stretch and the amplitude too
-            right = drawStretchChip(dl, right, chipY, st.stretch, look.color) - (st.stretch != 0 ? px(4) : 0.0f);
-            right = drawAmplitudeChip(dl, right, chipY, st.amplitude, look.color) - (st.amplitude != 100 ? px(4) : 0.0f);
-            if (st.offset != 0)
-                drawChip(dl, right, chipY, std::string("OFS ") + (st.offset > 0 ? "+" : "") + std::to_string(st.offset) + "%", look.color);
+        // The stretch and the amplitude too, where they fit right of its name (and its lock or x).
+        const float limit = a.x + px(7) + textWidth(gBold, small, look.name) + px(24);
+        auto fits = [&](const std::string& label) { return right - (textWidth(gBold, px(10), label) + px(10)) >= limit; };
+        if (b.y - a.y >= px(34)) {
+            if (st.stretch != 0 && fits(stretchText(st.stretch)))
+                right = drawStretchChip(dl, right, chipY, st.stretch, look.color) - px(4);
+            if (st.amplitude != 100 && fits("AMP " + std::to_string(st.amplitude) + "%"))
+                drawAmplitudeChip(dl, right, chipY, st.amplitude, look.color);
         }
         drawStretchGauge(dl, a, b, bit, st.stretch, look.color);
         drawAmplitudeGauge(dl, a, b, bit, st.amplitude, look.color);

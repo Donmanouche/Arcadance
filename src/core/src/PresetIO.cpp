@@ -187,6 +187,16 @@ TriggerBinding triggerFromJson(const Json& j, const std::string& where) {
         b.type = ActionType::SessionScreen;
     } else if (type == "recenter_tilt") {
         b.type = ActionType::RecenterTilt;
+    } else if (type == "retrigger") {
+        b.type = ActionType::Retrigger;
+        b.retriggers = readU7(j, "count", 4, where);
+        if (b.retriggers < 1 || b.retriggers > kMaxRetriggers)
+            fail(where + ".count", "expected 1 to 16");
+        const std::string every = readString(j, "every", "1/16", where);
+        const auto name = std::find(kRetriggerEveryNames.begin(), kRetriggerEveryNames.end(), every);
+        if (name == kRetriggerEveryNames.end())
+            fail(where + ".every", "expected 1/8, 1/8T, 1/16, 1/16T, 1/32, 1/32T or 1/64");
+        b.retriggerEvery = static_cast<std::uint8_t>(name - kRetriggerEveryNames.begin());
     } else if (type == "freeze") {
         b.type = ActionType::Freeze;
         if (!j.contains("axes"))
@@ -268,6 +278,11 @@ Json triggerToJson(const TriggerBinding& b) {
         return j;
     case ActionType::RecenterTilt:
         j["type"] = "recenter_tilt";
+        return j;
+    case ActionType::Retrigger:
+        j["type"] = "retrigger";
+        j["count"] = b.retriggers;
+        j["every"] = std::string(kRetriggerEveryNames[static_cast<std::size_t>(std::clamp<int>(b.retriggerEvery, 0, kRetriggerChoices - 1))]);
         return j;
     case ActionType::ProgramChange:
         j["type"] = "program";

@@ -19,8 +19,15 @@ enum class Mode : std::uint8_t {
 enum class ActionType : std::uint8_t {
     None, Note, ControlChange, Chord, Transport, ChannelStep, Freeze, LoopRecord, ProgramChange, Shift, TapTempo,
     SessionScreen,  // opens and closes the session screen
-    RecenterTilt    // the tilt's center: where the controller is held now
+    RecenterTilt,   // the tilt's center: where the controller is held now
+    Retrigger       // the notes sounding on the active channel, played again
 };
+
+// Retrigger: how many times, and every how much of a beat (by the tempo).
+inline constexpr int kMaxRetriggers = 16;
+inline constexpr int kRetriggerChoices = 7;
+inline constexpr std::array<std::string_view, kRetriggerChoices> kRetriggerEveryNames{"1/8", "1/8T", "1/16", "1/16T", "1/32", "1/32T", "1/64"};
+inline constexpr std::array<double, kRetriggerChoices> kRetriggerEveryBeats{0.5, 1.0 / 3.0, 0.25, 1.0 / 6.0, 0.125, 1.0 / 12.0, 0.0625};
 
 enum class TransportCommand : std::uint8_t { Start, Stop, Continue };
 
@@ -53,6 +60,11 @@ struct TriggerBinding {
     std::int8_t programStep = 0;
     bool programWrap = true;
     std::int16_t bankMsb = -1, bankLsb = -1;  // -1: none
+    // Retrigger: each note sounding on the active channel when pressed (played
+    // live or by a loop) ends and starts again `retriggers` times, one every
+    // kRetriggerEveryBeats[retriggerEvery] beats of the tempo, at its velocity.
+    std::uint8_t retriggers = 4;      // 1 to kMaxRetriggers
+    std::uint8_t retriggerEvery = 2;  // 1/16
 
     bool isSet() const { return type != ActionType::None; }
 };
