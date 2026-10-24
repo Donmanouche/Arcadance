@@ -1,165 +1,116 @@
 # Arcadance
 
-**Turn a game controller into a MIDI instrument and a live MIDI looper.**
+**Your game controller is now a MIDI instrument and a live looper.**
 
-Arcadance turns a DualSense (PlayStation 5) controller into an instrument for your
-DAW or synthesizer: the sticks, the analog triggers and the two-finger touchpad
-move your sounds, the buttons play notes and chords, and every MIDI channel can
-have its own layout. Hold one button, play, release: what you played loops at
-once, notes and gestures alike, on as many channels as you like. Then arrange
-your loops into clips, chain them, and lay them out into a whole song, right
-from the controller.
+Pick up the controller on your desk, plug it in, and play your synths with it.
+Sticks and triggers sweep filters and effects, buttons fire chords, a tilt of
+the controller bends a sound. Hold one button and whatever you play loops at
+once: a chord progression, a bassline, a filter gesture. Stack loops on sixteen
+channels, turn them into clips, chain them, and build a whole track without
+touching the mouse, in time with your DAW through Ableton Link.
 
-Xbox, Nintendo and other controllers work too: Arcadance names their buttons
-as printed on them and leaves out what a controller lacks.
+It works with the DualSense (PS5), DualShock 4, Xbox, Switch and most other
+controllers, and with any DAW, synth or plugin that takes MIDI. Linux for now;
+Windows and macOS are planned.
 
-Arcadance runs on Linux; Windows and macOS versions are planned.
-
-- **Download**: a ready-to-run Linux version is attached to each
-  [release](https://github.com/Donmanouche/Arcadance/releases).
-- **User manual**: [Arcadance User Manual (PDF)](docs/Arcadance%20User%20Manual.pdf).
+**[Download the latest version](https://github.com/Donmanouche/Arcadance/releases)** ·
+**[User manual (PDF)](docs/Arcadance%20User%20Manual.pdf)**
 
 ![Arcadance at work: sticks, triggers, touchpad, loops and the piano roll](docs/media/overview.gif)
 
-## What you can do
+## Why a controller?
 
-- **Loop in your hands.** Loop the notes and chords you play, and the movements
-  of the sticks, triggers and touchpad fingers, like hand-drawn LFOs for a
-  filter, a pan or an effect. Every MIDI channel has its own loops, all playing
-  together: chords on channel 1, a bass line on channel 2, a filter sweep on
-  top. Overdub, play forward, backward or back and forth, pause and restart
-  everything at once. Lock a loop and recording again keeps it.
-- **Each axis loops on its own.** A stick's left-right and up-down moves, L2
-  and R2, a finger's two directions are separate loops, each with its own
-  length: record one now and the other later, clear one alone. Stretch a loop
-  or compress it in time, widen or narrow its swing, shorten or lengthen it,
-  or play it in steps, like a step sequencer, without recording it again.
-- **Clips, chains and the session screen.** Each channel keeps up to eight
-  clips. Launch them in time from the controller, and play them in chains,
-  up to eight per channel (see below).
-- **Arrange a song.** Lay out sections (intro, verse, chorus…) and, in each,
-  the clips, chains and silences every channel plays, on the bar or right
-  after one another; play the song from any section and see where it is in
-  real time.
-- **Edit your loops in a large piano roll.** Move a note, a chord or a
-  selection in time and pitch (onto the scale if you like), change their
-  length, delete them, shorten or lengthen the loop, all while it plays.
-- **Sessions.** Save every channel's clips, chains, the song, the preset, the
-  tonality and the tempo in one file, and open them again later; **New Song**
-  starts an empty one (after offering to save the one open).
-- **Chords made easy.** Named chords (`Fm9`, `Dbmaj7#11`, `Eb9sus4`…) with octave,
-  inversion and doubled bass root; choose a tonality and Arcadance offers only
-  the notes and chords of the scale. With voice leading, each chord takes the
-  inversion closest to the one before, so the voices move smoothly.
-- **Expressive controls.** Two sticks, two analog triggers and two touchpad
-  fingers, each with its own controller number, range and direction. Freeze a
-  stick at its current value; split the touchpad into four pads. Tilt the
-  controller (with motion sensors) to move two more controls and loop them.
-- **A Shift layer.** Hold or latch a Shift button and the buttons, the D-pad
-  and the touchpad pads play a second layout, while the sticks and fingers
-  reshape your loops.
-- **Sixteen channels, sixteen layouts.** Switch channels while playing; each
-  channel can have its own layout and a name (BASS, PADS…), so one controller
-  drives a whole multitimbral setup.
-- **Program Change** from a button (fixed, next, previous) or by sweeping a
-  stick through a range of sounds, with optional Bank Select.
-- **Play in time: internal clock, Ableton Link, or free.** Run Arcadance's own
-  clock, or join the tempo of your DAW, a phone app or any Link app on the
-  network. Loops snap to whole beats, start on the beat and follow tempo
-  changes; their notes can be quantized without delaying what you hear. Set
-  the tempo with the mouse wheel, type it, or tap it. With the internal clock,
-  drum machines and sequencers can follow Arcadance.
-- **Accents on your loops.** Give a stick or a trigger to the velocity and
-  it makes the notes you play, or the note loop already playing, louder or
-  softer, keeping the accents you played.
-- **Humanize** velocity and timing per channel.
-- **Set it up from the controller.** An edit mode puts a cursor on the screen:
-  open a control's settings, lock or clear a loop, duplicate a clip or edit a
-  chain from small menus, the same ones a right-click opens; the right stick
-  changes the channel. You choose which buttons select, open menus and go back
-  (Select and Menu can share one button); hold the Mode button for a help of
-  the screen you are on.
-- **Built for the stage.** One window that plays and edits at the same time,
-  one Play / Stop for the clips and the song, a PANIC button, and a mode
-  without any window.
-- **Three themes.** The default one, or Phosphor Blue and Phosphor Green:
-  lines on black, in the light tint of an 80s monochrome screen.
+Your hands already know it. Two analog sticks, two pressure triggers, a
+touchpad, a gyroscope and a dozen buttons: that is more expressive control than
+most MIDI controllers, it fits on your lap, and it costs nothing if you already
+own one. Arcadance turns all of it into music, and adds what a controller never
+had: a looper, clips, chains and a song arranger you drive with your thumbs.
 
-## Loops you can see
+## What it feels like
 
-Each module shows its loops as lanes, one per axis, each with its own length,
-playhead and controller number. Reshape them while they play, from the
-controller (Shift and a stick) or with the mouse wheel. The LOOP panels with
-nothing recorded yet show a grey screen; on two of them, chosen at random for
-each channel, a little 80s arcade game plays (Pac-Man, Tetris, Asteroids,
-Q*bert…), so you see at a glance which ones are free.
+- **Play chords, not notes.** Give each button a named chord (`Fm9`,
+  `Dbmaj7#11`, `Eb9sus4`…), pick a key, and every chord fits. Voice leading
+  keeps the voices close from one chord to the next, so a few buttons sound
+  like a keyboard player.
+- **Draw your automation by hand.** A stick is two CCs, a trigger one more, a
+  finger on the touchpad two more, the tilt of the controller two more. Sweep a
+  cutoff, ride a send, open a reverb, all at once, with a range and a direction
+  you choose for each.
+- **Loop as you go.** Hold Record, play, let go: notes and gestures loop
+  straight away, in time. A filter sweep becomes a hand-drawn LFO; each axis
+  has its own loop and its own length, so polyrhythms come by themselves.
+- **Loops that keep moving.** Stretch a loop up to 100 times slower or 20 times
+  faster, widen or narrow its swing, move it up or down, play it in steps like
+  a sequencer, let one loop modulate the depth of others. All while it plays,
+  from the controller.
+- **Stutter on demand.** A MIDI retrigger button repeats whatever is sounding
+  on the beat: 1/8 down to 1/64, triplets too, 1 to 16 times. Record it into
+  your loop and the stutter stays.
+- **Sixteen channels, one controller.** Drums on one channel, bass on another,
+  pads on a third, each with its own layout and name. Switch while playing;
+  every channel keeps looping.
 
-![The LOOP panels: a stick's X stretched, its Y narrowed and in steps; R2 widened](docs/media/lanes.png)
+## Build a track with your thumbs
+
+![The session screen: a column of clips per channel, each clip a small screen in its channel's colour, those playing outlined in green, and the chain of channel 1 underneath](docs/media/session.png)
+
+1. **Record clips.** Each channel keeps up to eight clips, each a full set of
+   loops. The session screen shows them all, a column per channel. Launch a clip
+   and it starts at the end of the current one, so changes always land on the
+   beat.
+2. **Chain them.** A chain plays a channel's clips in order: clip 3 twice, a
+   random clip four times, two bars of silence, clip 1 until you move on.
+   Eight chains per channel, each going on to the next or looping.
+3. **Arrange the song.** The song screen lays out sections (intro, drop,
+   break…), and in each one what every channel plays and when. Play from any
+   section, loop one while you jam over it, watch the playhead run across the
+   whole track.
+4. **Save the session.** Clips, chains, song, preset, key and tempo in one file.
+   Quitting asks before losing anything.
+
+![The chain of a channel: clip 3 twice, a random clip four times, clip 2 sixteen times, clip 1 until you move on, a random clip once](docs/media/chain.png)
+
+![The song screen: the whole song at scale on top, a row per section and a column per channel, the editor of a cell at the bottom](docs/media/song.png)
+
+## See every loop
+
+Each part of the controller has its own panel: what you play, what it sends,
+and its loops drawn as they play, each with its length, playhead and CC. The
+piano roll shows the notes you play and turns into a full editor for the note
+loop: move, stretch or delete notes, snap them to the key, shorten the loop,
+all without recording again.
 
 ![Loops of a stick, the triggers and a touchpad finger, playing beside the live controls](docs/media/loops.gif)
 
 ![The piano roll as a loop clip](docs/media/pianoroll.gif)
 
-## Clips, chains and the session screen
+## In time with everything
 
-![The session screen: a column of clips per channel, each clip a small screen in its channel's colour, those playing outlined in green, and the chain of channel 1 underneath](docs/media/session.png)
+- **Ableton Link**: join the tempo of Live, Bitwig, a phone app or any Link app
+  on your network. Loops snap to the beat and follow tempo changes.
+- **Internal clock** with MIDI Clock out, so drum machines and sequencers follow
+  Arcadance. Set the tempo with the wheel, type it, or tap it.
+- **Or play free**, no grid at all.
+- Quantize your notes to 1/8, 1/16 or 1/32 without delaying what you hear;
+  humanize velocity and timing for a looser feel.
 
-Each channel keeps up to **eight clips**, each a full set of its loops (notes,
-sticks, triggers, touchpad). The **session screen** shows them all, a column
-per channel, and plays them live. Each clip shows its name, a light that is
-green while it plays, its notes (or its movement when it has none) and how far
-it is in its turn:
+## Made for the stage
 
-- Open it with a controller button of your choice (the PS button by default),
-  the button with four squares in the top bar, or Tab.
-- Move with either stick or the D-pad; press L3 or R3 to launch a clip. It
-  starts at the end of the clip playing on that channel, in time, so changes
-  always land on the beat. Press it again to stop.
-- Put the cursor on an empty slot and record as usual: the take becomes a new
-  clip there.
-- Every channel plays its own clip: switch the drums on channel 1 while the
-  bass carries on on channel 2.
+- One window that plays and edits at the same time, fullscreen with **F11**.
+- One Play / Stop for every clip or the whole song, a PANIC button that silences
+  everything.
+- Set everything up from the controller: an edit mode puts a cursor on the
+  screen, and small menus open on any clip, loop or chain. Hold the Mode button
+  for a reminder of the controls of the screen you are on.
+- A Shift layer doubles every button, and Shift with a stick reshapes your loops
+  live.
+- Three looks: the default one, or Phosphor Blue and Phosphor Green, glowing
+  lines on black like an 80s monitor. Empty loop panels play little arcade games
+  while they wait.
 
-Under the clips, a **chain** of the active channel plays its clips in
-sequence, up to eight steps. Each channel has up to **eight chains** (A to H),
-chosen in the CHAIN cell at the end of the strip:
+![The modules follow the controller and show what each control sends](docs/media/modules.gif)
 
-![The chain of a channel: clip 3 twice, a random clip four times, clip 2 sixteen times, clip 1 until you move on, a random clip once](docs/media/chain.png)
-
-- Each step is a clip and how many times it plays: ×1 to ×64, or ∞ until you
-  move on. After the last step the chain goes back to the first, stops, or
-  goes on to another chain.
-- **R** picks one of the channel's clips at random each time the chain comes
-  to it, for an arrangement that never plays twice the same.
-- Set the steps from the controller (the right stick chooses the clip and the
-  repeats, L3 starts the chain or moves on, R3 empties a step) or with the
-  mouse (drag a clip onto a step, turn the wheel).
-- The CHAIN cell shows which chain you see (arrows, the wheel or the right
-  stick show another) and plays it; its menu sets what follows it, and
-  duplicates, renames or clears it.
-
-## Arrange a song
-
-![The song screen: the whole song at scale on top, a row per section and a column per channel, the editor of a cell at the bottom](docs/media/song.png)
-
-The **song screen** (press the Mode button again from the session screen, Tab,
-or the SONG button) lays your clips and chains out in time:
-
-- A song is a list of **sections**, as many as you like, each with its name
-  and its length in bars (or as long as its longest channel).
-- In each section, every channel plays **clips, chains and silences**, one
-  after the other or each on a bar of its own. Pick them from the list the +
-  opens, or add a clip or a chain to the song from its menu in the session
-  screen. After its repeats an item is silent, or loops on until the next one.
-- The top of the screen shows the whole song at scale, a lane per channel,
-  with a playhead in real time. The top bar's ▶ plays the song from the
-  section chosen (on the session screen, it plays the clips); ■ stops it.
-  Select on a section's name plays from there at the next bar; LOOP SECTION
-  loops the section playing.
-- Everything works from the controller (cursor, Select, Menu, the right stick
-  for lengths and repeats) and with the mouse (click, drag, wheel).
-
-## Getting started
+## Get started in five minutes
 
 1. Download the AppImage from the
    [latest release](https://github.com/Donmanouche/Arcadance/releases), make it
@@ -170,20 +121,24 @@ or the SONG button) lays your clips and chains out in time:
    ./Arcadance-*-x86_64.AppImage
    ```
 
-2. Connect the controller (USB or Bluetooth).
-3. Choose where the MIDI goes (Arcadance asks on the first launch), and select
-   that port as a MIDI input in your DAW.
-4. Play. Hold the Loop record button (R1 in the demo layout), play, release:
-   your loop plays.
+2. Plug in your controller (USB or Bluetooth). Arcadance names its buttons the
+   way they are printed on it.
+3. Choose where the MIDI goes (Arcadance asks the first time), and pick that
+   port as a MIDI input in your DAW.
+4. Load a synth on that track and play. Hold the Loop record button (R1 in the
+   demo layout), play, let go: your first loop is running.
 
-The user manual walks through every step, with your DAW on Linux.
+Click any control on screen to change what it plays, and hear the change at
+once. The [user manual](docs/Arcadance%20User%20Manual.pdf) covers everything,
+including setting up your DAW on Linux.
 
-### Touchpad access (Linux)
+![A mapping window: a chord on the Cross button](docs/media/mapping.png)
 
-To use the touchpad and the motion sensors (tilt), Linux needs a one-time
-permission. Without it the controller works, but without the touchpad, and
-Arcadance says so. Create the
-file `/etc/udev/rules.d/70-dualsense.rules` with:
+### Touchpad and tilt on a DualSense or DualShock 4
+
+On Linux, the touchpad and the motion sensors need a one-time permission
+(everything else works without it, and Arcadance tells you). Create the file
+`/etc/udev/rules.d/70-dualsense.rules` with:
 
 ```
 # USB
@@ -195,77 +150,34 @@ KERNEL=="hidraw*", SUBSYSTEM=="hidraw", KERNELS=="0005:054C:0CE6.*", MODE="0666"
 then run `sudo udevadm control --reload-rules && sudo udevadm trigger` and
 reconnect the controller.
 
-## The window
+### Your DAW does not see Arcadance?
 
-The window is an animated view built for the stage, which plays while it edits.
-**F11** toggles fullscreen, **Ctrl+S** saves the preset, **Ctrl+Q** quits.
-
-![The modules follow the controller and show what each control sends](docs/media/modules.gif)
-
-- One module per part of the controller: left and right sticks, triggers,
-  D-pad, touchpad. Each has an animated screen that follows the controller,
-  what it sends, and a LOOP panel.
-- Below the modules: the piano roll, the SCALE block (the tonality on a
-  one-octave keyboard; click to choose it) and the CHANNEL block (the active
-  channel in large digits and its name; its arrows or the wheel change the
-  channel, a click renames it).
-- A strip of pads for the buttons (✕ ○ □ △ in PlayStation colours): they flash
-  on every press and stay lit while their note or chord sounds.
-- At the top: the ☰ menu (New Song, sessions, Options, Themes, About), the
-  preset, ▶ / ■ for the clips or the song, the clock and its tempo, TAP, the
-  session and song screens and PANIC.
-
-Click a control (a pad, a D-pad direction, a touchpad zone, a stick, a LOOP
-panel) to set it up in a window over the view, and hear the change at once.
-Channel 1's layout plays on every channel that has none of its own; change a
-control on another channel and that channel gets its own layout. Buttons, D-pad
-directions and touchpad pads have a Normal and a Shift tab.
-
-![A mapping window: a chord on the Cross button](docs/media/mapping.png)
-
-**Presets**: the PRESET menu (with previous / next) opens a preset, and offers
-New…, Save as… and Delete…. A preset holds every channel's layout.
-
-**Tonality** (optional, shared by all channels), chosen by clicking the SCALE
-screen: a root and a scale (major, natural, harmonic and melodic minor, the
-modes, pentatonics, blues, whole tone). Arcadance then offers only the notes of
-the scale and, for chords, every chord of the key, degree by degree. Anything
-outside the scale stays possible, and is flagged.
-
-**Themes** (☰ menu): Default, Phosphor Blue or Phosphor Green; your choice is
-remembered.
-
-**Options** (☰ menu): the MIDI output, the clock and the loops' timing, the
-D-pad's response, humanization, the presets folder and the display.
+Most Linux music programs see Arcadance's MIDI port directly. Some only list
+hardware ports: Arcadance can then create virtual hardware ports for them
+(☰ › **Options** › MIDI INTERFACE › *VirMIDI ports*, with your administrator
+password). Choose `VirMIDI N-0` in Arcadance and `Virtual Raw MIDI` as the input
+of the other program.
 
 ![The Options window](docs/media/options.png)
 
-### MIDI ports on Linux
+## Without a window
 
-Most Linux music programs see Arcadance's own MIDI port directly. Some only see
-hardware MIDI ports: for them, Arcadance can create virtual hardware ports
-(☰ › **Options** › MIDI INTERFACE › *VirMIDI ports*, with your administrator
-password). Choose `VirMIDI N-0` in Arcadance and `Virtual Raw MIDI` as the input
-of the other program. Arcadance finds its port again at every start.
-
-## Playing without a window
+For a headless rig (a small computer under a synth, for instance):
 
 ```bash
 ./Arcadance-*-x86_64.AppImage --headless my-preset.json
 ```
 
-Arcadance then runs without a window: it creates a MIDI port named *Arcadance* to
-connect to your DAW and plays your preset, reloaded as soon as you save it.
-`--headless --help` lists the options (another port, the starting channel, a monitor of
-what is sent).
+Arcadance plays your preset without a window, on a MIDI port named *Arcadance*,
+and reloads it whenever you save it. `--headless --help` lists the options.
 
-## Coming from MidiPad
+## Good to know
 
-Arcadance was called MidiPad until version 0.238. On its first start it takes
-your MidiPad settings, presets and sessions over, once, and leaves the MidiPad
-folder as it was. Files made by MidiPad still open.
-
-## License
-
-Arcadance is free software under the [GNU General Public License v3](LICENSE).
-It uses [Ableton Link](https://github.com/Ableton/link) (GPL v2 or later).
+- **Presets** hold every channel's layout; they are plain text files you can
+  share. Sessions hold your loops, clips, chains and song.
+- **MidiPad users**: Arcadance was called MidiPad until version 0.238. It takes
+  your MidiPad settings, presets and sessions over on its first start, and opens
+  MidiPad files as they are.
+- **License**: Arcadance is free software under the
+  [GNU General Public License v3](LICENSE). It uses
+  [Ableton Link](https://github.com/Ableton/link) (GPL v2 or later).
