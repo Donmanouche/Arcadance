@@ -4816,11 +4816,11 @@ void GuiApp::drawNameDialog() {
             preset_.name = nameInput_;
             hasFile_ = true;
             dirty_ = true;
+            pushToEngine();  // the engine plays what the window shows, saved or not
             if (saveCurrent()) {
                 settings_.lastPreset = preset_.name;
                 persistSettings();
                 refreshPresetList();
-                pushToEngine();
             }
             ImGui::CloseCurrentPopup();
         } else if (saveAs(nameInput_)) {
