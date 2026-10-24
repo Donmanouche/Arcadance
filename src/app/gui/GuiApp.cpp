@@ -693,6 +693,18 @@ private:
     void newSong();  // an empty session: no clip, chain or section; the preset and tonality stay
     void saveSession();
     bool saveSessionAs(const std::string& name);
+    // The session as Save would write it (empty when the loops do not answer).
+    std::optional<Session> collectSession();
+    // What a session holds of the work (loops, clips, chains, song, mute and
+    // solo), as text: not the preset, tonality, tempo or active channel.
+    static std::string sessionPrint(Session session);
+    // Quitting: when the session changed since it was saved, opened or
+    // started, asks to save it first.
+    void quitAsked();
+    void drawQuitDialog();
+    std::optional<std::string> sessionPrint_;  // the session as saved, opened or started
+    int sessionPrintIn_ = 0;  // frames until it is taken (once the loops and chains are published)
+    bool openQuitDialog_ = false;
 
     // Presets.
     void refreshPresetList();
@@ -951,6 +963,7 @@ bool GuiApp::init() {
     ImGui_ImplSDL3_SetGamepadMode(ImGui_ImplSDL3_GamepadMode_Manual, nullptr, 0);
 
     log("Presets: " + settings_.presetsDir.string());
+    sessionPrintIn_ = 1;  // the session it starts with, empty: taken at the first frame
     return true;
 }
 
@@ -1098,11 +1111,14 @@ void GuiApp::handleEvent(const SDL_Event& e) {
     ImGui_ImplSDL3_ProcessEvent(&e);
     if (e.type == SDL_EVENT_QUIT ||
         (e.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED && e.window.windowID == SDL_GetWindowID(window_)))
-        guard([this] { quit_ = true; });
+        guard([this] { quitAsked(); });
 }
 
 void GuiApp::update() {
     finishVirMidiJob();
+    if (sessionPrintIn_ > 0 && --sessionPrintIn_ == 0)  // the session as opened or started
+        if (const auto session = collectSession())
+            sessionPrint_ = sessionPrint(*session);
     runtime_->setKey(settings_.key);
     if (const auto clear = editor_.takeClearLoopRequest())
         runtime_->clearLoop(clear->source, clear->axis);
@@ -1472,7 +1488,7 @@ void GuiApp::draw() {
     if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_S, ImGuiInputFlags_RouteGlobal))
         saveCurrent();
     if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_Q, ImGuiInputFlags_RouteGlobal))
-        guard([this] { quit_ = true; });
+        guard([this] { quitAsked(); });
     if (ImGui::Shortcut(ImGuiKey_F11, ImGuiInputFlags_RouteGlobal))
         toggleFullscreen();
     if (!ImGui::GetIO().WantTextInput && !overlaySpec_ && !optionsOpen_ && ImGui::Shortcut(ImGuiKey_Tab, ImGuiInputFlags_RouteGlobal)) {
@@ -3011,7 +3027,7 @@ void GuiApp::drawPerformance(const LiveState& live) {
             openAboutDialog_ = true;
         ImGui::Separator();
         if (ImGui::MenuItem("Quit", "Ctrl+Q"))
-            guard([this] { quit_ = true; });
+            guard([this] { quitAsked(); });
         ImGui::PopFont();
         ImGui::PopStyleVar();
         ImGui::EndPopup();
@@ -4494,6 +4510,7 @@ void GuiApp::openSession(const std::string& name) {
     songCursor_ = {};
     songEdited();
     sessionName_ = name;
+    sessionPrintIn_ = 10;  // taken once its loops and chains are published
     log("Session \"" + name + "\" opened.");
 }
 
@@ -4510,6 +4527,7 @@ void GuiApp::newSong() {
     songCursor_ = {};
     songEdited();
     sessionName_.reset();
+    sessionPrintIn_ = 10;
     log("New song.");
 }
 
@@ -4524,12 +4542,10 @@ void GuiApp::saveSession() {
     saveSessionAs(*sessionName_);
 }
 
-bool GuiApp::saveSessionAs(const std::string& name) {
+std::optional<Session> GuiApp::collectSession() {
     auto loops = runtime_->sessionLoops();
-    if (!loops) {
-        showError("Cannot save the session:\nthe loops did not answer.");
-        return false;
-    }
+    if (!loops)
+        return std::nullopt;
     Session session;
     session.preset = preset_;
     session.key = settings_.key;
@@ -4556,6 +4572,24 @@ bool GuiApp::saveSessionAs(const std::string& name) {
                 session.chains.push_back(std::move(chain));
         }
     }
+    return session;
+}
+
+std::string GuiApp::sessionPrint(Session session) {
+    session.preset = {};
+    session.key.reset();
+    session.channel = 0;
+    session.tempo = 0;
+    return midipad::sessionToJson(session).dump();
+}
+
+bool GuiApp::saveSessionAs(const std::string& name) {
+    auto collected = collectSession();
+    if (!collected) {
+        showError("Cannot save the session:\nthe loops did not answer.");
+        return false;
+    }
+    Session& session = *collected;
     try {
         midipad::saveSession(session, sessionPath(name));
     } catch (const std::exception& e) {
@@ -4563,8 +4597,49 @@ bool GuiApp::saveSessionAs(const std::string& name) {
         return false;
     }
     sessionName_ = name;
+    sessionPrint_ = sessionPrint(session);
     log("Session \"" + name + "\" saved (" + std::to_string(session.loops.size()) + " loops).");
     return true;
+}
+
+void GuiApp::quitAsked() {
+    std::optional<Session> now = collectSession();
+    if (now && sessionPrintIn_ > 0)  // just opened or started: nothing changed since
+        sessionPrint_ = sessionPrint(*now);
+    sessionPrintIn_ = 0;
+    if (now && sessionPrint_ && sessionPrint(*now) == *sessionPrint_)
+        quit_ = true;
+    else
+        openQuitDialog_ = true;
+}
+
+void GuiApp::drawQuitDialog() {
+    constexpr const char* kTitle = "Quit";
+    if (openQuitDialog_) {
+        ImGui::OpenPopup(kTitle);
+        openQuitDialog_ = false;
+    }
+    if (!beginDialog(kTitle))
+        return;
+    ImGui::Text("Save the session \"%s\" before quitting?", sessionName_.value_or("Untitled").c_str());
+    const int button = dialogButtons({"Save", "Don't save", "Cancel"});
+    if (button == 0) {
+        ImGui::CloseCurrentPopup();
+        if (sessionName_) {
+            if (saveSessionAs(*sessionName_))
+                quit_ = true;
+        } else {
+            afterSave_ = [this] { quit_ = true; };
+            saveSession();  // asks for a name, then runs afterSave_
+        }
+    }
+    if (button == 1) {
+        ImGui::CloseCurrentPopup();
+        quit_ = true;
+    }
+    if (button == 2 || ImGui::IsKeyPressed(ImGuiKey_Escape))
+        ImGui::CloseCurrentPopup();
+    endDialog();
 }
 
 void GuiApp::drawOpenSessionDialog() {
@@ -4707,6 +4782,7 @@ void GuiApp::drawDialogs() {
     drawOutputDialog();
     drawOpenSessionDialog();
     drawNewSongDialog();
+    drawQuitDialog();
     drawCopyDialog();
     drawAboutDialog();
 }
