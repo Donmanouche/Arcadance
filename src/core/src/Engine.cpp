@@ -875,62 +875,69 @@ void Engine::beginRecordHold() {
     }
 }
 
+// Ends the recordings of a channel's current clip: each loop long enough
+// plays, the others empty. True when one plays.
+bool Engine::finishRecording(int channel) {
+    bool finished = false;
+    for (int track = 0; track < kTrackCount; ++track) {
+        const int source = sourceOfTrack(track);
+        Loop& loop = loops_[loopIndex(channel, track)];
+        if (loop.state != LoopStatus::State::Recording)
+            continue;
+        if (loop.length < 2) {
+            loop.state = LoopStatus::State::Empty;
+            continue;
+        }
+        if (source == static_cast<int>(LoopSource::Notes)) {
+            auto& events = eventsOf(channel);
+            for (auto& e : events)  // a release delayed past the end ends with the loop
+                e.at = std::clamp(e.at, 0, loop.length - 1);
+            std::stable_sort(events.begin(), events.end(), [](const NoteEvent& a, const NoteEvent& b) { return a.at < b.at; });
+            // A note still on at the end (a toggle left on) ends there: so it
+            // also sounds from the end when the loop plays backwards.
+            std::bitset<128> held;
+            for (const NoteEvent& e : events)
+                held.set(e.note, e.on);
+            for (int n = 0; n < 128; ++n)
+                if (held.test(static_cast<std::size_t>(n)) && events.size() < kMaxNoteEvents)
+                    events.push_back({loop.length - 1, static_cast<std::uint8_t>(n), noteVelocity_[static_cast<std::size_t>(n)], false});
+            tidyNoteLoop(channel);
+        }
+        loop.state = LoopStatus::State::Playing;
+        const LoopPlayback playback = preset_->forChannel(channel).loops[static_cast<std::size_t>(source)].playback;
+        loop.position = playback == LoopPlayback::Reverse ? loop.length - 1 : 0;
+        loop.phase = loop.position;
+        // With the beat clock: a whole number of snaps, starting on the nearest one.
+        loop.syncBeats = 0;
+        if (clock_.on && snapBeats_ > 0) {
+            const double snap = snapBeats_;
+            const double recorded = beatAt(now_) - loop.startBeat;
+            loop.syncBeats = std::max(1.0, std::round(recorded / snap)) * snap;
+            loop.anchorBeat = std::round(loop.startBeat / snap) * snap;
+            int dir = 1;
+            syncedPhase(loop, playback, beatAt(now_), loop.phase, dir);
+            loop.direction = dir;
+            loop.position = std::clamp(static_cast<int>(loop.phase), 0, loop.length - 1);
+            if (source == static_cast<int>(LoopSource::Notes)) {
+                quantizeNoteLoop(channel);
+                tidyNoteLoop(channel);
+            }
+        }
+        if (source != static_cast<int>(LoopSource::Notes))
+            findMiddle(loop);
+        loop.direction = playback == LoopPlayback::Reverse ? -1 : 1;
+        loop.nextAt = now_;
+        loop.sentX = -1;
+        loop.turns = 0;
+        finished = true;
+    }
+    return finished;
+}
+
 void Engine::endRecordHold() {
     waiting_.fill(false);
     for (int channel = 0; channel < kChannelCount; ++channel) {
-        bool finished = false;  // a recording of this channel's current clip ends: it plays
-        for (int track = 0; track < kTrackCount; ++track) {
-            const int source = sourceOfTrack(track);
-            Loop& loop = loops_[loopIndex(channel, track)];
-            if (loop.state != LoopStatus::State::Recording)
-                continue;
-            if (loop.length < 2) {
-                loop.state = LoopStatus::State::Empty;
-                continue;
-            }
-            if (source == static_cast<int>(LoopSource::Notes)) {
-                auto& events = eventsOf(channel);
-                for (auto& e : events)  // a release delayed past the end ends with the loop
-                    e.at = std::clamp(e.at, 0, loop.length - 1);
-                std::stable_sort(events.begin(), events.end(), [](const NoteEvent& a, const NoteEvent& b) { return a.at < b.at; });
-                // A note still on at the end (a toggle left on) ends there: so it
-                // also sounds from the end when the loop plays backwards.
-                std::bitset<128> held;
-                for (const NoteEvent& e : events)
-                    held.set(e.note, e.on);
-                for (int n = 0; n < 128; ++n)
-                    if (held.test(static_cast<std::size_t>(n)) && events.size() < kMaxNoteEvents)
-                        events.push_back({loop.length - 1, static_cast<std::uint8_t>(n), noteVelocity_[static_cast<std::size_t>(n)], false});
-                tidyNoteLoop(channel);
-            }
-            loop.state = LoopStatus::State::Playing;
-            const LoopPlayback playback = preset_->forChannel(channel).loops[static_cast<std::size_t>(source)].playback;
-            loop.position = playback == LoopPlayback::Reverse ? loop.length - 1 : 0;
-            loop.phase = loop.position;
-            // With the beat clock: a whole number of snaps, starting on the nearest one.
-            loop.syncBeats = 0;
-            if (clock_.on && snapBeats_ > 0) {
-                const double snap = snapBeats_;
-                const double recorded = beatAt(now_) - loop.startBeat;
-                loop.syncBeats = std::max(1.0, std::round(recorded / snap)) * snap;
-                loop.anchorBeat = std::round(loop.startBeat / snap) * snap;
-                int dir = 1;
-                syncedPhase(loop, playback, beatAt(now_), loop.phase, dir);
-                loop.direction = dir;
-                loop.position = std::clamp(static_cast<int>(loop.phase), 0, loop.length - 1);
-                if (source == static_cast<int>(LoopSource::Notes)) {
-                    quantizeNoteLoop(channel);
-                    tidyNoteLoop(channel);
-                }
-            }
-            if (source != static_cast<int>(LoopSource::Notes))
-                findMiddle(loop);
-            loop.direction = playback == LoopPlayback::Reverse ? -1 : 1;
-            loop.nextAt = now_;
-            loop.sentX = -1;
-            loop.turns = 0;
-            finished = true;
-        }
+        const bool finished = finishRecording(channel);  // a recording of this channel's current clip ends: it plays
         if (finished && !clipPlaying_[static_cast<std::size_t>(channel)]) {
             // The clip was stopped (or new): its other loops start with this one.
             for (int track = 0; track < kTrackCount; ++track) {
@@ -2380,6 +2387,10 @@ bool Engine::copyClip(int channel, int from, int to) {
         dst.x = std::move(dstX);
         if (!src.x.empty() && !dst.x.empty())
             std::copy_n(src.x.begin(), std::min(src.x.size(), dst.x.size()), dst.x.begin());
+        if (dst.state == LoopStatus::State::Recording) {  // a take not finished: not copied
+            dst.state = LoopStatus::State::Empty;
+            dst.length = 0;
+        }
         dst.position = 0;
         dst.phase = 0;
         dst.turns = 0;
@@ -2388,6 +2399,8 @@ bool Engine::copyClip(int channel, int from, int to) {
         dst.sentX = -1;
     }
     noteEvents_[c * kClipSlots + static_cast<std::size_t>(to)] = noteEvents_[c * kClipSlots + static_cast<std::size_t>(from)];
+    if (loops_[slotIndex(channel, to, kNoteTrack)].state == LoopStatus::State::Empty)
+        noteEvents_[c * kClipSlots + static_cast<std::size_t>(to)].clear();
     if (to == currentSlot_[c] && clipPlaying_[c])
         startClipLoops(channel);
     return true;
@@ -2669,6 +2682,10 @@ void Engine::switchClip(int channel, int slot) {
         clipPlaying_[c] = false;
         return;
     }
+    // A take still recording into the clip left (Record held while a chain,
+    // the song or a launch moves on) ends there, as if Record were let go.
+    if (slot != currentSlot_[c])
+        finishRecording(channel);
     currentSlot_[c] = recordSlot_[c] = slot;
     if (clock_.on)  // synced loops start on the beat, from their start
         for (int track = 0; track < kTrackCount; ++track) {

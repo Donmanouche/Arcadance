@@ -551,6 +551,7 @@ private:
     void setHatDir(std::optional<HatDir> dir);
     void beginRecordHold();
     void endRecordHold();
+    bool finishRecording(int channel);
     void runLoops();
     void playMovementLoop(std::size_t loop, LoopPlayback playback, const double* syncedPhase = nullptr, int syncedDirection = 1);
     double beatAt(std::uint64_t t) const { return clock_.beat + (static_cast<double>(t) - static_cast<double>(clockAt_)) * clock_.tempo / 60e9; }
