@@ -4086,7 +4086,9 @@ void PerformanceView::drawButtons(const Mapping& m, const LiveState& live, float
         if (binding.type == ActionType::LoopRecord && live.loops[static_cast<std::size_t>(LoopSource::Notes)].status.overdub)
             dl->AddCircle(c, r + px(4), T::kOrange, 0, px(2.5f));  // overdubbing
         float ty = cy + r + px(11);
-        text(dl, gMedium, px(12), cx, ty, T::kLabel, fit(gMedium, px(12), label(pd.button), slot - 2), H::Center, V::Middle);
+        // "Touchpad click" is too long under its pad: the strip says "Touchpad".
+        const std::string name = pd.button == Button::Touchpad ? std::string("Touchpad") : label(pd.button);
+        text(dl, gMedium, px(12), cx, ty, T::kLabel, fit(gMedium, px(12), name, slot - 2), H::Center, V::Middle);
         ty += px(14);
         const std::string action = fit(gCondensed, px(14), compact(binding, flats_), slot - px(16));
         badge(dl, gCondensed, px(14), cx, ty, px(22), action, binding.isSet() ? T::kText : T::kDim,
