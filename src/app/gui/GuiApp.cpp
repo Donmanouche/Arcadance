@@ -4230,10 +4230,16 @@ void GuiApp::drawMappingOverlay(const LiveState& live) {
             }
             ImGui::Spacing();
         }
-        // The forms scroll when the window is too short; the buttons stay in view.
-        ImGui::SetNextWindowSizeConstraints(ImVec2(0, 0),
-                                            ImVec2(FLT_MAX, std::max(ImGui::GetFontSize() * 10,
-                                                                     viewport->WorkSize.y - ImGui::GetFontSize() * 9)));
+        // The forms scroll when the window is too short; the buttons stay in
+        // view: what is above (title, Copy from...) and below (the buttons) is
+        // taken from the page's height.
+        {
+            const ImGuiStyle& st = ImGui::GetStyle();
+            const float above = ImGui::GetCursorPosY();
+            const float below = st.ItemSpacing.y * 3 + st.ItemSpacing.y + ImGui::GetFrameHeight() + st.WindowPadding.y;
+            const float room = viewport->WorkSize.y - above - below - ImGui::GetFontSize();  // a margin
+            ImGui::SetNextWindowSizeConstraints(ImVec2(0, 0), ImVec2(FLT_MAX, std::max(ImGui::GetFontSize() * 10, room)));
+        }
         ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0, 0, 0, 0));
         ImGui::BeginChild("mappingbody", ImVec2(0, 0), ImGuiChildFlags_AutoResizeX | ImGuiChildFlags_AutoResizeY);
         ImGui::PopStyleColor();
