@@ -4315,7 +4315,7 @@ void GuiApp::drawMappingOverlay(const LiveState& live) {
         ImGui::SameLine();
         ImGui::BeginDisabled(!hasFile_ || !dirty_);
         if (ImGui::Button("Revert"))
-            openPreset(preset_.name);
+            ImGui::OpenPopup("Revert the preset");
         ImGui::EndDisabled();
         ImGui::SameLine();
         if (ImGui::Button("Close") || (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) &&
@@ -4323,6 +4323,18 @@ void GuiApp::drawMappingOverlay(const LiveState& live) {
                                        !editor_.tookEscape()))
             open = false;
         ImGui::PopFont();
+        // Revert loses every change since the preset was saved, on every channel: asked first.
+        if (beginDialog("Revert the preset")) {
+            ImGui::Text("Every change to \"%s\" since it was saved is lost.", preset_.name.c_str());
+            const int button = dialogButtons({"Revert", "Cancel"});
+            if (button == 0) {
+                openPreset(preset_.name);
+                ImGui::CloseCurrentPopup();
+            }
+            if (button == 1 || ImGui::IsKeyPressed(ImGuiKey_Escape))
+                ImGui::CloseCurrentPopup();
+            endDialog();
+        }
     }
     ImGui::End();
     ImGui::PopStyleColor(4);
