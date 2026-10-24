@@ -1247,9 +1247,10 @@ double Engine::stretchFactor(int stretch) {
 }
 
 void Engine::stretchLoop(int channel, int source, int axis, int steps) {
-    if (source < 0 || source >= kLoopSourceCount || source == static_cast<int>(LoopSource::Notes))
+    Loop* found = movementLoop(channel, source, axis);
+    if (!found)
         return;
-    Loop& loop = loops_[loopIndex(std::clamp(channel, 0, kChannelCount - 1), trackOf(source, axis))];
+    Loop& loop = *found;
     if (loop.state != LoopStatus::State::Playing)
         return;
     int next = loop.stretch + steps;
@@ -1364,9 +1365,10 @@ Engine::Shaping Engine::shaping(int channel) const {
 }
 
 void Engine::amplifyLoop(int channel, int source, int axis, int steps) {
-    if (source < 0 || source >= kLoopSourceCount || source == static_cast<int>(LoopSource::Notes))
+    Loop* found = movementLoop(channel, source, axis);
+    if (!found)
         return;
-    Loop& loop = loops_[loopIndex(std::clamp(channel, 0, kChannelCount - 1), trackOf(source, axis))];
+    Loop& loop = *found;
     if (loop.state != LoopStatus::State::Playing)
         return;
     // Step by step: 5 % below 100 %, 25 % above; across 100 % it stops there.
@@ -1435,9 +1437,10 @@ void Engine::shapePausing(ShapeMode mode, int track, int steps) {
 }
 
 void Engine::offsetLoop(int channel, int source, int axis, int steps) {
-    if (source < 0 || source >= kLoopSourceCount || source == static_cast<int>(LoopSource::Notes))
+    Loop* found = movementLoop(channel, source, axis);
+    if (!found)
         return;
-    Loop& loop = loops_[loopIndex(std::clamp(channel, 0, kChannelCount - 1), trackOf(source, axis))];
+    Loop& loop = *found;
     if (loop.state != LoopStatus::State::Playing || steps == 0)
         return;
     const int to = std::clamp(loop.offset + steps * kOffsetStep, -kMaxOffset, kMaxOffset);
@@ -2074,14 +2077,7 @@ bool Engine::setNoteLoopLength(int channel, int length) {
     Loop& loop = loops_[index];
     if (loop.state != LoopStatus::State::Playing || loop.length < 2)
         return false;
-    if (loop.syncBeats > 0) {  // whole beats, at the beat's length as recorded
-        const double perBeat = static_cast<double>(loop.length) / loop.syncBeats;
-        const double most = std::max(1.0, std::floor(kMaxLoopSamples / perBeat));
-        const double beats = std::clamp(std::round(length / perBeat), 1.0, most);
-        length = static_cast<int>(std::lround(beats * perBeat));
-        loop.syncBeats = beats;
-    }
-    length = std::clamp(length, 2, kMaxLoopSamples);
+    length = wholeBeatsLength(loop, length);
     if (length == loop.length)
         return true;
     fromLoop_ = true;
@@ -2120,14 +2116,7 @@ bool Engine::setAxisLoopLength(int channel, int source, int axis, int length) {
     Loop& loop = loops_[index];
     if (loop.state != LoopStatus::State::Playing || loop.length < 2)
         return false;
-    if (loop.syncBeats > 0) {  // whole beats, at the beat's length as recorded
-        const double perBeat = static_cast<double>(loop.length) / loop.syncBeats;
-        const double most = std::max(1.0, std::floor(kMaxLoopSamples / perBeat));
-        const double beats = std::clamp(std::round(length / perBeat), 1.0, most);
-        length = static_cast<int>(std::lround(beats * perBeat));
-        loop.syncBeats = beats;
-    }
-    length = std::clamp(length, 2, kMaxLoopSamples);
+    length = wholeBeatsLength(loop, length);
     if (length == loop.length)
         return true;
     if (length > loop.length) {
@@ -2279,15 +2268,36 @@ bool Engine::setModulation(int channel, int source, int axis, const LoopModulati
 }
 
 LoopModulation Engine::loopModulation(int channel, int source, int axis) const {
+    const Loop* loop = movementLoop(channel, source, axis);
+    return loop ? loop->modulation : LoopModulation{};
+}
+
+Engine::Loop* Engine::movementLoop(int channel, int source, int axis) {
     if (source < 0 || source >= kLoopSourceCount || source == static_cast<int>(LoopSource::Notes))
-        return {};
-    return loops_[loopIndex(std::clamp(channel, 0, kChannelCount - 1), trackOf(source, axis))].modulation;
+        return nullptr;
+    return &loops_[loopIndex(std::clamp(channel, 0, kChannelCount - 1), trackOf(source, axis))];
+}
+
+const Engine::Loop* Engine::movementLoop(int channel, int source, int axis) const {
+    return const_cast<Engine*>(this)->movementLoop(channel, source, axis);
+}
+
+int Engine::wholeBeatsLength(Loop& loop, int length) {
+    if (loop.syncBeats > 0) {  // whole beats, at the beat's length as recorded
+        const double perBeat = static_cast<double>(loop.length) / loop.syncBeats;
+        const double most = std::max(1.0, std::floor(kMaxLoopSamples / perBeat));
+        const double beats = std::clamp(std::round(length / perBeat), 1.0, most);
+        length = static_cast<int>(std::lround(beats * perBeat));
+        loop.syncBeats = beats;
+    }
+    return std::clamp(length, 2, kMaxLoopSamples);
 }
 
 void Engine::setModulationSendsCc(int channel, int source, int axis, bool sends) {
-    if (source < 0 || source >= kLoopSourceCount || source == static_cast<int>(LoopSource::Notes))
+    Loop* found = movementLoop(channel, source, axis);
+    if (!found)
         return;
-    Loop& loop = loops_[loopIndex(std::clamp(channel, 0, kChannelCount - 1), trackOf(source, axis))];
+    Loop& loop = *found;
     loop.sendsCc = sends;
     loop.sentX = -1;
 }
@@ -2437,9 +2447,10 @@ bool Engine::copyClip(int channel, int from, int to) {
 }
 
 void Engine::resetLoopShape(int channel, int source, int axis) {
-    if (source < 0 || source >= kLoopSourceCount || source == static_cast<int>(LoopSource::Notes))
+    Loop* found = movementLoop(channel, source, axis);
+    if (!found)
         return;
-    Loop& loop = loops_[loopIndex(std::clamp(channel, 0, kChannelCount - 1), trackOf(source, axis))];
+    Loop& loop = *found;
     loop.stretch = 0;
     loop.amplitude = 100;  // eased in
     loop.offset = 0;

@@ -642,6 +642,13 @@ private:
         int offset = 0;             // percent of the travel (offsetLoop)
         float offsetNow = 0;        // eased towards offset / 100
     };
+    // A movement loop of a channel's current clip; null for the note loop or
+    // a source out of range.
+    Loop* movementLoop(int channel, int source, int axis);
+    const Loop* movementLoop(int channel, int source, int axis) const;
+    // A synced loop's new length: whole beats at the beat's length as recorded
+    // (its sync beats follow); others as asked. Then within 2..kMaxLoopSamples.
+    static int wholeBeatsLength(Loop& loop, int length);
     static constexpr std::uint16_t kLifted = 0xFFFF;
     static void findMiddle(Loop& loop);  // a movement loop's middle, from its samples
     // A synced loop's place now, from the beat clock: its phase in samples and the way it goes.
