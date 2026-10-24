@@ -666,7 +666,7 @@ void MappingEditor::drawAxisLanes(int source, const Mapping& m, const LiveState&
     const bool tilt = source == static_cast<int>(LoopSource::Tilt);
     const ImU32 base = source == 0 ? T::kBlue : source == 1 ? T::kOrange : triggers ? T::kPink : source == 2 ? T::kCyan
                      : tilt ? T::kViolet : T::kOrange;
-    const ImU32 kViolet = IM_COL32(0xB0, 0x8C, 0xFF, 255);
+    const ImU32 kViolet = T::kViolet;
     auto alpha = [](ImU32 c, float a) {
         return (c & ~IM_COL32_A_MASK) | (static_cast<ImU32>(static_cast<float>((c >> IM_COL32_A_SHIFT) & 0xFF) * a) << IM_COL32_A_SHIFT);
     };

@@ -2899,7 +2899,7 @@ void GuiApp::drawHelpOverlay() {
                 {{menu.empty() ? "Menu" : menu}, menu.empty() ? "the menu " + unset : "the menu: lock, clear, back to 1x\xE2\x80\xA6"},
                 {{back.empty() ? "Back" : back}, back.empty() ? "close, leave " + unset : "close the window, or leave edit mode"},
                 {{shift, mode}, "leave edit mode"}};
-        performance_.drawHelp("EDIT", IM_COL32(0xB0, 0x8C, 0xFF, 255), closeHint, rows);
+        performance_.drawHelp("EDIT", PerformanceView::Theme::kViolet, closeHint, rows);
     } else {
         rows = {{{rec}, "held: record what you play or move;  a tap: stop the loops, or overdub"},
                 {{shift}, "the Shift layer; with a stick or a finger: the loops' lengths"},
@@ -3326,7 +3326,7 @@ void GuiApp::drawPerformance(const LiveState& live) {
                               : sessionHovered ? Theme::kControlBorder : Theme::kControl, px(5));
             dl->AddRect(sp, ImVec2(sp.x + sw, sp.y + lh), sessionView_ ? Theme::kGreen : Theme::kControlBorder, px(5), px(1));
             if (editView_) {  // edit mode: the button says so
-                constexpr ImU32 kViolet = IM_COL32(0xB0, 0x8C, 0xFF, 255);
+                constexpr ImU32 kViolet = Theme::kViolet;
                 dl->AddRectFilled(sp, ImVec2(sp.x + sw, sp.y + lh), IM_COL32(0x46, 0x38, 0x66, 255), px(5));
                 dl->AddRect(sp, ImVec2(sp.x + sw, sp.y + lh), kViolet, px(5), px(1));
                 const ImVec2 esz = bold->CalcTextSizeA(px(10.5f), FLT_MAX, 0, "EDIT");
@@ -3851,7 +3851,7 @@ void GuiApp::drawOptionsOverlay(const LiveState& live) {
         endCard();
 
         // Humanization: which channels, and how much.
-        beginCard("##cardhumanize", "HUMANIZE", IM_COL32(0xB0, 0x8C, 0xFF, 255));
+        beginCard("##cardhumanize", "HUMANIZE", Theme::kViolet);
         ImGui::PushFont(medium, 13.0f);
         Humanize& h = settings_.humanize;
         bool humanizeChanged = false;

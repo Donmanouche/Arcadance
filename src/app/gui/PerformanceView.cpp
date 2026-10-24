@@ -172,6 +172,10 @@ void led(ImDrawList* dl, ImVec2 c, float r, ImU32 col, bool on) {
     dl->AddCircleFilled(c, r, on ? col : shade(col, 0.35f));
 }
 
+// Each channel's colour, on the session and song screens (by channel % 8).
+constexpr ImU32 kChannelColors[] = {T::kBlue, T::kPink, T::kGreen, T::kOrange, T::kViolet,
+                                    T::kCyan, IM_COL32(0xFF, 0xD6, 0x40, 255), IM_COL32(0xFF, 0x78, 0x5A, 255)};
+
 // A movement track's colour (its module's) and short name, for the badges of a modulation.
 ImU32 trackColor(int track) {
     static constexpr ImU32 kColors[] = {T::kBlue, T::kOrange, T::kCyan, T::kOrange, T::kPink, T::kViolet};
@@ -1203,7 +1207,7 @@ void PerformanceView::drawPianoRoll(const Mapping& m, const LiveState& live, flo
     const LoopBinding& lb = m.loops[kNotes];
     const bool recording = st.state == LoopStatus::State::Recording;
     const bool clip = st.state == LoopStatus::State::Playing && st.length > 1;
-    const ImU32 kViolet = IM_COL32(0xB0, 0x8C, 0xFF, 255);
+    const ImU32 kViolet = T::kViolet;
     const ImU32 kMauve = IM_COL32(0xC4, 0x7C, 0xFF, 255);  // selected notes, in the editor
     const ImU32 kLive = IM_COL32(0xEB, 0xEE, 0xF2, 255);
     // No title bar: the roll fills its block, its state shows top right.
@@ -1759,8 +1763,6 @@ std::optional<PerformanceView::SessionAction> PerformanceView::drawSession(const
     const ImVec2 origin = ImGui::GetCursorScreenPos();
     const float width = ImGui::GetContentRegionAvail().x;
     constexpr int kColumns = 8, kSlots = Engine::kClipSlots;
-    static constexpr ImU32 kChannelColors[] = {T::kBlue, T::kPink, T::kGreen, T::kOrange, IM_COL32(0xB0, 0x8C, 0xFF, 255),
-                                               T::kCyan, IM_COL32(0xFF, 0xD6, 0x40, 255), IM_COL32(0xFF, 0x78, 0x5A, 255)};
     const float gap = px(6), colW = (width - gap * (kColumns - 1)) / kColumns;
     const float stripH = px(104);  // the chain, under the grid
     const float headH = px(34), stopH = px(28);
@@ -2055,8 +2057,6 @@ int PerformanceView::nextRepeats(int repeats, int steps) {
 // `cursor` the step under the controller's cursor (kChainSteps: the end), -1 none.
 std::optional<PerformanceView::SessionAction> PerformanceView::drawChainStrip(ImDrawList* dl, const LiveState& live, ImVec2 at, float w, float h,
                                                                                 int cursor) {
-    static constexpr ImU32 kChannelColors[] = {T::kBlue, T::kPink, T::kGreen, T::kOrange, IM_COL32(0xB0, 0x8C, 0xFF, 255),
-                                               T::kCyan, IM_COL32(0xFF, 0xD6, 0x40, 255), IM_COL32(0xFF, 0x78, 0x5A, 255)};
     std::optional<SessionAction> action;
     const int ch = live.channel;
     const auto c = static_cast<std::size_t>(ch);
@@ -2174,9 +2174,9 @@ std::optional<PerformanceView::SessionAction> PerformanceView::drawChainStrip(Im
             static const LiveState::Clip kNone{};
             const LiveState::Clip& clip = shown >= 0 ? live.clips[c * Engine::kClipSlots + static_cast<std::size_t>(shown)] : kNone;
             const ImU32 outline = playsNow ? T::kGreen : isNext ? alpha(T::kGreen, blink ? 0.9f : 0.3f) : hovered ? T::kControlBorder : 0;
-            screen(dl, a, b, random ? IM_COL32(0xB0, 0x8C, 0xFF, 255) : chColor, [&] {  // a screen, its state around it
+            screen(dl, a, b, random ? T::kViolet : chColor, [&] {  // a screen, its state around it
             dl->AddRectFilled(ImVec2(x0 + px(2), y0 + px(6)), ImVec2(x0 + px(5), y1 - px(6)), chColor, px(1));
-            const ImU32 kViolet = IM_COL32(0xB0, 0x8C, 0xFF, 255);
+            const ImU32 kViolet = T::kViolet;
             if (random) {
                 text(dl, gBold, px(26), x0 + px(12), y0 + px(19), kViolet, "R", H::Left, V::Middle);
                 text(dl, gBold, px(7.5f), x0 + px(12), y1 - px(10), T::kDim,
@@ -2392,10 +2392,8 @@ std::optional<PerformanceView::SongAction> PerformanceView::drawSong(const LiveS
     const ImVec2 origin = ImGui::GetCursorScreenPos();
     const float width = ImGui::GetContentRegionAvail().x, height = ImGui::GetContentRegionAvail().y;
     constexpr int kColumns = 8;
-    static constexpr ImU32 kChannelColors[] = {T::kBlue, T::kPink, T::kGreen, T::kOrange, IM_COL32(0xB0, 0x8C, 0xFF, 255),
-                                               T::kCyan, IM_COL32(0xFF, 0xD6, 0x40, 255), IM_COL32(0xFF, 0x78, 0x5A, 255)};
-    static constexpr ImU32 kSectionColors[] = {IM_COL32(0x78, 0x82, 0x96, 255), T::kBlue, T::kOrange, T::kPink, IM_COL32(0xB0, 0x8C, 0xFF, 255), T::kGreen, T::kCyan};
-    constexpr ImU32 kViolet = IM_COL32(0xB0, 0x8C, 0xFF, 255);
+    static constexpr ImU32 kSectionColors[] = {IM_COL32(0x78, 0x82, 0x96, 255), T::kBlue, T::kOrange, T::kPink, T::kViolet, T::kGreen, T::kCyan};
+    constexpr ImU32 kViolet = T::kViolet;
     const int sections = static_cast<int>(song.sections.size());
     const double bar = std::max(live.beatsPerBar, 1);
     // The channels in use, eight at a time, each column and lane its usual size.
@@ -3850,7 +3848,7 @@ void PerformanceView::drawTilt(const Mapping& m, const LiveState& live, float x,
 void PerformanceView::drawPadLanes(ImDrawList* dl, const Mapping& m, const LiveState& live, float x, float w, float loopY,
                                    float boxTop, float boxBottom, float timelineH) {
     const ImU32 fingerColors[] = {T::kCyan, T::kOrange};
-    const ImU32 kViolet = IM_COL32(0xB0, 0x8C, 0xFF, 255);
+    const ImU32 kViolet = T::kViolet;
     const LoopStatus& st = live.loops[static_cast<std::size_t>(LoopSource::Notes)].status;
     const bool recording = st.state == LoopStatus::State::Recording;
     const bool playing = st.state == LoopStatus::State::Playing;
