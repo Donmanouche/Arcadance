@@ -461,6 +461,20 @@ void Engine::reset() {
     fingerZone_ = {};
     fingerDown_ = {};
     triggerDown_ = {};
+    // Nothing is held any more: the tilt's button, the Mode control (its help
+    // closes), the pushes moving the session screen's cursor; the sticks and
+    // triggers back at rest (a Velocity or Transpose axis shapes nothing).
+    buttonsDown_ = 0;
+    tiltActive_ = false;  // its center is kept
+    if (modeSlot_ >= 0 && modeHelp_)
+        pushSessionEvent(SessionEvent::HelpOff);
+    modeSlot_ = -1;
+    modeHelp_ = false;
+    stickNav_ = {};
+    hatNav_.reset();
+    stretchFinger_ = -1;
+    stickPosition_.fill(0.5f);
+    triggerPosition_ = {};
 }
 
 // A control's normal binding in `m` (unbound: a touchpad zone of a finger
