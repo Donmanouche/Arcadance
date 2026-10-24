@@ -329,6 +329,7 @@ private:
     std::atomic<int> dpadSettlePress_, dpadSettleRelease_;
     std::atomic<std::uint64_t> humanize_;
     std::shared_ptr<MidiOutput> output_;  // main thread's view, for stats
+    std::shared_ptr<MidiOutput> retiredOutput_;  // the one before, closed on this thread
 
     midipad::SpscRing<Report, 4096> reports_;
     midipad::SpscRing<SentNote, 2048> notes_;

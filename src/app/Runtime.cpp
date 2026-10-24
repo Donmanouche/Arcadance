@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <utility>
 #include <cmath>
 #include <cstdio>
 
@@ -136,7 +137,9 @@ void Runtime::setPreset(std::shared_ptr<const Preset> preset) {
 }
 
 void Runtime::setOutput(std::shared_ptr<MidiOutput> output) {
-    output_ = output;
+    // The output replaced stays held here until the next change: closing it
+    // (ALSA, memory) then happens on this thread, not the real-time one.
+    retiredOutput_ = std::exchange(output_, output);
     std::lock_guard lock(pendingMutex_);
     pendingOutput_ = std::move(output);
     hasPending_.store(true, std::memory_order_release);
