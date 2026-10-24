@@ -166,12 +166,13 @@ void Engine::tick(std::uint64_t nowNs) {
         if (program < 0 || now_ - pendingSince_[k] < kProgramSettleNs)
             continue;
         pendingProgram_[k] = -1;
-        const auto ch = static_cast<std::size_t>(channel_);
+        const int channel = pendingChannel_[k];
+        const auto ch = static_cast<std::size_t>(channel);
         const int msb = pendingBank_[k][0], lsb = pendingBank_[k][1];
         const bool bankChanged = (msb >= 0 && lastCc_[ch][0] != msb) || (lsb >= 0 && lastCc_[ch][32] != lsb);
         if (program != axisProgram_[k] || program != program_[ch] || bankChanged) {
             axisProgram_[k] = program;
-            sendProgram(channel_, program, msb, lsb);
+            sendProgram(channel, program, msb, lsb);
         }
     }
     // Humanized notes now due, oldest first.
@@ -795,6 +796,7 @@ void Engine::sendAxis(const AxisBinding& binding, float position, int key, bool 
             pending = value;
             pendingBank_[static_cast<std::size_t>(key)] = {binding.bankMsb, binding.bankLsb};
             pendingSince_[static_cast<std::size_t>(key)] = now_;
+            pendingChannel_[static_cast<std::size_t>(key)] = channel_;
         }
         return;
     }

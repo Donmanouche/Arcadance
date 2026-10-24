@@ -795,6 +795,7 @@ private:
     std::array<std::array<std::int16_t, 2>, kProgramControls> pendingBank_{};  // MSB, LSB
     std::array<int, kProgramControls> axisProgram_{};  // the last one an axis sent
     std::array<std::uint64_t, kProgramControls> pendingSince_{};
+    std::array<int, kProgramControls> pendingChannel_{};  // where the control moved: the program goes there
     std::uint64_t holdStartedAt_ = 0;  // when Record went down
     std::array<std::array<float, 2>, kFingerCount> fingerPosition_{};  // raw touchpad X, Y
     std::array<bool, kFingerCount> fingerDown_{};
