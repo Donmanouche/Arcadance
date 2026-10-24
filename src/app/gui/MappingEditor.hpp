@@ -51,6 +51,8 @@ public:
 
     // A title for that control: "Cross", "D-pad: Up", "Left stick X"...
     static std::string controlTitle(const std::string& spec);
+    // A control spec's parts: "axes:left_x,left_y" -> {"axes", "left_x", "left_y"}.
+    static std::vector<std::string> splitSpec(const std::string& spec);
 
 private:
     struct Selection {

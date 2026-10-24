@@ -90,18 +90,6 @@ void axisValueBar(const AxisBinding& a, float position, float width) {
     ImGui::ProgressBar(p, ImVec2(width, 0), overlay);
 }
 
-std::vector<std::string> splitSpec(const std::string& spec) {
-    std::vector<std::string> parts;
-    std::size_t start = 0;
-    for (std::size_t i = 0; i <= spec.size(); ++i) {
-        if (i == spec.size() || spec[i] == ':' || spec[i] == ',') {
-            parts.push_back(spec.substr(start, i - start));
-            start = i + 1;
-        }
-    }
-    return parts;
-}
-
 // Bank Select before a Program Change: MSB (CC 0) and LSB (CC 32), each -1 when not sent.
 bool inputBankSelect(std::int16_t& msb, std::int16_t& lsb) {
     bool changed = false;
@@ -137,6 +125,18 @@ bool inputBankSelect(std::int16_t& msb, std::int16_t& lsb) {
 }
 
 }  // namespace
+
+std::vector<std::string> MappingEditor::splitSpec(const std::string& spec) {
+    std::vector<std::string> parts;
+    std::size_t start = 0;
+    for (std::size_t i = 0; i <= spec.size(); ++i) {
+        if (i == spec.size() || spec[i] == ':' || spec[i] == ',') {
+            parts.push_back(spec.substr(start, i - start));
+            start = i + 1;
+        }
+    }
+    return parts;
+}
 
 std::string MappingEditor::controlTitle(const std::string& spec) {
     const auto p = splitSpec(spec);

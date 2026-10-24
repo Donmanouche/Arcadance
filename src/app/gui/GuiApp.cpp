@@ -173,12 +173,7 @@ Mapping withChannelOneControls(Mapping m, const Mapping& first) {
 // The binding a control spec ("button:south", "dpad:up", "zone:1:top_left")
 // names in `m`, if it names one.
 const TriggerBinding* specBinding(const Mapping& m, const std::string& spec) {
-    std::vector<std::string> p;
-    for (std::size_t at = 0; at <= spec.size();) {
-        const std::size_t next = std::min(spec.find(':', at), spec.size());
-        p.push_back(spec.substr(at, next - at));
-        at = next + 1;
-    }
+    const std::vector<std::string> p = MappingEditor::splitSpec(spec);
     if (p.size() == 2 && p[0] == "button")
         if (auto b = parseButton(p[1]); b && !isDpad(*b))
             return &m.buttons[static_cast<std::size_t>(*b)];
@@ -191,16 +186,11 @@ const TriggerBinding* specBinding(const Mapping& m, const std::string& spec) {
     return nullptr;
 }
 
-// Copies the control a spec names ("button:south", "axes:left_x:left_y", "finger:1"...) from one
+// Copies the control a spec names ("button:south", "axes:left_x,left_y", "finger:1"...) from one
 // mapping into another: its bindings, its Shift layer's, and a whole stick's, the triggers' or a
 // finger's loop settings. False when the spec names nothing to copy.
 bool copyControl(const Mapping& from, Mapping& to, const std::string& spec) {
-    std::vector<std::string> p;
-    for (std::size_t at = 0; at <= spec.size();) {
-        const std::size_t next = std::min(spec.find(':', at), spec.size());
-        p.push_back(spec.substr(at, next - at));
-        at = next + 1;
-    }
+    const std::vector<std::string> p = MappingEditor::splitSpec(spec);
     if (p.size() == 2 && p[0] == "button")
         if (auto b = parseButton(p[1]); b && !isDpad(*b)) {
             const auto i = static_cast<std::size_t>(*b);
