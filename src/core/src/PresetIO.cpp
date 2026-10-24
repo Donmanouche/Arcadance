@@ -677,6 +677,15 @@ Json mappingToJson(const Mapping& m) {
 
 }  // namespace
 
+std::string truncateUtf8(std::string_view text, std::size_t maxBytes) {
+    if (text.size() <= maxBytes)
+        return std::string(text);
+    std::size_t n = maxBytes;
+    while (n > 0 && (static_cast<unsigned char>(text[n]) & 0xC0) == 0x80)  // text[n] continues a character
+        --n;
+    return std::string(text.substr(0, n));
+}
+
 std::optional<std::uint8_t> noteFromJson(const Json& value) {
     if (value.is_number_integer()) {
         const int n = value.get<int>();
@@ -728,7 +737,7 @@ Preset presetFromJson(const Json& j) {
             }
             if (channel < 1 || channel > kChannelCount || !value.is_string())
                 fail("channel_names." + key, "expected a channel number from 1 to 16 and a name");
-            p.channelNames[static_cast<std::size_t>(channel - 1)] = value.get<std::string>().substr(0, 24);
+            p.channelNames[static_cast<std::size_t>(channel - 1)] = truncateUtf8(value.get<std::string>(), 24);
         }
     }
     if (j.contains("chromatic_channels")) {

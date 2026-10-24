@@ -6,6 +6,8 @@
 
 #include <filesystem>
 #include <stdexcept>
+#include <string>
+#include <string_view>
 
 namespace midipad {
 
@@ -26,5 +28,9 @@ void savePreset(const Preset& preset, const std::filesystem::path& file);
 
 // Reads a note given as a MIDI number or a name like "C4".
 std::optional<std::uint8_t> noteFromJson(const nlohmann::ordered_json& value);
+
+// The longest start of `text` that fits in `maxBytes`, never cutting a UTF-8
+// character in two (a name cut in the middle of an "é" could not be saved).
+std::string truncateUtf8(std::string_view text, std::size_t maxBytes);
 
 }  // namespace midipad

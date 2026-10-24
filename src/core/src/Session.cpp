@@ -344,7 +344,7 @@ Session sessionFromJson(const Json& j) {
             if (o.contains("name")) {
                 if (!o["name"].is_string())
                     fail(where + ".name", "expected a name");
-                c.name = o["name"].get<std::string>().substr(0, 24);
+                c.name = truncateUtf8(o["name"].get<std::string>(), 24);
             }
             if (o.contains("shown")) {
                 if (!o["shown"].is_boolean())
@@ -386,7 +386,7 @@ Session sessionFromJson(const Json& j) {
             if (o.contains("name")) {
                 if (!o["name"].is_string())
                     fail(where + ".name", "expected a name");
-                sec.name = o["name"].get<std::string>().substr(0, 24);
+                sec.name = truncateUtf8(o["name"].get<std::string>(), 24);
             }
             sec.bars = readInt(o, "bars", 1, kMaxSectionBars, 8, where);
             if (o.contains("fit")) {

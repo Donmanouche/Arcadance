@@ -4716,7 +4716,7 @@ void GuiApp::drawRenameDialog() {
     const int button = dialogButtons({"OK", "Cancel"});
     if (button == 0 || enter) {
         if (section || (renameChannel_ >= 0 && renameChannel_ < kChannelCount)) {
-            std::string name = renameInput_.substr(0, 24);
+            std::string name = truncateUtf8(renameInput_, 24);
             while (!name.empty() && name.back() == ' ')
                 name.pop_back();
             if (section) {
