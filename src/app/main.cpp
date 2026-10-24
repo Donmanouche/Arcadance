@@ -1,4 +1,4 @@
-// midipad: the window by default, the command-line player with --headless.
+// arcadance: the window by default, the command-line player with --headless.
 
 #include "Headless.hpp"
 #include "gui/GuiApp.hpp"

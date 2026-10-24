@@ -1,4 +1,4 @@
-// The MidiPad window: preset management, MIDI output, mapping editor, log.
+// The Arcadance window: preset management, MIDI output, mapping editor, log.
 //
 // The main thread only draws and edits; the Runtime's input thread plays.
 // Every edit is pushed to the engine at once, so changes are heard live, and
@@ -291,7 +291,7 @@ void copyParts(const Mapping& from, Mapping& to, unsigned parts) {
 
 constexpr const char* kReleasesUrl = "https://github.com/Donmanouche/Arcadance/releases/latest";
 
-// Asks GitHub for the latest release (through curl, so MidiPad links no
+// Asks GitHub for the latest release (through curl, so Arcadance links no
 // network library): what to tell the user.
 struct UpdateCheck {
     bool ok = false;
@@ -892,7 +892,7 @@ bool GuiApp::init() {
     runtime_->setNavButtons(settings_.navSelect, settings_.navMenu, settings_.navBack);
 
     // At standard resolution, a scaled screen's compositor stretches the
-    // window, drawn at its size in points: fewer pixels for MidiPad to draw.
+    // window, drawn at its size in points: fewer pixels for Arcadance to draw.
     standardResolution_ = settings_.standardResolution;
     if (!SDL_CreateWindowAndRenderer("Arcadance", 1080, 846,
                                      SDL_WINDOW_RESIZABLE | (standardResolution_ ? 0 : SDL_WINDOW_HIGH_PIXEL_DENSITY),
@@ -4461,7 +4461,7 @@ void GuiApp::openSession(const std::string& name) {
         settings_.lastPreset = preset_.name;
     }
     settings_.key = session.key;
-    // Its tempo: for the internal clock, or for a Link session MidiPad is
+    // Its tempo: for the internal clock, or for a Link session Arcadance is
     // alone in (another app's tempo is never changed by opening a session).
     if (session.tempo > 0) {
         const LiveState now = runtime_->live();

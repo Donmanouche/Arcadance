@@ -202,7 +202,7 @@ void GamepadInput::tryOpen() {
     message += hasAccel_ ? ", motion sensors)" : ")";
     log_(message);
     if (!hasTouchpad_ && touchpadExpected_)
-        log_("  The DualSense touchpad needs access to /dev/hidraw*: see the udev rule in the README.");
+        log_("  The touchpad needs access to /dev/hidraw*: see the udev rule in the README.");
 
     captureBaseline();
 }

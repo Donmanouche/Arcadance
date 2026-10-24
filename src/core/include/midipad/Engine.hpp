@@ -157,8 +157,8 @@ public:
     int transposeSteps(int semitones) const;
 
     // Loops, one per LoopSource and channel. A LoopRecord binding held records,
-    // on the active channel, each stick, touchpad finger (axis mode) or the
-    // triggers that move, X and Y, into their loops (when a finger is lifted
+    // on the active channel, each stick, touchpad finger (axis mode), the
+    // triggers or the tilt that move, X and Y, into their loops (when a finger is lifted
     // nothing is recorded nor, later, played), and the notes played (buttons,
     // D-pad, triggers as buttons, touchpad pads) into the note loop, which cuts
     // what still sounds when it starts over. On release each recording plays
@@ -168,8 +168,8 @@ public:
     // channel's note loop plays, it turns overdub on or off: the notes then
     // played (buttons, D-pad, triggers, pads) join the loop where it plays;
     // otherwise it stops the active channel's loops.
-    // While Shift is on, Record held and a stick, the triggers or a finger
-    // (axis mode) moving locks or unlocks that loop instead (once a hold),
+    // While Shift is on, Record held and a stick, the triggers, a finger
+    // (axis mode) or the tilt moving locks or unlocks that loop instead (once a hold),
     // and two taps within kDoubleTapMs lock or unlock the note loop: the first
     // tap's overdub is then taken back, and its stop waits that long.
     static constexpr int kLoopRateHz = 200;
@@ -178,12 +178,12 @@ public:
     static constexpr int kLoopTapMs = 500;
     static constexpr int kDoubleTapMs = 350;
     // Movement loops keep their two axes apart: a stick's left-right (X) and
-    // up-down (Y), a finger's, L2 (X) and R2 (Y). Each axis records when it
+    // up-down (Y), a finger's, the tilt's, L2 (X) and R2 (Y). Each axis records when it
     // moves (an axis not enabled never does) and has its own length, stretch,
     // amplitude and sync; `axis` is 0 for X, 1 for Y. The note loop has one.
     LoopStatus loopStatus(int channel, int source, int axis = 0) const;
     // Clips: each channel keeps kClipSlots clips, each a full set of loops
-    // (notes, sticks, triggers, fingers). A channel plays one clip at a time,
+    // (notes, sticks, triggers, fingers, tilt). A channel plays one clip at a time,
     // independently of the others; the loops above are those of its current
     // clip, which Record records into. launchClip, while the current clip
     // plays, waits for the end of its turn (its note loop's, else its longest
@@ -542,7 +542,8 @@ private:
     void start(const Sounding& s);
     void stop(const Sounding& s);
     void sendCc(int channel, int cc, int value);
-    // `key` names the control (an Axis, then 6 + finger * 2 + 0/1 for X/Y);
+    // `key` names the control (an Axis, then 6 + finger * 2 + 0/1 for X/Y,
+    // then kTiltControl + 0/1 for the tilt's X/Y);
     // `atRest`: a stick back at its center, a trigger released.
     void sendAxis(const AxisBinding& binding, float position, int key, bool atRest);
     void sendProgram(int channel, int program, int bankMsb, int bankLsb);
@@ -803,11 +804,11 @@ private:
     std::uint32_t buttonsDown_ = 0;  // a bit per Button held (not the D-pad's)
     std::array<float, 2> triggerPosition_{};                       // [0, 1], L2 and R2
     std::bitset<kSlotCount> recordHolders_;
-    // LoopStretch: who holds it, the stick turns not yet a whole step, the
-    // finger sliding and where it last counted, when 1x was reached per source.
+    // Shift: who holds it, each stick's turn along X and along Y not yet a
+    // whole step, the finger sliding and where it last counted.
     std::bitset<kSlotCount> stretchHolders_;
     bool shiftLatched_ = false;  // a Shift binding in toggle mode, pressed once
-    std::array<double, 2> stickStretchRest_{}, stickAmplitudeRest_{};
+    std::array<double, 2> stickTurnX_{}, stickTurnY_{};
     int stretchFinger_ = -1;
     float stretchFingerX_ = 0, stretchFingerY_ = 0;
     std::array<std::uint64_t, kTrackCount> stretchPausedUntil_{};
@@ -838,8 +839,8 @@ private:
     std::uint64_t hatNavNext_ = 0;
     std::optional<SessionEvent> stickPush(int stick) const;  // where a stick is pushed, past kNavPush (or held)
     void navigate();
-    // Shift + Record: which sources toggled their lock this hold (a finger
-    // counts for both), and whether one did.
+    // Shift + Record: which tracks (axes) toggled their lock this hold, and
+    // whether one did.
     void lockFromControls();
     std::array<bool, kTrackCount> lockToggled_{};
     bool lockedThisHold_ = false;

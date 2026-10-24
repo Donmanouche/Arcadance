@@ -18,7 +18,7 @@
 #include <thread>
 #include <vector>
 
-// Where the beat comes from: none (free), MidiPad's own clock, or Ableton Link.
+// Where the beat comes from: none (free), Arcadance's own clock, or Ableton Link.
 enum class ClockMode : std::uint8_t { Free, Internal, Link };
 
 // Something the input thread reports to the main thread.
@@ -159,7 +159,7 @@ struct LiveState {
     float velocityLoop = 0;  // the same on the note loop's notes
     int transposeNotes = 0, transposeLoop = 0;
     // The beat clock: which one, its tempo, the beat now, how many other apps
-    // take part (Ableton Link); the beats of a bar MidiPad counts.
+    // take part (Ableton Link); the beats of a bar Arcadance counts.
     ClockMode clock = ClockMode::Free;
     double tempo = 120, beat = 0;
     int linkPeers = 0, beatsPerBar = 4;
@@ -176,8 +176,9 @@ struct RuntimeStats {
 };
 
 // Owns the real-time input thread: it polls the gamepad, runs the engine and
-// sends MIDI. Every method is called from the main thread and never waits for
-// the input thread; changes reach it on its next poll.
+// sends MIDI. Every method is called from the main thread and, but
+// sessionLoops() (up to a second), never waits for the input thread; changes
+// reach it on its next poll.
 //
 // SDL must be initialized with SDL_INIT_GAMEPAD and gamepad/joystick events
 // disabled before a Runtime is created.
@@ -275,7 +276,7 @@ public:
         key_.store(key ? key->root * 256 + static_cast<int>(key->scale) : -1, std::memory_order_relaxed);
     }
 
-    // The beat clock. Free, MidiPad keeps no beat. Internal, its own clock
+    // The beat clock. Free, Arcadance keeps no beat. Internal, its own clock
     // runs at the internal tempo. Link, it joins the Ableton Link session on
     // the local network. With a clock, loops recorded snap to `snapBeats` (0:
     // free) and play from its beat, their notes on a grid of `quantize` steps

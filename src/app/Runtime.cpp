@@ -744,7 +744,7 @@ void Runtime::run(std::stop_token stop, Options options, std::shared_ptr<const P
                 if (internal && midiClockOut_.load(std::memory_order_relaxed))  // external devices: Start from the beat's start, or Stop
                     tap.sendClock(MidiMessage::realtime(play ? 0xFA : 0xFC));
                 if (clock_.load(std::memory_order_relaxed) == ClockMode::Link && startStopSync_.load(std::memory_order_relaxed)) {
-                    // And the session, for the other apps; MidiPad is already there.
+                    // And the session, for the other apps; Arcadance is already there.
                     auto state = link_->link.captureAudioSessionState();
                     state.setIsPlaying(play, link_->link.clock().micros());
                     link_->link.commitAudioSessionState(state);
@@ -788,7 +788,7 @@ void Runtime::run(std::stop_token stop, Options options, std::shared_ptr<const P
             linkPlaying = playing;
             linkPlayingKnown = true;
         } else if (mode == ClockMode::Internal) {
-            // MidiPad's own clock: its beat runs on at the internal tempo.
+            // Arcadance's own clock: its beat runs on at the internal tempo.
             if (tempoWanted > 0)
                 internalTempo_.store(tempoWanted, std::memory_order_relaxed);
             const double tempo = internalTempo_.load(std::memory_order_relaxed);

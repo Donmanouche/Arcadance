@@ -624,8 +624,8 @@ void Engine::press(int slot) {
         return;
     case ActionType::Shift:
         if (!stretchHeld()) {
-            stickStretchRest_ = {};
-            stickAmplitudeRest_ = {};
+            stickTurnX_ = {};
+            stickTurnY_ = {};
             stretchFinger_ = -1;
             lastStretchTick_ = now_;
         }
@@ -1013,7 +1013,7 @@ void Engine::flushPendingStop() {
     stopLoops(channel);
 }
 
-// Shift + Record: each stick, the triggers or a finger in axis mode moving
+// Shift + Record: each stick, the triggers, a finger in axis mode or the tilt moving
 // (as it would start a recording) locks or unlocks its loops, once a hold.
 void Engine::lockFromControls() {
     // Each axis on its own, moved that way (a finger: slid from where it landed).
@@ -1046,7 +1046,7 @@ void Engine::runLoops() {
     if (stretchHeld() && recordHolders_.any())
         lockFromControls();
     // A source that moves during the hold starts recording into its loop: a
-    // stick leaving its spot, a finger landing or sliding.
+    // stick or the tilt leaving its spot, a finger landing or sliding.
     for (int track = 0; track < kNoteTrack; ++track) {  // (notes start when one plays)
         const auto i = static_cast<std::size_t>(track);
         const int source = sourceOfTrack(track);
@@ -1469,8 +1469,9 @@ void Engine::stretchPausing(int track, int steps) {
         stretchPausedUntil_[i] = now_ + static_cast<std::uint64_t>(kStretchPauseMs) * 1'000'000u;
 }
 
-// While LoopStretch is held, each stick's X turns its loop's stretch like a
-// wheel kept turning: nothing in the dead zone, then faster the further out.
+// While Shift is held, each stick turns its X loop (along X) or its Y loop
+// (along Y) like a wheel kept turning: their lengths, amplitudes or offsets
+// (stickShape_); nothing in the dead zone, then faster the further out.
 void Engine::stretchFromControls() {
     const double dt = std::min(static_cast<double>(now_ - lastStretchTick_) * 1e-9, 0.05);
     lastStretchTick_ = now_;
@@ -1480,8 +1481,8 @@ void Engine::stretchFromControls() {
         return;  // the sticks drive the session screen
     for (int source = 0; source < 2; ++source) {
         const auto i = static_cast<std::size_t>(source);
-        auto& rest = stickStretchRest_[i];
-        auto& ampRest = stickAmplitudeRest_[i];
+        auto& rest = stickTurnX_[i];
+        auto& ampRest = stickTurnY_[i];
         const float dx = (stickPosition_[i * 2] - 0.5f) * 2.0f;         // -1 left .. 1 right
         const float dy = (0.5f - stickPosition_[i * 2 + 1]) * 2.0f;     // -1 down .. 1 up
         const bool alongX = std::abs(dx) >= std::abs(dy);               // only the way it mostly moves

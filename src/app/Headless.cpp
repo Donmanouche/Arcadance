@@ -1,4 +1,4 @@
-// midipad --headless: plays a preset from a gamepad, without a window.
+// arcadance --headless: plays a preset from a gamepad, without a window.
 // The preset is reloaded when its file changes.
 
 #include "Headless.hpp"
