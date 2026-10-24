@@ -664,7 +664,7 @@ private:
     bool beginDialog(const char* title, ImGuiWindowFlags flags = ImGuiWindowFlags_AlwaysAutoResize);
     bool dialogDismissed_ = false;
     void endDialog();
-    int dialogButtons(std::initializer_list<const char*> labels);  // the one clicked, or -1
+    int dialogButtons(std::initializer_list<const char*> labels, int disabled = -1);  // the one clicked, or -1
     void applySync();  // the Link settings, to the runtime
     void drawDialogs();
     void drawNameDialog();
@@ -4398,7 +4398,7 @@ void GuiApp::endDialog() {
 }
 
 // The buttons closing a dialog, at the bottom right as in Options.
-int GuiApp::dialogButtons(std::initializer_list<const char*> labels) {
+int GuiApp::dialogButtons(std::initializer_list<const char*> labels, int disabled) {
     ImGui::PushFont(uiFonts_.bold ? uiFonts_.bold : ImGui::GetFont(), 13.0f);
     const ImGuiStyle& style = ImGui::GetStyle();
     const float minW = ImGui::GetFontSize() * 80 / 13;
@@ -4412,8 +4412,10 @@ int GuiApp::dialogButtons(std::initializer_list<const char*> labels) {
     for (const char* label : labels) {
         if (i > 0)
             ImGui::SameLine();
+        ImGui::BeginDisabled(i == disabled);
         if (ImGui::Button(label, ImVec2(std::max(minW, ImGui::CalcTextSize(label).x + style.FramePadding.x * 2), 0)))
             clicked = i;
+        ImGui::EndDisabled();
         ++i;
     }
     ImGui::PopFont();
@@ -4597,7 +4599,7 @@ void GuiApp::drawOpenSessionDialog() {
         ImGui::EndChild();
         ImGui::TextColored(kHintColor, "Opening one replaces every loop, the preset and the tonality.");
     }
-    const int button = dialogButtons({"Open", "Cancel"});
+    const int button = dialogButtons({"Open", "Cancel"}, sessionChoice_ < 0 ? 0 : -1);  // Open: once one is chosen
     if ((button == 0 || open) && sessionChoice_ >= 0) {
         ImGui::CloseCurrentPopup();
         const std::string name = sessionList_[static_cast<std::size_t>(sessionChoice_)];
