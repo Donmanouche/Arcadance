@@ -419,7 +419,7 @@ LiveState demoLive(double t) {
     s.axes[static_cast<std::size_t>(Axis::LeftTrigger)] = axis(0.5 + 0.45 * std::sin(t * 2 * w));
     s.axes[static_cast<std::size_t>(Axis::RightTrigger)] = axis(0.25 + 0.25 * std::sin(t * 3 * w + 1.0));
     s.fingers[0] = {true, static_cast<float>(0.5 + 0.25 * std::cos(t * w)), static_cast<float>(0.5 + 0.25 * std::sin(t * 2 * w))};
-    s.hasGyro = true;
+    s.hasMotion = true;
     s.tiltActive = true;
     s.tiltX = static_cast<float>(0.5 + 0.3 * std::sin(t * w));
     s.tiltY = static_cast<float>(0.5 + 0.25 * std::sin(t * 2 * w + 1.0));

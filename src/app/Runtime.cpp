@@ -289,7 +289,7 @@ LiveState Runtime::live() const {
     s.presentButtons = presentButtons_.load(std::memory_order_relaxed);
     s.presentAxes = presentAxes_.load(std::memory_order_relaxed);
     s.touchpadExpected = touchpadExpected_.load(std::memory_order_relaxed);
-    s.hasGyro = hasGyro_.load(std::memory_order_relaxed);
+    s.hasMotion = hasMotion_.load(std::memory_order_relaxed);
     s.tiltX = tiltX_.load(std::memory_order_relaxed);
     s.tiltY = tiltY_.load(std::memory_order_relaxed);
     s.tiltActive = tiltActive_.load(std::memory_order_relaxed);
@@ -379,7 +379,7 @@ void Runtime::publish(const GamepadInput& gamepad, const Engine& engine, std::ui
         std::lock_guard lock(nameMutex_);  // rare: only when a gamepad comes or goes
         gamepadName_ = gamepad.name();
         hasTouchpad_.store(gamepad.hasTouchpad(), std::memory_order_relaxed);
-        hasGyro_.store(gamepad.hasGyro(), std::memory_order_relaxed);
+        hasMotion_.store(gamepad.hasMotion(), std::memory_order_relaxed);
         family_.store(static_cast<std::uint8_t>(gamepad.family()), std::memory_order_relaxed);
         touchpadExpected_.store(!connected || gamepad.touchpadExpected(), std::memory_order_relaxed);
         presentButtons_.store(connected ? gamepad.presentButtons() : ~0u, std::memory_order_relaxed);

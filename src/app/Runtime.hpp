@@ -50,7 +50,7 @@ struct LiveState {
     std::uint32_t presentButtons = ~0u;
     std::uint8_t presentAxes = 0xFF;
     bool touchpadExpected = true;  // GamepadInput::touchpadExpected
-    bool hasGyro = false;          // GamepadInput::hasGyro
+    bool hasMotion = false;        // GamepadInput::hasMotion: the tilt
     // The tilt (Engine::tiltX, tiltY), 0-1, and whether it moves now.
     float tiltX = 0.5f, tiltY = 0.5f;
     bool tiltActive = false;
@@ -360,7 +360,7 @@ private:
     std::vector<NoteEdit> noteEdits_;  // under sessionMutex_, oldest first
 
     // Published by the input thread after each poll.
-    std::atomic<bool> connected_{false}, hasTouchpad_{false}, touchpadExpected_{true}, hasGyro_{false}, tiltActive_{false};
+    std::atomic<bool> connected_{false}, hasTouchpad_{false}, touchpadExpected_{true}, hasMotion_{false}, tiltActive_{false};
     std::atomic<float> tiltX_{0.5f}, tiltY_{0.5f};
     std::atomic<std::uint8_t> family_{0}, presentAxes_{0xFF};
     std::atomic<std::uint32_t> presentButtons_{~0u};

@@ -1144,7 +1144,7 @@ std::optional<std::string> PerformanceView::draw(const Mapping& normalMapping, c
     // The tilt, with motion sensors: in place of a touchpad the controller has
     // not, else beside it, under a tab.
     const bool touchpad = !live.connected || live.hasTouchpad || live.touchpadExpected;
-    const bool tilt = live.connected && live.hasGyro;
+    const bool tilt = live.connected && live.hasMotion;
     tabbed_ = tilt && touchpad;
     if (tilt && (!touchpad || tiltTab_)) {
         drawTilt(mapping, live, x, origin.y, colW, moduleH);

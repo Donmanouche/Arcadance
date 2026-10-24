@@ -44,7 +44,8 @@ public:
     // State as of the last poll(), for display.
     bool connected() const { return pad_ != nullptr; }
     bool hasTouchpad() const { return hasTouchpad_; }
-    bool hasGyro() const { return hasGyro_; }  // motion sensors, for the tilt
+    bool hasGyro() const { return hasGyro_; }
+    bool hasMotion() const { return hasAccel_; }  // motion sensors, for the tilt (an accelerometer at least)
     // What the controller is and has, found when it connects: the family its
     // buttons are named after, a bit per midipad::Button it has (the triggers
     // as buttons when it has their axes) and per axis.
