@@ -545,7 +545,7 @@ private:
     // Drawing.
     void draw();
     bool drawKeyChoices();
-    void drawOptionsOverlay();
+    void drawOptionsOverlay(const LiveState& live);
     void drawPerformanceStatus(const LiveState& live, float height);
     void drawPerformance(const LiveState& live);
     void drawMappingOverlay(const LiveState& live);
@@ -3494,7 +3494,7 @@ void GuiApp::drawPerformance(const LiveState& live) {
     if (overlaySpec_)
         drawMappingOverlay(live);
     if (optionsOpen_)
-        drawOptionsOverlay();
+        drawOptionsOverlay(live);
     if (menu_)
         drawContextMenu(live);
     if (helpShown_)
@@ -3551,7 +3551,7 @@ void GuiApp::drawPerformanceStatus(const LiveState& live, float height) {
     ImGui::Dummy(ImVec2(width, height));
 }
 
-void GuiApp::drawOptionsOverlay() {
+void GuiApp::drawOptionsOverlay(const LiveState& live) {
     using Theme = PerformanceView::Theme;
     auto color = [](ImU32 c) { return ImGui::ColorConvertU32ToFloat4(c); };
     const float em = ImGui::GetFontSize();
@@ -3757,7 +3757,6 @@ void GuiApp::drawOptionsOverlay() {
         // Sync: Ableton Link, and how loops snap to its beat.
         beginCard("##cardsync", "SYNC", Theme::kGreen);
         {
-            const LiveState live = runtime_->live();
             ImGui::PushFont(medium, 13.0f);
             bool changed = false;
             const float clockRowY = ImGui::GetCursorPosY();
