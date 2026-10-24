@@ -204,17 +204,22 @@ void Engine::sendAt(std::uint64_t at, const MidiMessage& message) {
 
 void Engine::emit(const MidiMessage& message, bool fromLoop) {
     const int kind = message.bytes[0] & 0xF0;
-    if (fromLoop && kind >= 0x80 && kind < 0xF0) {  // a loop's message: not from a channel muted or out of the solo
+    if (kind >= 0x80 && kind < 0xF0) {
         const int channel = message.bytes[0] & 0x0F;
         auto& sounding = loopSounding_[static_cast<std::size_t>(channel)];
         const auto note = static_cast<std::size_t>(message.bytes[1] & 0x7F);
         const bool noteOff = kind == 0x80 || (kind == 0x90 && message.bytes[2] == 0);
-        if (noteOff && sounding.test(note))
+        // Any note-off ends the loop note of that pitch, whoever sends it (a
+        // loop cleared or stopped sends its offs outside the loops' turn).
+        const bool wasSounding = noteOff && sounding.test(note);
+        if (noteOff)
             sounding.reset(note);
-        else if (silenced(channel))
-            return;
-        else if (kind == 0x90 && !noteOff)
-            sounding.set(note);
+        if (fromLoop) {  // a loop's message: not from a channel muted or out of the solo
+            if (!wasSounding && silenced(channel))
+                return;
+            if (kind == 0x90 && !noteOff)
+                sounding.set(note);
+        }
     }
     sink_.send(message);
     if (observer_ && (kind == 0x90 || kind == 0x80))
