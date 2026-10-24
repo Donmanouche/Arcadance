@@ -301,7 +301,6 @@ AxisBinding axisFromJson(const Json& j, const std::string& where) {
     if (!j.is_object())
         fail(where, "expected an object");
     AxisBinding a;
-    a.enabled = true;
     auto flag = [&](const char* key) {
         if (!j.contains(key))
             return false;
@@ -309,6 +308,8 @@ AxisBinding axisFromJson(const Json& j, const std::string& where) {
             fail(where + "." + key, "expected true or false");
         return j[key].get<bool>();
     };
+    // Turned off, an axis keeps its settings ("enabled": false); on otherwise.
+    a.enabled = !j.contains("enabled") || flag("enabled");
     if (flag("program"))
         a.mode = AxisMode::Program;
     if (flag("velocity")) {
@@ -381,6 +382,8 @@ Json axisToJson(const AxisBinding& a) {
         j["max"] = a.max;
     if (a.invert)
         j["invert"] = true;
+    if (!a.enabled)  // its settings kept for when it is turned on again
+        j["enabled"] = false;
     return j;
 }
 
@@ -481,7 +484,7 @@ Mapping mappingFromJson(const Json& j, const std::string& where) {
                 fail(at + ".angle", "expected 15 to 90");
             t.angle = tj["angle"].get<int>();
         }
-        // An axis turned off is written as null; a missing one keeps its default.
+        // An axis turned off with no settings is written as null; a missing one keeps its default.
         if (tj.contains("x"))
             t.x = tj["x"].is_null() ? AxisBinding{} : axisFromJson(tj["x"], at + ".x");
         if (tj.contains("y"))
@@ -581,8 +584,8 @@ Json mappingToJson(const Mapping& m) {
         j["dpad"] = dpad;
 
     Json axes = Json::object();
-    for (int i = 0; i < kAxisCount; ++i)
-        if (m.axes[static_cast<std::size_t>(i)].enabled)
+    for (int i = 0; i < kAxisCount; ++i)  // on, or off with settings of its own
+        if (m.axes[static_cast<std::size_t>(i)] != AxisBinding{})
             axes[std::string(toString(static_cast<Axis>(i)))] = axisToJson(m.axes[static_cast<std::size_t>(i)]);
     if (!axes.empty())
         j["axes"] = axes;
@@ -593,9 +596,9 @@ Json mappingToJson(const Mapping& m) {
         Json fj;
         if (f.mode == TouchMode::Axis) {
             fj["mode"] = "axis";
-            if (f.x.enabled)
+            if (f.x != AxisBinding{})
                 fj["x"] = axisToJson(f.x);
-            if (f.y.enabled)
+            if (f.y != AxisBinding{})
                 fj["y"] = axisToJson(f.y);
         } else if (f.mode == TouchMode::Zones) {
             fj["mode"] = "zones";
@@ -619,8 +622,8 @@ Json mappingToJson(const Mapping& m) {
         tj["active"] = t.whileHeld ? "held" : "always";
         tj["hold"] = toString(t.hold);
         tj["angle"] = t.angle;
-        tj["x"] = t.x.enabled ? axisToJson(t.x) : Json(nullptr);
-        tj["y"] = t.y.enabled ? axisToJson(t.y) : Json(nullptr);
+        tj["x"] = t.x != AxisBinding{} ? axisToJson(t.x) : Json(nullptr);
+        tj["y"] = t.y != AxisBinding{} ? axisToJson(t.y) : Json(nullptr);
         j["tilt"] = tj;
     }
 
