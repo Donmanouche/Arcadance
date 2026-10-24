@@ -1,5 +1,6 @@
 #include "midipad/Session.hpp"
 
+#include "midipad/Engine.hpp"
 #include "midipad/Files.hpp"
 #include "midipad/PresetIO.hpp"
 
@@ -17,10 +18,10 @@ namespace {
 constexpr std::string_view kFormatName = "arcadance-session";
 constexpr std::string_view kFormerFormatName = "midipad-session";  // Arcadance's former name: still read
 constexpr int kFormatVersion = 1;
-// As the preset's "loops" keys, by LoopSource.
-constexpr const char* kSources[] = {"left", "right", "finger1", "finger2", "triggers", "tilt", "notes"};
-constexpr int kMaxSamples = 60 * 200;  // Engine::kMaxLoopSamples
-constexpr int kMaxNotes = 4096;        // Engine::kMaxNoteEvents
+constexpr int kMaxSamples = Engine::kMaxLoopSamples;
+constexpr int kMaxNotes = Engine::kMaxNoteEvents;
+// The error messages below name these limits.
+static_assert(Engine::kClipSlots == 8 && Engine::kChainSteps == 8 && Engine::kMaxRepeats == 64);
 
 [[noreturn]] void fail(const std::string& where, const std::string& message) {
     throw SessionError(where + ": " + message);
@@ -58,6 +59,7 @@ std::vector<std::uint16_t> readSamples(const Json& loop, const char* key, int le
 
 // The movement tracks (Engine::trackOf), as a modulation names its target.
 constexpr const char* kTrackNames[] = {"left_x", "left_y", "right_x", "right_y", "finger1_x", "finger1_y", "finger2_x", "finger2_y", "l2", "r2", "tilt_x", "tilt_y"};
+static_assert(std::size(kTrackNames) == Engine::kNoteTrack, "a name per movement track");
 
 }  // namespace
 
@@ -92,7 +94,7 @@ Json sessionToJson(const Session& session) {
             o["current"] = false;
         if (!l.playing)
             o["playing"] = false;
-        o["source"] = kSources[static_cast<int>(l.source)];
+        o["source"] = std::string(kLoopSourceKeys[static_cast<std::size_t>(l.source)]);
         o["length"] = l.length;
         if (l.syncBeats > 0) {
             o["sync_beats"] = l.syncBeats;
@@ -233,17 +235,17 @@ Session sessionFromJson(const Json& j) {
                 fail(where, "expected an object");
             SessionLoop l;
             l.channel = readInt(o, "channel", 1, 16, 1, where) - 1;
-            l.clip = readInt(o, "clip", 1, 8, 1, where) - 1;
+            l.clip = readInt(o, "clip", 1, Engine::kClipSlots, 1, where) - 1;
             for (const char* key : {"current", "playing"})
                 if (o.contains(key) && !o[key].is_boolean())
                     fail(where + "." + key, "expected true or false");
             l.current = o.value("current", true);
             l.playing = o.value("playing", true);
             const std::string source = o.contains("source") && o["source"].is_string() ? o["source"].get<std::string>() : "";
-            const auto found = std::find(std::begin(kSources), std::end(kSources), source);
-            if (found == std::end(kSources))
+            const auto found = std::find(kLoopSourceKeys.begin(), kLoopSourceKeys.end(), source);
+            if (found == kLoopSourceKeys.end())
                 fail(where + ".source", "unknown source \"" + source + "\"");
-            l.source = static_cast<LoopSource>(found - std::begin(kSources));
+            l.source = static_cast<LoopSource>(found - kLoopSourceKeys.begin());
             l.length = readInt(o, "length", 2, kMaxSamples, 0, where);
             if (l.length < 2)
                 fail(where, "missing \"length\"");
@@ -270,9 +272,9 @@ Session sessionFromJson(const Json& j) {
                 std::stable_sort(l.notes.begin(), l.notes.end(),
                                  [](const SessionLoop::Note& a, const SessionLoop::Note& b) { return a.at < b.at; });
             } else {
-                l.stretch = readInt(o, "stretch", -38, 198, 0, where);
-                l.amplitude = readInt(o, "amplitude", 0, 800, 100, where);
-                l.offset = readInt(o, "offset", -100, 100, 0, where);
+                l.stretch = readInt(o, "stretch", Engine::kMinStretch, Engine::kMaxStretch, 0, where);
+                l.amplitude = readInt(o, "amplitude", 0, Engine::kMaxAmplitude, 100, where);
+                l.offset = readInt(o, "offset", -Engine::kMaxOffset, Engine::kMaxOffset, 0, where);
                 auto trackNamed = [](const Json& v) {  // -1: unknown, left out
                     for (int t = 0; t < static_cast<int>(std::size(kTrackNames)); ++t)
                         if (v == kTrackNames[t])

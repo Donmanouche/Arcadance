@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <string_view>
 
 namespace midipad {
 
@@ -119,6 +120,8 @@ struct LoopBinding {
 // chords played by the buttons, the D-pad and the triggers as buttons.
 enum class LoopSource : std::uint8_t { LeftStick, RightStick, Finger1, Finger2, Triggers, Tilt, Notes };
 inline constexpr int kLoopSourceCount = 7;
+// Their names in presets ("loops") and sessions, by LoopSource.
+inline constexpr std::array<std::string_view, kLoopSourceCount> kLoopSourceKeys{"left", "right", "finger1", "finger2", "triggers", "tilt", "notes"};
 
 // By default on CC 70/71, 72/73 (sticks), 74/75, 76/77 (fingers), 78/79
 // (triggers) and 80/81 (tilt); a note loop sends the notes it recorded, its CCs are unused.

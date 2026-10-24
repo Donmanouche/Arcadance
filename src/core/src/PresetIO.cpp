@@ -521,11 +521,10 @@ Mapping mappingFromJson(const Json& j, const std::string& where) {
     if (j.contains("loops")) {
         for (const auto& [key, value] : requireObject(j["loops"], where + ".loops").items()) {
             const std::string at = where + ".loops." + key;
-            static constexpr std::string_view kKeys[] = {"left", "right", "finger1", "finger2", "triggers", "tilt", "notes"};
-            const auto found = std::find(std::begin(kKeys), std::end(kKeys), key);
-            if (found == std::end(kKeys))
+            const auto found = std::find(kLoopSourceKeys.begin(), kLoopSourceKeys.end(), key);
+            if (found == kLoopSourceKeys.end())
                 fail(at, "expected \"left\", \"right\", \"finger1\", \"finger2\", \"triggers\", \"tilt\" or \"notes\"");
-            const auto source = found - std::begin(kKeys);
+            const auto source = found - kLoopSourceKeys.begin();
             requireObject(value, at);
             LoopBinding& loop = m.loops[static_cast<std::size_t>(source)];
             const std::string playback = readString(value, "playback", "forward", at);
@@ -668,8 +667,7 @@ Json mappingToJson(const Mapping& m) {
             if (grid.on)
                 lj[axis == 0 ? "steps_x" : "steps_y"] = Json{{"levels", grid.levels}, {"step", kStepNames[static_cast<std::size_t>(std::clamp(grid.step, 0, kStepChoices - 1))]}};
         }
-        static constexpr const char* kKeys[] = {"left", "right", "finger1", "finger2", "triggers", "tilt", "notes"};
-        loops[kKeys[s]] = lj;
+        loops[std::string(kLoopSourceKeys[s])] = lj;
     }
     if (!loops.empty())
         j["loops"] = loops;
