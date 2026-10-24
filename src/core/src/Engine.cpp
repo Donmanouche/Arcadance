@@ -2301,10 +2301,12 @@ void Engine::clearLoop(int channel, int source) {
     source = std::clamp(source, 0, kLoopSourceCount - 1);
     if (source == static_cast<int>(LoopSource::Notes)) {
         clearTrack(loopIndex(channel, kNoteTrack));
-        return;
+    } else {
+        clearTrack(loopIndex(channel, trackOf(source, 0)));
+        clearTrack(loopIndex(channel, trackOf(source, 1)));
     }
-    clearTrack(loopIndex(channel, trackOf(source, 0)));
-    clearTrack(loopIndex(channel, trackOf(source, 1)));
+    if (!currentHasLoops(channel))  // its last loop: the clip, empty, no longer plays
+        clipPlaying_[static_cast<std::size_t>(channel)] = false;
 }
 
 void Engine::clearTrack(std::size_t index) {
