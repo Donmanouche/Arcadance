@@ -1623,6 +1623,10 @@ void Engine::sendLoopValue(std::size_t index, float p) {
     loopShaping_[index] = shapes ? p : -1.0f;
     if (shapes)
         return;
+    if (silenced(channel)) {  // muted, or out of the solo: its CC waits, sent again once it sounds
+        loop.sentX = -1;
+        return;
+    }
     const float position = a->invert ? 1.0f - p : p;
     const int lo = a->enabled ? a->min : 0, hi = a->enabled ? a->max : 127;
     const int v = lo + static_cast<int>(std::lround(position * static_cast<float>(hi - lo)));
