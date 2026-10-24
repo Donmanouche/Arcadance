@@ -319,8 +319,7 @@ UpdateCheck checkForUpdates() {
     } catch (const std::exception&) {
     }
     if (tag.empty()) {
-        result.message = "Could not reach GitHub. Check the connection (and that curl is installed),\n"
-                         "or look at the releases page.";
+        result.message = "Could not reach GitHub.";
         return result;
     }
     result.ok = true;
@@ -2888,7 +2887,7 @@ void GuiApp::drawHelpOverlay() {
     std::vector<std::string> select = settings_.navSelect >= 0 ? std::vector<std::string>{buttonName(settings_.navSelect, "")}
                                                                : std::vector<std::string>{label(Button::LeftStick), label(Button::RightStick)};
     const std::string menu = buttonName(settings_.navMenu, ""), back = buttonName(settings_.navBack, "");
-    const std::string unset = "(choose it in Options \xE2\x80\xBA EDIT MENU)";
+    const std::string unset = "(none set)";
     std::vector<std::pair<std::vector<std::string>, std::string>> rows;
     const std::string closeHint = "let go of " + mode + " to close";
     if (sessionView_) {
@@ -3290,11 +3289,9 @@ void GuiApp::drawPerformance(const LiveState& live) {
                 persistSettings();
             }
             if (!editingTempo_)
-                ImGui::SetItemTooltip(overTempo ? "Turn the wheel to change the tempo (Shift: by 0.1), double-click to type it."
-                                      : on      ? (link ? "Ableton Link: tempo and beat shared with the session. Click to run free."
-                                                        : "Internal clock: Arcadance's own tempo and beat. Click to run free.")
-                                                : (link ? "Free: Arcadance keeps no beat. Click to join the Ableton Link session."
-                                                        : "Free: Arcadance keeps no beat. Click to start the internal clock."));
+                ImGui::SetItemTooltip(on ? (link ? "Ableton Link: tempo and beat shared with the session"
+                                                 : "Internal clock: Arcadance's own tempo and beat")
+                                         : "Free: Arcadance keeps no beat");
             if (editingTempo_) {  // typing the tempo, over it
                 ImGui::SetCursorScreenPos(ImVec2(tx - px(1), q.y + px(4)));
                 ImGui::SetNextItemWidth(px(78));
@@ -3329,7 +3326,7 @@ void GuiApp::drawPerformance(const LiveState& live) {
             if (tapped && on)
                 if (const auto bpm = tap_.tap(SDL_GetTicksNS()))
                     applyTempo(*bpm);
-            ImGui::SetItemTooltip(on ? "Tap in time: the tempo follows from the second tap" : "Tap tempo, with a clock running");
+            ImGui::SetItemTooltip(on ? "Tap tempo" : "Tap tempo, with a clock running");
             // The session screen: a grid of four squares, lit while it shows.
             const ImVec2 sp(q.x + lw + px(6) + tapW + px(8), q.y);
             ImGui::SetCursorScreenPos(sp);

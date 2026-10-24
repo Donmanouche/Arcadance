@@ -834,7 +834,6 @@ void PerformanceView::menuOnRightClick(const MenuTarget& target, bool recorded, 
     if ((recorded || locked) && ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal) && ImGui::BeginTooltip()) {
         if (locked)
             ImGui::TextUnformatted("Locked: Record keeps it");
-        ImGui::TextDisabled("Right-click: lock, clear\xE2\x80\xA6");
         ImGui::EndTooltip();
     }
 }
@@ -1226,7 +1225,7 @@ void PerformanceView::drawPianoRoll(const Mapping& m, const LiveState& live, flo
         status = std::string("REC  ") + seconds;
         statusColor = T::kRed;
     } else if (st.waiting) {
-        status = "REC  \xC2\xB7  play notes";
+        status = "REC";
         statusColor = T::kRed;
     } else if (clip) {
         status = std::string(st.overdub ? "OVERDUB  " : "LOOP  ") +
@@ -2148,10 +2147,6 @@ std::optional<PerformanceView::SessionAction> PerformanceView::drawChainStrip(Im
             else
                 action = SessionAction{SessionAction::Kind::ChainSet, ch, k, clipSlot, nextRepeats(repeats, notch)};
         }
-        if (hovered && clipSlot >= 0)
-            ImGui::SetItemTooltip("Wheel: the clip (left; after 8, R: any clip at random)\nor its repeats (right). Right-click: its menu");
-        else if (hovered)
-            ImGui::SetItemTooltip("Drag a clip here, or turn the wheel");
         ImGui::PopID();
         const bool playsNow = runs && chains.at == k;
         const bool isNext = nextHere && chains.next == k;
@@ -2286,7 +2281,6 @@ std::optional<PerformanceView::SessionAction> PerformanceView::drawChainStrip(Im
         action = SessionAction{SessionAction::Kind::ChainShow, ch, (shownChain + (io.MouseWheel > 0 ? Engine::kChains - 1 : 1)) % Engine::kChains};
     if (endHovered && ImGui::IsMouseClicked(ImGuiMouseButton_Right))
         menuRequest_ = MenuRequest{MenuTarget{MenuTarget::Kind::Chain, ch, shownChain}, io.MousePos};
-    ImGui::SetItemTooltip("Arrows or wheel: another chain of the channel\nClick: play or stop it. Right-click: its menu (then, duplicate, rename)");
     ImGui::PopID();
     screen(dl, ImVec2(ex0, y0), ImVec2(ex1, y1), runs ? T::kGreen : kScreenOff, [] {});
     if (runs || endHovered)
@@ -2453,7 +2447,7 @@ std::optional<PerformanceView::SongAction> PerformanceView::drawSong(const LiveS
     ImGui::SetCursorScreenPos(ImVec2(loopX, by0));
     if (ImGui::InvisibleButton("##loop", ImVec2(lw, by1 - by0)))
         action = SongAction{SongAction::Kind::Loop, 0, -1, 0, live.song.loop ? 0 : 1};
-    ImGui::SetItemTooltip("The section playing plays again and again (jump to another with Select on its name)");
+    ImGui::SetItemTooltip("The section playing plays again and again");
     dl->AddRectFilled(ImVec2(loopX, by0), ImVec2(loopX + lw, by1), live.song.loop ? alpha(T::kCyan, 0.2f) : T::kControl, px(5));
     dl->AddRect(ImVec2(loopX, by0), ImVec2(loopX + lw, by1), live.song.loop ? T::kCyan : T::kBorder, px(5), px(1));
     text(dl, gBold, px(14.25f), loopX + lw * 0.5f, hy, live.song.loop ? T::kText : T::kLabel, "LOOP SECTION", H::Center, V::Middle);
@@ -2487,7 +2481,6 @@ std::optional<PerformanceView::SongAction> PerformanceView::drawSong(const LiveS
             action = SongAction{SongAction::Kind::Cursor, s, -1};
         if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
             action = SongAction{SongAction::Kind::Play, s};
-        ImGui::SetItemTooltip("Click: go there. Double-click: play from here");
         ImGui::PopID();
     }
     const float laneH = px(11.5f), ly0 = sy1 + px(7);
@@ -2618,7 +2611,6 @@ std::optional<PerformanceView::SongAction> PerformanceView::drawSong(const LiveS
             menuRequest_ = MenuRequest{MenuTarget{MenuTarget::Kind::Section, 0, r}, io.MousePos};
         if (nameHovered && io.MouseWheel != 0.0f && io.KeyCtrl)
             action = SongAction{SongAction::Kind::Bars, r, -1, 0, io.MouseWheel > 0 ? 1 : -1};
-        ImGui::SetItemTooltip("Click: here. The triangle: play from here. Ctrl + wheel: its length. Right-click: its menu");
         if (now)
             dl->AddRectFilled(ImVec2(pc.x - px(5), pc.y - px(5)), ImVec2(pc.x + px(5), pc.y + px(5)), T::kGreen, px(1));
         else
@@ -2682,8 +2674,6 @@ std::optional<PerformanceView::SongAction> PerformanceView::drawSong(const LiveS
                 action = SongAction{SongAction::Kind::EditCell, r, ch};
             if (ImGui::IsItemHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Right))
                 menuRequest_ = MenuRequest{MenuTarget{MenuTarget::Kind::SongCell, ch, r}, io.MousePos};
-            if (ImGui::IsItemHovered())
-                ImGui::SetItemTooltip("Click: edit it below. Right-click: its menu");
             ImGui::PopID();
             if (here) {
                 dl->AddRect(ImVec2(a.x - px(3), a.y - px(3)), ImVec2(b.x + px(3), b.y + px(3)), cursor.editing ? alpha(T::kCyan, 0.5f) : T::kCyan, px(8), px(2.5f));
@@ -2777,8 +2767,6 @@ std::optional<PerformanceView::SongAction> PerformanceView::drawSong(const LiveS
         }
         if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Right))
             menuRequest_ = MenuRequest{MenuTarget{MenuTarget::Kind::SongItem, ch, r, 0, static_cast<int>(i)}, io.MousePos};
-        ImGui::SetItemTooltip(rest ? "Drag: another bar. Wheel on the left: a bar longer or shorter; on the right: a beat. Right-click: its menu"
-                                   : "Drag: another bar. Wheel on the left: the clip or chain; on the right: its repeats. Right-click: its menu");
         ImGui::PopID();
         const ImVec2 a(x0 + shift + px(1), iy0), b(x1 + shift - px(1), iy1);
         if (rest) {  // a silence: dashed
@@ -2993,7 +2981,6 @@ void PerformanceView::drawChannel(const LiveState& live, float x, float y, float
         const float wheel = ImGui::GetIO().MouseWheel;
         if (wheel != 0.0f)
             channelRequest_ = (live.channel + (wheel > 0 ? 1 : kChannelCount - 1)) % kChannelCount;
-        ImGui::SetItemTooltip("Arrows or wheel: previous / next channel\nClick or right-click: its menu (rename)");
     }
 }
 
@@ -3117,7 +3104,7 @@ void PerformanceView::drawStick(int index, const Mapping& m, const LiveState& li
         {&loop.lanes[0], Engine::trackOf(index, 0), accent, "X", bx.enabled, bx.invert, false, laneTarget(bx, lb.ccX), lb.steps[0]},
         {&loop.lanes[1], Engine::trackOf(index, 1), mix(accent, T::kText, 0.5f), "Y", by.enabled, by.invert, false, laneTarget(by, lb.ccY), lb.steps[1]}};
     drawLoopPanel(dl, x, w, loopY, y + h - px(10), loop.status, lb.playback, lanes, 2, accent, artFor(live.channel, index),
-                  "REC  \xC2\xB7  move a stick", index == 0 ? "##loopL" : "##loopR", index == 0 ? "axes:left_x,left_y" : "axes:right_x,right_y",
+                  "REC", index == 0 ? "##loopL" : "##loopR", index == 0 ? "axes:left_x,left_y" : "axes:right_x,right_y",
                   index);
 }
 
@@ -3496,7 +3483,7 @@ void PerformanceView::drawTriggers(const Mapping& m, const LiveState& live, floa
     const LaneLook lanes[2] = {{&loop.lanes[0], Engine::trackOf(kTriggers, 0), T::kPink, leftName.c_str(), bl.enabled, bl.invert, false, laneTarget(bl, lb.ccX), lb.steps[0]},
                                {&loop.lanes[1], Engine::trackOf(kTriggers, 1), pinkLight, rightName.c_str(), br.enabled, br.invert, false, laneTarget(br, lb.ccY), lb.steps[1]}};
     drawLoopPanel(dl, x, w, loopY, y + h - px(10), loop.status, lb.playback, lanes, 2, T::kPink, artFor(live.channel, 2),
-                  "REC  \xC2\xB7  press a trigger", "##looptriggers", "axes:left_trigger,right_trigger", kTriggers);
+                  "REC", "##looptriggers", "axes:left_trigger,right_trigger", kTriggers);
 }
 
 void PerformanceView::drawDpad(const Mapping& m, const LiveState& live, float x, float y, float w, float h) {
@@ -3738,7 +3725,7 @@ void PerformanceView::drawTouchpad(const Mapping& m, const LiveState& live, floa
     }
     const int shown = loops[0]->status.state != LoopStatus::State::Empty ? 0 : 1;
     drawLoopPanel(dl, x, w, loopY, boxBottom, st, m.loops[static_cast<std::size_t>(2 + shown)].playback, lanes, laneCount,
-                  fingerColors[shown], artFor(live.channel, 3), "REC  \xC2\xB7  touch to record", "##touchloop", "fingers",
+                  fingerColors[shown], artFor(live.channel, 3), "REC", "##touchloop", "fingers",
                   static_cast<int>(LoopSource::Finger1) + shown);
 }
 
@@ -3839,7 +3826,7 @@ void PerformanceView::drawTilt(const Mapping& m, const LiveState& live, float x,
         {&loop.lanes[0], Engine::trackOf(kSource, 0), accent, "X", on && t.x.enabled, t.x.invert, false, laneTarget(t.x, lb.ccX), lb.steps[0]},
         {&loop.lanes[1], Engine::trackOf(kSource, 1), mix(accent, T::kText, 0.5f), "Y", on && t.y.enabled, t.y.invert, false, laneTarget(t.y, lb.ccY), lb.steps[1]}};
     drawLoopPanel(dl, x, w, loopY, y + h - px(10), loop.status, lb.playback, lanes, 2, accent, artFor(live.channel, 3),
-                  "REC  \xC2\xB7  tilt to record", "##looptilt", "tilt", kSource);
+                  "REC", "##looptilt", "tilt", kSource);
 }
 
 // The touchpad's LOOP panel in 4-pad mode: the pads' notes in the note loop,
@@ -3884,7 +3871,7 @@ void PerformanceView::drawPadLanes(ImDrawList* dl, const Mapping& m, const LiveS
         status = std::string("REC  ") + seconds;
         statusColor = T::kRed;
     } else if (st.waiting) {
-        status = "REC  \xC2\xB7  play the pads";
+        status = "REC";
         statusColor = T::kRed;
     } else if (playing) {
         const LoopPlayback pb = m.loops[static_cast<std::size_t>(LoopSource::Notes)].playback;
