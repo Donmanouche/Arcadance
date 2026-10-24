@@ -74,7 +74,9 @@ struct LoopStatus {
 // Turns controller events into MIDI according to the active preset.
 //
 // Not thread-safe: own it from the input thread and hand it presets from
-// there. No call allocates except setPreset().
+// there. No call allocates except setPreset(), setSong() and, while a song
+// plays, the sections' events (at each section) and lengths (taken a
+// hundred times a second).
 //
 // Every note or CC a press starts is recorded with the channel it went out on,
 // so its release always turns off exactly what was sent, even if the channel
@@ -708,6 +710,10 @@ private:
     double songStart_ = 0;  // where the section playing starts, on songNow()
     std::vector<SongEvent> songEvents_;
     std::size_t songNext_ = 0;
+    // The section playing's length in beats, taken again every 10 ms (a clip
+    // edited while it plays changes it) rather than at every tick.
+    double songLength_ = 0;
+    std::uint64_t songLengthNext_ = 0;
     double freeBeat_ = 0;  // a beat count that runs without a clock, at its tempo
     std::uint64_t freeAt_ = 0;
     double songNow() const { return clock_.on ? beatAt(now_) : freeBeat_; }
@@ -761,6 +767,12 @@ private:
         std::uint32_t press = 0;
     };
     std::vector<NoteSpan> spans_;
+    // A stable sort of a note loop's events, by `less`, with no allocation
+    // (the same order as std::stable_sort): a merge sort through sortScratch_.
+    template <typename Less>
+    void sortEvents(std::vector<NoteEvent>& events, Less less);
+    std::vector<NoteEvent> sortScratch_;
+    std::vector<std::array<int, 2>> movedNotes_;  // moveLoopNotes: each note's press and release events
     std::array<std::vector<NoteEvent>, kChannelCount * kClipSlots> noteEvents_;  // per channel and clip
     std::vector<NoteEvent>& eventsOf(int channel) {
         return noteEvents_[static_cast<std::size_t>(channel * kClipSlots + currentSlot_[static_cast<std::size_t>(channel)])];

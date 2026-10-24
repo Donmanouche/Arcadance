@@ -52,6 +52,9 @@ Engine::Engine(MidiSink& sink) : sink_(sink) {
     for (auto& events : noteEvents_)
         events.reserve(kMaxNoteEvents);
     spans_.reserve(kMaxNoteEvents);
+    sortScratch_.reserve(kMaxNoteEvents);
+    movedNotes_.reserve(kMaxNoteEvents);
+    songEvents_.reserve(static_cast<std::size_t>(kChannelCount) * kMaxSongItems * 2);
     program_.fill(-1);
     pendingProgram_.fill(-1);
     axisProgram_.fill(-1);
@@ -892,7 +895,7 @@ bool Engine::finishRecording(int channel) {
             auto& events = eventsOf(channel);
             for (auto& e : events)  // a release delayed past the end ends with the loop
                 e.at = std::clamp(e.at, 0, loop.length - 1);
-            std::stable_sort(events.begin(), events.end(), [](const NoteEvent& a, const NoteEvent& b) { return a.at < b.at; });
+            sortEvents(events, [](const NoteEvent& a, const NoteEvent& b) { return a.at < b.at; });
             // A note still on at the end (a toggle left on) ends there: so it
             // also sounds from the end when the loop plays backwards.
             std::bitset<128> held;
@@ -1784,7 +1787,7 @@ void Engine::quantizeNoteLoop(int channel) {
     }
     for (PressShift& p : pressShift_)
         p = {};
-    std::stable_sort(events.begin(), events.end(), [](const NoteEvent& a, const NoteEvent& b) { return a.at < b.at; });
+    sortEvents(events, [](const NoteEvent& a, const NoteEvent& b) { return a.at < b.at; });
 }
 
 // Adds a note played over a channel's note loop where the loop plays it,
@@ -1818,6 +1821,36 @@ void Engine::overdubNote(int channel, int note, int velocity, std::uint64_t at, 
     events.insert(where, event);  // the vector has its capacity: no allocation
     if (velocity == 0)  // a note complete
         tidyNoteLoop(channel);
+}
+
+template <typename Less>
+void Engine::sortEvents(std::vector<NoteEvent>& events, Less less) {
+    const std::size_t n = events.size();
+    if (n < 2)
+        return;
+    sortScratch_.resize(n);  // within the capacity reserved: no allocation
+    // Runs of 8 by insertion, then merges of doubling width; each merge keeps
+    // equal events in their order, so the whole sort is stable.
+    constexpr std::size_t kRun = 8;
+    for (std::size_t lo = 0; lo < n; lo += kRun) {
+        const std::size_t hi = std::min(lo + kRun, n);
+        for (std::size_t i = lo + 1; i < hi; ++i) {
+            const NoteEvent e = events[i];
+            std::size_t j = i;
+            for (; j > lo && less(e, events[j - 1]); --j)
+                events[j] = events[j - 1];
+            events[j] = e;
+        }
+    }
+    for (std::size_t width = kRun; width < n; width *= 2) {
+        for (std::size_t lo = 0; lo < n; lo += 2 * width) {
+            const std::size_t mid = std::min(lo + width, n), hi = std::min(lo + 2 * width, n);
+            std::merge(events.begin() + static_cast<std::ptrdiff_t>(lo), events.begin() + static_cast<std::ptrdiff_t>(mid),
+                       events.begin() + static_cast<std::ptrdiff_t>(mid), events.begin() + static_cast<std::ptrdiff_t>(hi),
+                       sortScratch_.begin() + static_cast<std::ptrdiff_t>(lo), less);
+        }
+        std::copy(sortScratch_.begin(), sortScratch_.begin() + static_cast<std::ptrdiff_t>(n), events.begin());
+    }
 }
 
 void Engine::tidyNoteLoop(int channel) {
@@ -1889,8 +1922,7 @@ void Engine::tidyNoteLoop(int channel) {
             events.push_back({std::clamp(s.end, start + 1, loop.length - 1), s.note, s.velocity, false, s.press});
     }
     // In loop order; where a note ends and the next starts, the release first.
-    std::stable_sort(events.begin(), events.end(),
-                     [](const NoteEvent& a, const NoteEvent& b) { return a.at != b.at ? a.at < b.at : !a.on && b.on; });
+    sortEvents(events, [](const NoteEvent& a, const NoteEvent& b) { return a.at != b.at ? a.at < b.at : !a.on && b.on; });
 }
 
 // A note loop at its current step: its notes there start or stop; played
@@ -1971,10 +2003,8 @@ bool Engine::moveLoopNotes(int channel, const std::vector<LoopNoteRef>& notes, i
     auto& events = eventsOf(channel);
     // The notes there, by index (note on, release or -1), and how far the
     // group may go: all of it inside the loop and the MIDI range.
-    struct Found {
-        int on, off;
-    };
-    std::vector<Found> found;
+    auto& found = movedNotes_;
+    found.clear();
     int first = loop.length, last = 0, low = 127, high = 0;
     for (const LoopNoteRef& ref : notes) {
         int on = -1, off = -1;
@@ -1993,13 +2023,13 @@ bool Engine::moveLoopNotes(int channel, const std::vector<LoopNoteRef>& notes, i
     if (!byDegrees)
         semitones = std::clamp(semitones, -low, 127 - high);
     auto moved = [&](int note) { return byDegrees ? transposed(note, semitones) : std::clamp(note + semitones, 0, 127); };
-    for (const Found& f : found) {
-        silenceLoopNote(channel, events[static_cast<std::size_t>(f.on)].note);
-        silenceLoopNote(channel, moved(events[static_cast<std::size_t>(f.on)].note));
+    for (const auto& f : found) {
+        silenceLoopNote(channel, events[static_cast<std::size_t>(f[0])].note);
+        silenceLoopNote(channel, moved(events[static_cast<std::size_t>(f[0])].note));
     }
-    for (const Found& f : found) {
-        const int note = moved(events[static_cast<std::size_t>(f.on)].note);  // its release goes with it
-        for (const int i : {f.on, f.off}) {
+    for (const auto& f : found) {
+        const int note = moved(events[static_cast<std::size_t>(f[0])].note);  // its release goes with it
+        for (const int i : {f[0], f[1]}) {
             if (i < 0)
                 continue;
             auto& e = events[static_cast<std::size_t>(i)];
@@ -3002,6 +3032,7 @@ void Engine::enterSection(int section, double start) {
     songStart_ = start;
     songEvents_.clear();
     songNext_ = 0;
+    songLengthNext_ = 0;  // its length taken at once
     const SongSection& sec = song_.sections[static_cast<std::size_t>(section)];
     for (int ch = 0; ch < kChannelCount; ++ch) {
         const auto& items = sec.cells[static_cast<std::size_t>(ch)];
@@ -3035,7 +3066,11 @@ void Engine::runSong() {
         if (pos < 0)
             return;  // waiting for its bar
         const SongSection& sec = song_.sections[static_cast<std::size_t>(songSection_)];
-        const double length = sectionBars(sec) * static_cast<double>(beatsPerBar_);
+        if (now_ >= songLengthNext_) {
+            songLength_ = sectionBars(sec) * static_cast<double>(beatsPerBar_);
+            songLengthNext_ = now_ + 10'000'000;
+        }
+        const double length = songLength_;
         while (songNext_ < songEvents_.size() && songEvents_[songNext_].at <= pos && songEvents_[songNext_].at < length) {
             const SongEvent e = songEvents_[songNext_++];
             if (e.what < 0) {
