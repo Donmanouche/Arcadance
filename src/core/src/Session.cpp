@@ -172,7 +172,7 @@ Json sessionToJson(const Session& session) {
                         i["rest"] = it.beats;  // in beats
                     if (it.after)
                         i["after"] = true;
-                    else
+                    if (!it.after || &it == &items.front())  // glued first, it still starts on its bar
                         i["bar"] = it.bar + 1;
                     if (it.repeats != 1)
                         i["repeats"] = it.repeats;
