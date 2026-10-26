@@ -2507,7 +2507,6 @@ std::optional<PerformanceView::SongAction> PerformanceView::drawSong(const LiveS
     const float width = ImGui::GetContentRegionAvail().x, height = ImGui::GetContentRegionAvail().y;
     constexpr int kColumns = 8;
     static constexpr ImU32 kSectionColors[] = {IM_COL32(0x78, 0x82, 0x96, 255), T::kBlue, T::kOrange, T::kPink, T::kViolet, T::kGreen, T::kCyan};
-    constexpr ImU32 kViolet = T::kViolet;
     const int sections = static_cast<int>(song.sections.size());
     const double bar = std::max(live.beatsPerBar, 1);
     // The channels in use, eight at a time, each column and lane its usual size.
@@ -2631,7 +2630,7 @@ std::optional<PerformanceView::SongAction> PerformanceView::drawSong(const LiveS
                 const double at = startOf[static_cast<std::size_t>(s)] + st[i];
                 const double next = i + 1 < items.size() ? startOf[static_cast<std::size_t>(s)] + st[i + 1] : end;
                 const double played = std::min(at + songItemBeats(live, ch, items[i], &open) / bar, std::min(next, end));
-                const ImU32 col = items[i].kind == SongItem::Kind::Chain ? kViolet : chColor;
+                const ImU32 col = chColor;  // clips and chains alike
                 if (played > at)
                     dl->AddRectFilled(ImVec2(xOf(at) + px(0.5f), y), ImVec2(std::max(xOf(played) - px(0.5f), xOf(at) + px(2)), y + laneH), alpha(col, 0.85f), px(2));
                 if ((items[i].loop || open) && next > played)  // on until the next item: hollow
@@ -2781,7 +2780,7 @@ std::optional<PerformanceView::SongAction> PerformanceView::drawSong(const LiveS
                 const double len = songItemBeats(live, ch, it, &open) / bar;
                 const double next = i + 1 < items.size() ? st[i + 1] : bars;
                 const double end = std::min(st[i] + len, std::min(next, static_cast<double>(bars)));
-                const ImU32 col = it.kind == SongItem::Kind::Chain ? kViolet : chColor;
+                const ImU32 col = chColor;
                 const float x0 = ix0 + static_cast<float>(st[i]) * barW, x1 = std::max(ix0 + static_cast<float>(end) * barW, x0 + px(3));
                 if (st[i] >= bars)
                     continue;
@@ -2885,7 +2884,7 @@ std::optional<PerformanceView::SongAction> PerformanceView::drawSong(const LiveS
         const double end = std::min(at + std::max(len, 0.25), std::min(next, static_cast<double>(bars)));
         const bool selected = cursor.editing && cursor.item == static_cast<int>(i);
         const bool rest = it.kind == SongItem::Kind::Rest;
-        const ImU32 col = rest ? IM_COL32(0x7E, 0x84, 0x8C, 255) : it.kind == SongItem::Kind::Chain ? kViolet : chColor;
+        const ImU32 col = rest ? IM_COL32(0x7E, 0x84, 0x8C, 255) : chColor;
         const float x0 = ex0 + static_cast<float>(std::min(at, static_cast<double>(bars))) * barW, x1 = std::max(ex0 + static_cast<float>(end) * barW, x0 + px(10));
         ImGui::PushID(static_cast<int>(i));
         ImGui::SetCursorScreenPos(ImVec2(x0, iy0));
