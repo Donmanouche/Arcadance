@@ -2511,6 +2511,15 @@ std::optional<PerformanceView::SongAction> PerformanceView::drawSong(const LiveS
     dl->AddRectFilled(ImVec2(loopX, by0), ImVec2(loopX + lw, by1), live.song.loop ? alpha(T::kCyan, 0.2f) : T::kControl, px(5));
     dl->AddRect(ImVec2(loopX, by0), ImVec2(loopX + lw, by1), live.song.loop ? T::kCyan : T::kBorder, px(5), px(1));
     text(dl, gBold, px(14.25f), loopX + lw * 0.5f, hy, live.song.loop ? T::kText : T::kLabel, "LOOP SECTION", H::Center, V::Middle);
+    // Loop the song: after its last section, its first again.
+    const float songX = loopX - px(8) - lw;
+    ImGui::SetCursorScreenPos(ImVec2(songX, by0));
+    if (ImGui::InvisibleButton("##loopsong", ImVec2(lw, by1 - by0)))
+        action = SongAction{SongAction::Kind::LoopSong, 0, -1, 0, song.loop ? 0 : 1};
+    ImGui::SetItemTooltip("After its last section, the song plays again from its first");
+    dl->AddRectFilled(ImVec2(songX, by0), ImVec2(songX + lw, by1), song.loop ? alpha(T::kCyan, 0.2f) : T::kControl, px(5));
+    dl->AddRect(ImVec2(songX, by0), ImVec2(songX + lw, by1), song.loop ? T::kCyan : T::kBorder, px(5), px(1));
+    text(dl, gBold, px(14.25f), songX + lw * 0.5f, hy, song.loop ? T::kText : T::kLabel, "LOOP SONG", H::Center, V::Middle);
     if (playing) {
         const SongSection& sec = song.sections[static_cast<std::size_t>(live.song.section)];
         std::string state = (sec.name.empty() ? "SECTION " + std::to_string(live.song.section + 1) : sec.name);
@@ -2520,7 +2529,7 @@ std::optional<PerformanceView::SongAction> PerformanceView::drawSong(const LiveS
             state += "  \xC2\xB7  bar " + std::to_string(static_cast<int>(live.song.beat / bar) + 1) + " of " +
                      std::to_string(barsOf[static_cast<std::size_t>(live.song.section)]);
         state += "  \xC2\xB7  " + clock(playBars * secondsPerBar) + " / " + clock(startOf.back() * secondsPerBar);
-        text(dl, gMedium, px(15.75f), loopX - px(10), hy, T::kGreen, state, H::Right, V::Middle);
+        text(dl, gMedium, px(15.75f), songX - px(10), hy, T::kGreen, state, H::Right, V::Middle);
     }
     // The sections, at scale; a lane per channel shown, where it plays.
     const float sx0 = origin.x + px(100), sx1 = origin.x + width - px(12), sy0 = origin.y + px(45), sy1 = sy0 + px(28);
@@ -3197,7 +3206,10 @@ void PerformanceView::drawLoopPanel(ImDrawList* dl, float x, float w, float loop
         status = waitStatus;
         statusColor = T::kRed;
     } else if (playing) {
-        status = playback == LoopPlayback::Forward ? "FWD" : playback == LoopPlayback::Reverse ? "REV" : "B&F";
+        status = playback == LoopPlayback::Forward    ? "FWD"
+                 : playback == LoopPlayback::Reverse  ? "REV"
+                 : playback == LoopPlayback::Envelope ? "ENV"
+                                                      : "B&F";
         statusColor = color;
     }
     const float statusX = x + w - px(12) - textWidth(gBold, px(10), status);

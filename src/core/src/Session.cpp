@@ -190,6 +190,8 @@ Json sessionToJson(const Session& session) {
             sections.push_back(std::move(o));
         }
         j["song"] = {{"sections", std::move(sections)}};
+        if (session.song.loop)
+            j["song"]["loop"] = true;
     }
     return j;
 }
@@ -382,6 +384,11 @@ Session sessionFromJson(const Json& j) {
         if (!song.is_object() || (song.contains("sections") && !song["sections"].is_array()))
             fail("session.song", "expected an object with a list of sections");
         const Json sections = song.value("sections", Json::array());
+        if (song.contains("loop")) {
+            if (!song["loop"].is_boolean())
+                fail("session.song.loop", "expected true or false");
+            s.song.loop = song["loop"].get<bool>();
+        }
         for (std::size_t i = 0; i < sections.size(); ++i) {
             const Json& o = sections[i];
             const std::string where = "session.song.sections[" + std::to_string(i) + "]";

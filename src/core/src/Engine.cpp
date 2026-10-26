@@ -236,6 +236,11 @@ void Engine::emit(const MidiMessage& message, bool fromLoop) {
         const auto channel = static_cast<std::size_t>(message.bytes[0] & 0x0F);
         const auto note = static_cast<std::size_t>(message.bytes[1] & 0x7F);
         const bool on = kind == 0x90 && message.bytes[2] > 0;
+        if (on) {  // for the envelopes
+            ++notesStarted_[channel];
+            if (soundingNotes_[channel].none())
+                ++notesStartedAlone_[channel];
+        }
         soundingNotes_[channel].set(note, on);
         if (on)
             soundingVelocity_[channel][note] = message.bytes[2];
@@ -1204,9 +1209,22 @@ void Engine::runLoops() {
             loop.turns += 1.0 / (static_cast<double>(std::max(loop.length, 1)) *
                                  (source == static_cast<int>(LoopSource::Notes) ? 1.0 : stretchFactor(loop.stretch)));
             // The playback as it is now: it can change while playing.
-            const LoopPlayback playback = preset_->forChannel(channel).loops[static_cast<std::size_t>(source)].playback;
-            // A synced loop goes where the beat clock says (at this step's time).
-            const bool synced = loop.syncBeats > 0 && clock_.on;
+            const LoopBinding& lb = preset_->forChannel(channel).loops[static_cast<std::size_t>(source)];
+            LoopPlayback playback = lb.playback;
+            if (playback == LoopPlayback::Envelope) {
+                if (source == static_cast<int>(LoopSource::Notes)) {
+                    playback = LoopPlayback::Forward;  // the note loop always loops
+                } else {  // a note started on its channel: from its start again
+                    const std::uint32_t count = (lb.legato ? notesStartedAlone_ : notesStarted_)[static_cast<std::size_t>(channel)];
+                    if (count != loop.envelopeMark) {
+                        loop.envelopeMark = count;
+                        loop.phase = 0;
+                        loop.direction = 1;
+                    }
+                }
+            }
+            // A synced loop goes where the beat clock says (at this step's time); an envelope follows its notes.
+            const bool synced = loop.syncBeats > 0 && clock_.on && playback != LoopPlayback::Envelope;
             double phase = 0;
             int dir = 1;
             if (synced)
@@ -1299,6 +1317,8 @@ namespace {
 // The sample `k` of a loop of `length` samples, `k` possibly outside it: wrapped
 // around for a loop playing in one direction, mirrored for one going back and forth.
 int loopSampleIndex(int k, int length, LoopPlayback playback) {
+    if (playback == LoopPlayback::Envelope)  // played once: no wrapping round
+        return std::clamp(k, 0, length - 1);
     if (playback != LoopPlayback::BackAndForth)
         return (k % length + length) % length;
     const int last = length - 1;
@@ -1660,7 +1680,7 @@ void Engine::playMovementLoop(std::size_t index, LoopPlayback playback, const do
     } else {
         // The samples this step passes over, in the playing direction.
         const int count = static_cast<int>(std::ceil(step));
-        const int dir = playback == LoopPlayback::Reverse ? -1 : (playback == LoopPlayback::Forward ? 1 : loop.direction);
+        const int dir = playback == LoopPlayback::Reverse ? -1 : (playback == LoopPlayback::Forward || playback == LoopPlayback::Envelope ? 1 : loop.direction);
         float sum = 0;
         int on = 0;
         for (int j = 0; j < count; ++j) {
@@ -1681,6 +1701,9 @@ void Engine::playMovementLoop(std::size_t index, LoopPlayback playback, const do
     }
     if (length < 2) {
         loop.phase = 0;
+    } else if (playback == LoopPlayback::Envelope) {  // once, then held on its last sample
+        loop.direction = 1;
+        loop.phase = std::min(loop.phase + step, static_cast<double>(length - 1));
     } else if (playback == LoopPlayback::Forward) {
         loop.direction = 1;
         loop.phase = std::fmod(loop.phase + step, static_cast<double>(length));
@@ -3262,7 +3285,9 @@ void Engine::runSong() {
         if (pos < length)
             return;
         // Its end: the next section (or this one again), the channels it played stopped unless that one starts them on its first bar.
-        const int next = songLoop_ ? songSection_ : songSection_ + 1;
+        int next = songLoop_ ? songSection_ : songSection_ + 1;
+        if (next >= static_cast<int>(song_.sections.size()) && song_.loop)  // the song loops: its first section again
+            next = 0;
         const bool more = next < static_cast<int>(song_.sections.size());
         for (int ch = 0; ch < kChannelCount; ++ch) {
             if (sec.cells[static_cast<std::size_t>(ch)].empty())

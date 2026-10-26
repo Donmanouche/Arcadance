@@ -656,7 +656,7 @@ private:
     // playing stops (one waiting to start, or a stop waiting, is called off);
     // another one is launched; an empty slot is only chosen.
     void pressClip(int channel, int slot, const LiveState& live);
-    // Every window over the view looks like the Options panel.
+    // Every window over the view looks like the Settings panel.
     void pushWindowLook();
     void popWindowLook();
     // False when closed; dialogDismissed_ then tells whether its close button just closed it.
@@ -744,7 +744,7 @@ private:
     SDL_Renderer* renderer_ = nullptr;
     bool quit_ = false;
     int frameCount_ = 0;
-    std::uint64_t nextFrameAt_ = 0;  // with a frame rate set in Options: when the next frame may start
+    std::uint64_t nextFrameAt_ = 0;  // with a frame rate set in Settings: when the next frame may start
     bool standardResolution_ = false;  // the window opened without high pixel density (AppSettings)
 
     fs::path settingsFile_;
@@ -763,7 +763,7 @@ private:
     std::vector<std::string> ports_;
     std::unique_ptr<Runtime> runtime_;
     virmidi::Status virmidiStatus_;
-    int virmidiPorts_ = virmidi::kMaxPorts;  // the choices of the Options panel
+    int virmidiPorts_ = virmidi::kMaxPorts;  // the choices of the Settings panel
     bool virmidiAtStartup_ = false;
     std::future<std::string> virmidiJob_;  // pkexec, waiting for the password
     bool virmidiRemoving_ = false;
@@ -774,7 +774,7 @@ private:
     std::optional<std::string> overlaySpec_;  // control edited over the animated view
     bool overlayAppearing_ = false;
     int overlayPlacingFrames_ = 0;
-    bool optionsOpen_ = false;  // the Options panel over the animated view
+    bool optionsOpen_ = false;  // the Settings panel over the animated view
     bool optionsAppearing_ = false;
     int optionsPlacingFrames_ = 0;
 
@@ -1048,7 +1048,7 @@ void GuiApp::fitPage() {
 }
 
 void GuiApp::frame() {
-    // The frame rate set in Options (vsync still paces the screen's own).
+    // The frame rate set in Settings (vsync still paces the screen's own).
     int fps = settings_.frameRate;
     if (settings_.slowInBackground && !(SDL_GetWindowFlags(window_) & SDL_WINDOW_INPUT_FOCUS))
         fps = fps > 0 ? std::min(fps, 30) : 30;
@@ -1967,6 +1967,10 @@ void GuiApp::songAction(const PerformanceView::SongAction& a, const LiveState& l
         break;
     case K::Stop: runtime_->stopSong(); break;
     case K::Loop: runtime_->setSongLoop(a.value != 0); break;
+    case K::LoopSong:
+        song_.loop = a.value != 0;
+        songEdited();
+        break;
     case K::AddSection: addSongSection(static_cast<int>(song_.sections.size())); break;
     case K::EditCell:
         c.row = a.row;
@@ -2138,7 +2142,7 @@ enum MenuId : int {
     kStartHere, kRandom, kSilence, kInsertStep, kDeleteStep, kEmptyStep,
     kChannelStop, kChannelMute, kChannelSolo, kChainOn, kChainOff, kThenLoop, kThenStop, kThenNext, kPrevChain, kNextChain, kDuplicateChain, kRenameChain, kClearChain,
     kLock, kUnlock, kClearLoop, kResetShape, kSettings, kEditNotes, kPrevChannel, kNextChannel, kRename,
-    kSongPlay, kSongStop, kSongLoop, kSectionRename, kSectionFit, kSectionDuplicate, kSectionInsert, kSectionUp, kSectionDown, kSectionDelete,
+    kSongPlay, kSongStop, kSongLoop, kLoopSong, kSectionRename, kSectionFit, kSectionDuplicate, kSectionInsert, kSectionUp, kSectionDown, kSectionDelete,
     kCellEdit, kCellClear, kCellCopy, kCellPaste,
     kRestBarMore, kRestBarLess, kRestBeatMore, kRestBeatLess,
     kItemChange, kItemGlue, kItemLeft, kItemRight, kItemLoop, kItemKind, kItemDuplicate, kItemDelete, kAddToSong,
@@ -2298,6 +2302,7 @@ void GuiApp::openMenu(const PerformanceView::MenuTarget& t, const LiveState& liv
         else
             add(live.song.playing ? "Go here (next bar)" : "Play from here", kSongPlay);
         add(live.song.loop ? "Loop section: off" : "Loop section: on", kSongLoop);
+        add(song_.loop ? "Loop song: off" : "Loop song: on", kLoopSong);
         add("Rename\xE2\x80\xA6", kSectionRename);
         add(sec.fit ? "Length: fixed" : "Length: = longest channel", kSectionFit);
         add("Duplicate", kSectionDuplicate);
@@ -2640,6 +2645,10 @@ void GuiApp::runMenu(const PerformanceView::MenuTarget& t, int id, const LiveSta
         break;
     case kSongStop: runtime_->stopSong(); break;
     case kSongLoop: runtime_->setSongLoop(!live.song.loop); break;
+    case kLoopSong:
+        song_.loop = !song_.loop;
+        songEdited();
+        break;
     case kSectionRename:
         if (t.slot >= 0 && t.slot < static_cast<int>(song_.sections.size())) {
             renameSection_ = t.slot;
@@ -3003,7 +3012,7 @@ void GuiApp::drawPerformance(const LiveState& live) {
             openNameDialog_ = true;
         }
         ImGui::Separator();
-        if (ImGui::MenuItem("Options…", nullptr, false)) {
+        if (ImGui::MenuItem("Settings…", nullptr, false)) {
             refreshPorts();
             virmidiStatus_ = virmidi::status();
             if (virmidiStatus_.loaded && virmidiPortCount() > 0)
@@ -3601,7 +3610,7 @@ void GuiApp::drawOptionsOverlay(const LiveState& live) {
     pushWindowLook();
     bool open = true;
     ImGui::PushFont(bold, 16.0f);
-    const bool visible = ImGui::Begin("Options###optionsoverlay", &open,
+    const bool visible = ImGui::Begin("Settings###optionsoverlay", &open,
                                       ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoCollapse |
                                           ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoScrollbar);
     ImGui::PopFont();
@@ -4077,7 +4086,7 @@ void GuiApp::drawOptionsOverlay(const LiveState& live) {
         optionsOpen_ = false;
 }
 
-// Creating the snd-virmidi ports, inside the Options panel.
+// Creating the snd-virmidi ports, inside the Settings panel.
 void GuiApp::drawVirMidiSection(bool inOutputDialog) {
     using Theme = PerformanceView::Theme;
     auto color = [](ImU32 c) { return ImGui::ColorConvertU32ToFloat4(c); };
@@ -4318,7 +4327,7 @@ void GuiApp::drawMappingOverlay(const LiveState& live) {
         ImGui::Spacing();
         ImGui::Separator();
         ImGui::PushFont(uiFonts_.bold ? uiFonts_.bold : ImGui::GetFont(), 13.0f);
-        // At the bottom right, as in Options.
+        // At the bottom right, as in Settings.
         const ImGuiStyle& style = ImGui::GetStyle();
         float buttonsW = style.ItemSpacing.x * 2;
         for (const char* label : {"Save preset", "Revert", "Close"})
@@ -4377,12 +4386,12 @@ void GuiApp::popWindowLook() {
     ImGui::PopStyleColor(3);
 }
 
-// A modal over the view: the Options look, its bold title, text in the medium font.
+// A modal over the view: the Settings look, its bold title, text in the medium font.
 bool GuiApp::beginDialog(const char* title, ImGuiWindowFlags flags) {
     using Theme = PerformanceView::Theme;
     const float em = ImGui::GetFontSize();
     pushWindowLook();
-    // As the Options window: translucent, the view behind it not dimmed.
+    // As the Settings window: translucent, the view behind it not dimmed.
     ImGui::PushStyleColor(ImGuiCol_PopupBg,
                           ImGui::ColorConvertU32ToFloat4((Theme::kPanelHeader & ~IM_COL32_A_MASK) | IM_COL32(0, 0, 0, 230)));
     ImGui::PushStyleColor(ImGuiCol_ModalWindowDimBg, ImVec4(0, 0, 0, 0));
@@ -4414,7 +4423,7 @@ void GuiApp::endDialog() {
     popWindowLook();
 }
 
-// The buttons closing a dialog, at the bottom right as in Options.
+// The buttons closing a dialog, at the bottom right as in Settings.
 int GuiApp::dialogButtons(std::initializer_list<const char*> labels, int disabled) {
     ImGui::PushFont(uiFonts_.bold ? uiFonts_.bold : ImGui::GetFont(), 13.0f);
     const ImGuiStyle& style = ImGui::GetStyle();

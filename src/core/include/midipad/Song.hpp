@@ -79,6 +79,7 @@ int sectionBarsOf(const SongSection& section, int beatsPerBar, ItemBeats itemBea
 
 struct Song {
     std::vector<SongSection> sections;
+    bool loop = false;  // after its last section, its first again
     bool empty() const { return sections.empty(); }
     friend bool operator==(const Song&, const Song&) = default;
 };

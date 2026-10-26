@@ -104,8 +104,11 @@ struct AxisBinding {
 };
 
 // A stick movement recorded by a LoopRecord button and played back in a loop,
-// beside the stick, on CCs of its own.
-enum class LoopPlayback : std::uint8_t { Forward, Reverse, BackAndForth };
+// beside the stick, on CCs of its own. Envelope (movement loops only): played
+// once from its start each time a note starts on the channel (played live or
+// by the note loop), then held on its last value until the next note; with
+// `legato`, only a note starting while none sounds starts it again.
+enum class LoopPlayback : std::uint8_t { Forward, Reverse, BackAndForth, Envelope };
 
 // A movement loop played in steps: each step holds one value, on one of
 // `levels` levels of the CC range. `step` indexes kStepBeats.
@@ -124,6 +127,7 @@ struct LoopBinding {
     LoopPlayback playback = LoopPlayback::Forward;
     std::uint8_t ccX = 70, ccY = 71;
     std::array<StepGrid, 2> steps{};  // X (L2), Y (R2)
+    bool legato = false;              // Envelope: notes tied to one sounding do not start it again
     friend bool operator==(const LoopBinding&, const LoopBinding&) = default;
 };
 

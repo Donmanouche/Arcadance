@@ -552,8 +552,17 @@ Mapping mappingFromJson(const Json& j, const std::string& where) {
                 loop.playback = LoopPlayback::Reverse;
             else if (playback == "back_and_forth")
                 loop.playback = LoopPlayback::BackAndForth;
+            else if (playback == "envelope" && source != static_cast<long>(LoopSource::Notes))
+                loop.playback = LoopPlayback::Envelope;
             else
-                fail(at + ".playback", "expected \"forward\", \"reverse\" or \"back_and_forth\"");
+                fail(at + ".playback", source == static_cast<long>(LoopSource::Notes)
+                                           ? "expected \"forward\", \"reverse\" or \"back_and_forth\""
+                                           : "expected \"forward\", \"reverse\", \"back_and_forth\" or \"envelope\"");
+            if (value.contains("legato")) {
+                if (!value["legato"].is_boolean())
+                    fail(at + ".legato", "expected true or false");
+                loop.legato = value["legato"].get<bool>();
+            }
             loop.ccX = readU7(value, "cc_x", loop.ccX, at);
             loop.ccY = readU7(value, "cc_y", loop.ccY, at);
             // Steps, per axis: {"levels": 8, "step": "1/16"}.
@@ -675,9 +684,12 @@ Json mappingToJson(const Mapping& m) {
         if (loop == kDefaultLoops[s])
             continue;
         Json lj;
-        lj["playback"] = loop.playback == LoopPlayback::Forward   ? "forward"
-                         : loop.playback == LoopPlayback::Reverse ? "reverse"
-                                                                  : "back_and_forth";
+        lj["playback"] = loop.playback == LoopPlayback::Forward    ? "forward"
+                         : loop.playback == LoopPlayback::Reverse  ? "reverse"
+                         : loop.playback == LoopPlayback::Envelope ? "envelope"
+                                                                   : "back_and_forth";
+        if (loop.legato)
+            lj["legato"] = true;
         lj["cc_x"] = loop.ccX;
         lj["cc_y"] = loop.ccY;
         for (int axis = 0; axis < 2; ++axis) {

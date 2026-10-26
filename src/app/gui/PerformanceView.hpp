@@ -126,7 +126,7 @@ public:
         bool editing = false;
     };
     struct SongAction {
-        enum class Kind : std::uint8_t { Cursor, Play, Stop, Loop, AddSection, EditCell, Bars, ItemSelect, ItemMove, ItemContent, ItemRepeats, AddItem } kind =
+        enum class Kind : std::uint8_t { Cursor, Play, Stop, Loop, LoopSong, AddSection, EditCell, Bars, ItemSelect, ItemMove, ItemContent, ItemRepeats, AddItem } kind =
             Kind::Cursor;
         int row = 0, col = -1, item = 0, value = 0;
     };

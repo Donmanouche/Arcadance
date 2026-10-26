@@ -567,6 +567,9 @@ private:
         std::uint64_t nextAt = 0, interval = 0;
     };
     std::array<RetriggerRun, kChannelCount> retriggerRuns_{};
+    // Notes started per channel, and those started while none sounded: an
+    // envelope starts again when its count moves.
+    std::array<std::uint32_t, kChannelCount> notesStarted_{}, notesStartedAlone_{};
     void startRetrigger(const TriggerBinding& binding);
     void runRetriggers();
     std::uint32_t livePress(int channel, int note) const;  // the press a note played live sounds from; 0: none
@@ -658,6 +661,7 @@ private:
         float modValue = 0.5f;      // the value it played last, [0, 1], for the loops it modulates
         int offset = 0;             // percent of the travel (offsetLoop)
         float offsetNow = 0;        // eased towards offset / 100
+        std::uint32_t envelopeMark = 0;  // Envelope: the channel's note count it last started on
     };
     // A movement loop of a channel's current clip; null for the note loop or
     // a source out of range.

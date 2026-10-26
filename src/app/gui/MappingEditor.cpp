@@ -556,14 +556,25 @@ bool MappingEditor::drawLoopForm(int source, Mapping& m, const LiveState& live) 
     ImGui::SeparatorText(kTitles[source]);
     ImGui::AlignTextToFramePadding();
     ImGui::TextUnformatted("Playback");
-    const std::pair<LoopPlayback, const char*> playbacks[] = {
-        {LoopPlayback::Forward, "Forward"}, {LoopPlayback::Reverse, "Reverse"}, {LoopPlayback::BackAndForth, "Back & forth"}};
+    // A movement loop may also be an envelope: once from its start at each note of the channel.
+    const bool notes = source == static_cast<int>(LoopSource::Notes);
+    const std::pair<LoopPlayback, const char*> playbacks[] = {{LoopPlayback::Forward, "Forward"},
+                                                              {LoopPlayback::Reverse, "Reverse"},
+                                                              {LoopPlayback::BackAndForth, "Back & forth"},
+                                                              {LoopPlayback::Envelope, "Envelope"}};
     for (auto [playback, text] : playbacks) {
+        if (notes && playback == LoopPlayback::Envelope)
+            continue;
         ImGui::SameLine();
         if (ImGui::RadioButton(text, loop.playback == playback) && loop.playback != playback) {
             loop.playback = playback;
             changed = true;
         }
+    }
+    if (!notes && loop.playback == LoopPlayback::Envelope) {
+        ImGui::SameLine();
+        changed |= ImGui::Checkbox("Legato", &loop.legato);
+        ImGui::SetItemTooltip("A note played while another sounds does not start the envelope again");
     }
     if (source == static_cast<int>(LoopSource::Notes)) {
         if (ImGui::Button("Clear the loop"))
@@ -1088,11 +1099,11 @@ bool MappingEditor::drawNoteField(std::uint8_t& note) {
 
 bool MappingEditor::drawHumanizeCheckbox(TriggerBinding& b) {
     const bool changed = ImGui::Checkbox("Humanize", &b.humanize);
-    ImGui::SetItemTooltip("Random velocity and timing on the channels chosen in Options; "
+    ImGui::SetItemTooltip("Random velocity and timing on the channels chosen in Settings; "
                           "each note of a chord varies on its own.");
     if (b.humanize && humanizeChannels_ == 0) {
         ImGui::SameLine();
-        ImGui::TextColored(kHintColor, "off on every channel (Options)");
+        ImGui::TextColored(kHintColor, "off on every channel (Settings)");
     }
     return changed;
 }
