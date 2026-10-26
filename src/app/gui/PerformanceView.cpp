@@ -181,6 +181,19 @@ void led(ImDrawList* dl, ImVec2 c, float r, ImU32 col, bool on) {
 constexpr ImU32 kChannelColors[] = {T::kBlue, T::kPink, T::kGreen, T::kOrange, T::kViolet,
                                     T::kCyan, IM_COL32(0xFF, 0xD6, 0x40, 255), IM_COL32(0xFF, 0x78, 0x5A, 255)};
 
+}  // namespace
+
+ImU32 PerformanceView::defaultChannelColor(int channel) {
+    return kChannelColors[((channel % 8) + 8) % 8];
+}
+
+ImU32 PerformanceView::channelColor(int channel) const {
+    const auto& own = channelColors_[static_cast<std::size_t>(std::clamp(channel, 0, kChannelCount - 1))];
+    return own ? IM_COL32((*own >> 16) & 0xFF, (*own >> 8) & 0xFF, *own & 0xFF, 255) : defaultChannelColor(channel);
+}
+
+namespace {
+
 // A movement track's colour (its module's) and short name, for the badges of a modulation.
 ImU32 trackColor(int track) {
     static constexpr ImU32 kColors[] = {T::kBlue, T::kOrange, T::kCyan, T::kOrange, T::kPink, T::kViolet};
@@ -250,16 +263,19 @@ void screen(ImDrawList* dl, ImVec2 a, ImVec2 b, ImU32 tint, Content&& content) {
         dl->AddRect(a, b, IM_COL32(0, 0, 0, 220), px(4), 1.5f);
 }
 
-// A clip or a section in the default look: a flat card; a screen in a
-// phosphor look.
+// A clip or a section in the default look: a flat card, outlined, or filled
+// with `fill` of its tint (no outline); a screen in a phosphor look.
 template <typename Content>
-void card(ImDrawList* dl, ImVec2 a, ImVec2 b, ImU32 tint, Content&& content) {
+void card(ImDrawList* dl, ImVec2 a, ImVec2 b, ImU32 tint, Content&& content, float fill = 0.0f) {
     if (gLook != 0) {
         screen(dl, a, b, tint, content);
         return;
     }
-    dl->AddRectFilled(a, b, IM_COL32(0x23, 0x26, 0x2B, 255), px(6));
-    dl->AddRect(a, b, IM_COL32(0x30, 0x34, 0x3A, 255), px(6), px(1));
+    dl->AddRectFilled(a, b, IM_COL32(0x1E, 0x20, 0x24, 255), px(6));
+    if (fill > 0)
+        dl->AddRectFilled(a, b, alpha(tint, fill), px(6));
+    else
+        dl->AddRect(a, b, IM_COL32(0x30, 0x34, 0x3A, 255), px(6), px(1));
     dl->PushClipRect(a, b, true);
     content();
     dl->PopClipRect();
@@ -1809,7 +1825,7 @@ std::optional<PerformanceView::SessionAction> PerformanceView::drawSession(const
     for (int col = 0; col < kColumns; ++col) {
         const int ch = sessionFirst_ + col;
         const auto c = static_cast<std::size_t>(ch);
-        const ImU32 chColor = kChannelColors[ch % 8];
+        const ImU32 chColor = channelColor(ch);
         const float x = origin.x + static_cast<float>(col) * (colW + gap);
         const bool playing = (live.clipsPlaying >> ch) & 1u;
         if (gLook) {
@@ -1899,10 +1915,13 @@ std::optional<PerformanceView::SessionAction> PerformanceView::drawSession(const
                 const ImU32 outline = clip.recording ? T::kRed : clipPlays ? T::kGreen : queued ? alpha(T::kGreen, blink ? 0.9f : 0.3f)
                                     : hovered      ? T::kControlBorder
                                                    : 0;
-                card(dl, a, b, chColor, [&] {
+                card(
+                    dl, a, b, chColor, [&] {
                     // Its name and a green LED (lit playing or recording, blinking
-                    // waiting to start), its notes below, else one of its curves.
-                    dl->AddRectFilled(ImVec2(a.x + px(2), a.y + px(4)), ImVec2(a.x + px(5), b.y - px(4)), chColor, px(1));
+                    // waiting to start), its notes below, else one of its curves;
+                    // a bar of its channel's colour on a screen.
+                    if (gLook != 0)
+                        dl->AddRectFilled(ImVec2(a.x + px(2), a.y + px(4)), ImVec2(a.x + px(5), b.y - px(4)), chColor, px(1));
                     text(dl, gBold, px(12.5f), a.x + px(11), a.y + px(13), T::kText, "Clip " + std::to_string(slot + 1), H::Left, V::Middle);
                     led(dl, ImVec2(b.x - px(12), a.y + px(13)), px(4.5f), T::kGreen, clipPlays || clip.recording || (queued && blink));
                     const float x0 = a.x + px(11), x1 = b.x - px(9), y0 = a.y + px(26), y1 = b.y - px(8), th = px(3);
@@ -1918,7 +1937,7 @@ std::optional<PerformanceView::SessionAction> PerformanceView::drawSession(const
                             const float nx1 = std::max(x0 + (x1 - x0) * static_cast<float>(n[1]) / 255.0f, nx0 + px(3));
                             const float t = hi > lo ? static_cast<float>(n[2] - lo) / static_cast<float>(hi - lo) : 0.5f;
                             const float ny = y1 - th - t * (y1 - y0 - th);
-                            dl->AddRectFilled(ImVec2(nx0, ny), ImVec2(nx1, ny + th), gLook == 0 ? IM_COL32(0xC9, 0xCE, 0xD6, 255) : IM_COL32(0xF0, 0xF2, 0xF5, 242),
+                            dl->AddRectFilled(ImVec2(nx0, ny), ImVec2(nx1, ny + th), IM_COL32(0xF0, 0xF2, 0xF5, 242),
                                               th * 0.4f);
                         }
                     } else {
@@ -1940,7 +1959,7 @@ std::optional<PerformanceView::SessionAction> PerformanceView::drawSession(const
                         dl->AddRectFilled(ta, tb, IM_COL32(0, 0, 0, 170), px(2));
                         dl->AddRectFilled(ta, ImVec2(ta.x + (tb.x - ta.x) * p, tb.y), T::kGreen, px(2));
                     }
-                });
+                }, clipPlays ? 0.40f : 0.20f);
                 if (outline)
                     dl->AddRect(a, b, outline, px(gLook == 0 ? 6 : 4), px(clip.recording || clipPlays || queued ? 2.0f : 1.0f));
             }
@@ -2100,7 +2119,7 @@ std::optional<PerformanceView::SessionAction> PerformanceView::drawChainStrip(Im
     const LiveState::Chains& chains = live.chains[c];
     const int shownChain = std::clamp(shownChains_[c], 0, Engine::kChains - 1);
     const LiveState::Chain& chain = chains.list[static_cast<std::size_t>(shownChain)];
-    const ImU32 chColor = kChannelColors[ch % 8];
+    const ImU32 chColor = channelColor(ch);
     const bool anyRuns = chains.at >= 0 && chains.playing >= 0;
     const bool runs = anyRuns && chains.playing == shownChain;  // the chain shown plays
     const bool nextHere = chains.next >= 0 && (chains.nextChain >= 0 ? chains.nextChain == shownChain : runs);
@@ -2268,8 +2287,10 @@ std::optional<PerformanceView::SessionAction> PerformanceView::drawChainStrip(Im
             static const LiveState::Clip kNone{};
             const LiveState::Clip& clip = shown >= 0 ? live.clips[c * Engine::kClipSlots + static_cast<std::size_t>(shown)] : kNone;
             const ImU32 outline = playsNow ? T::kGreen : isNext ? alpha(T::kGreen, blink ? 0.9f : 0.3f) : hovered ? T::kControlBorder : 0;
-            card(dl, a, b, random ? T::kViolet : chColor, [&] {  // a card or a screen, its state around it
-            dl->AddRectFilled(ImVec2(x0 + px(2), y0 + px(6)), ImVec2(x0 + px(5), y1 - px(6)), chColor, px(1));
+            card(
+                dl, a, b, random ? T::kViolet : chColor, [&] {  // a card filled with its colour, or a screen; its state around it
+            if (gLook != 0)
+                dl->AddRectFilled(ImVec2(x0 + px(2), y0 + px(6)), ImVec2(x0 + px(5), y1 - px(6)), chColor, px(1));
             const ImU32 kViolet = T::kViolet;
             if (random) {
                 text(dl, gBold, px(26), x0 + px(12), y0 + px(19), kViolet, "R", H::Left, V::Middle);
@@ -2345,7 +2366,7 @@ std::optional<PerformanceView::SessionAction> PerformanceView::drawChainStrip(Im
                 dl->AddRectFilled(ta, ImVec2(ta.x + (tb.x - ta.x) * p, tb.y), T::kGreen, px(2));
                 dl->AddTriangleFilled(ImVec2(x1 - px(16), y1 - px(18)), ImVec2(x1 - px(16), y1 - px(8)), ImVec2(x1 - px(8), y1 - px(13)), T::kGreen);
             }
-            });
+            }, playsNow ? 0.40f : 0.20f);
             if (outline)
                 dl->AddRect(a, b, outline, px(gLook == 0 ? 6 : 4), px(playsNow || isNext ? 2.0f : 1.0f));
         }
@@ -2596,7 +2617,7 @@ std::optional<PerformanceView::SongAction> PerformanceView::drawSong(const LiveS
         const int ch = channelAt(k);
         const auto c = static_cast<std::size_t>(ch);
         const float y = ly0 + static_cast<float>(k) * (laneH + px(2));
-        const ImU32 chColor = kChannelColors[ch % 8];
+        const ImU32 chColor = channelColor(ch);
         text(dl, gBold, px(12), origin.x + px(12), y + laneH * 0.5f, chColor, fit(gBold, px(12), channelTitle(ch), px(82)), H::Left, V::Middle);
         dl->AddRectFilled(ImVec2(sx0, y), ImVec2(sx1, y + laneH), IM_COL32(0, 0, 0, 70), px(2));
         for (int s = 0; s < sections; ++s) {
@@ -2638,7 +2659,7 @@ std::optional<PerformanceView::SongAction> PerformanceView::drawSong(const LiveS
     for (int k = 0; k < count; ++k) {
         const int ch = channelAt(k);
         const float x = cx0 + static_cast<float>(k) * (colW + gap);
-        text(dl, gBold, px(15), x + px(4), gy0 + px(18), kChannelColors[ch % 8], fit(gBold, px(15), channelTitle(ch), colW - px(8)), H::Left, V::Middle);
+        text(dl, gBold, px(15), x + px(4), gy0 + px(18), channelColor(ch), fit(gBold, px(15), channelTitle(ch), colW - px(8)), H::Left, V::Middle);
         // Its header: a double-click renames the channel, a right-click opens its menu.
         ImGui::PushID(ch);
         ImGui::SetCursorScreenPos(ImVec2(x, gy0));
@@ -2747,12 +2768,12 @@ std::optional<PerformanceView::SongAction> PerformanceView::drawSong(const LiveS
                 else
                     dl->AddRectFilled(a, b, IM_COL32(0x26, 0x29, 0x2E, 255), px(6));
             } else {  // a card or a screen in the channel's colour
-                card(dl, a, b, kChannelColors[ch % 8], [] {});
+                card(dl, a, b, channelColor(ch), [] {});
                 if (now)
                     dl->AddRect(a, b, alpha(T::kGreen, 0.8f), px(gLook == 0 ? 6 : 4), px(1));
             }
             const float ix0 = a.x + px(6), ix1 = b.x - px(6), barW = (ix1 - ix0) / static_cast<float>(bars);
-            const ImU32 chColor = kChannelColors[ch % 8];
+            const ImU32 chColor = channelColor(ch);
             const auto st = songItemBars(live, ch, items);
             for (std::size_t i = 0; i < items.size(); ++i) {
                 const SongItem& it = items[i];
@@ -2824,7 +2845,7 @@ std::optional<PerformanceView::SongAction> PerformanceView::drawSong(const LiveS
     const SongSection& sec = song.sections[static_cast<std::size_t>(r)];
     const auto& items = sec.cells[static_cast<std::size_t>(ch)];
     const int bars = barsOf[static_cast<std::size_t>(r)];
-    const ImU32 chColor = kChannelColors[ch % 8];
+    const ImU32 chColor = channelColor(ch);
     {
         const std::string title = (sec.name.empty() ? "SECTION " + std::to_string(r + 1) : sec.name);
         text(dl, gBold, px(16.5f), origin.x + px(12), ey0 + px(19), T::kText, title, H::Left, V::Middle);

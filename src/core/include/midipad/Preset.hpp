@@ -217,6 +217,9 @@ struct Preset {
     std::array<std::optional<Mapping>, kChannelCount> channels;
     // A name per channel ("BASS", "PADS"), shown with its number; empty: none.
     std::array<std::string, kChannelCount> channelNames;
+    // A colour per channel (0xRRGGBB) for the session and song screens; none:
+    // its own.
+    std::array<std::optional<std::uint32_t>, kChannelCount> channelColors;
     // The channels whose note loop editor shows every note alike (chromatic,
     // drums), a bit each; the others move notes on the tonality's degrees.
     std::uint16_t chromaticChannels = 0;

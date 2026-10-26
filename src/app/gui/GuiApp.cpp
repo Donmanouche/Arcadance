@@ -676,6 +676,10 @@ private:
     // Copy mapping: into a channel, from another, the parts chosen (CopyPart bits).
     void drawCopyDialog();
     bool openCopyDialog_ = false;
+    // A channel's colour: the channel (from its menu).
+    void drawColourDialog();
+    bool openColour_ = false;
+    int colourChannel_ = -1;
     int copyTo_ = 0, copyFrom_ = 0;
     unsigned copyParts_ = 0xFF;
     int copyControlFrom_ = -1;  // the channel a control's window copies from (-1: channel 1, or 2 on channel 1)
@@ -2141,7 +2145,7 @@ enum MenuId : int {
     kLaunch, kStop, kRecordHere, kDuplicate, kAddToChain, kClearClip,
     kStartHere, kRandom, kSilence, kInsertStep, kDeleteStep, kEmptyStep,
     kChannelStop, kChannelMute, kChannelSolo, kChainOn, kChainOff, kThenLoop, kThenStop, kThenNext, kPrevChain, kNextChain, kDuplicateChain, kRenameChain, kClearChain,
-    kLock, kUnlock, kClearLoop, kResetShape, kSettings, kEditNotes, kPrevChannel, kNextChannel, kRename,
+    kLock, kUnlock, kClearLoop, kResetShape, kSettings, kEditNotes, kPrevChannel, kNextChannel, kRename, kColour,
     kSongPlay, kSongStop, kSongLoop, kLoopSong, kSectionRename, kSectionFit, kSectionDuplicate, kSectionInsert, kSectionUp, kSectionDown, kSectionDelete,
     kCellEdit, kCellClear, kCellCopy, kCellPaste,
     kRestBarMore, kRestBarLess, kRestBeatMore, kRestBeatLess,
@@ -2211,6 +2215,7 @@ void GuiApp::openMenu(const PerformanceView::MenuTarget& t, const LiveState& liv
         add(((live.muted >> t.channel) & 1u) ? "Unmute" : "Mute", kChannelMute);
         add(((live.soloed >> t.channel) & 1u) ? "Solo off" : "Solo", kChannelSolo);
         add("Rename\xE2\x80\xA6", kRename);
+        add("Colour\xE2\x80\xA6", kColour);
         if (t.slot == 1)
             break;
         add("Copy mapping from\xE2\x80\xA6", kCopyMapping);
@@ -2289,6 +2294,7 @@ void GuiApp::openMenu(const PerformanceView::MenuTarget& t, const LiveState& liv
         add("Next channel", kNextChannel);
         add("Previous channel", kPrevChannel);
         add("Rename\xE2\x80\xA6", kRename);
+        add("Colour\xE2\x80\xA6", kColour);
         add("Copy mapping from\xE2\x80\xA6", kCopyMapping);
         break;
     case K::Section: {
@@ -2322,6 +2328,7 @@ void GuiApp::openMenu(const PerformanceView::MenuTarget& t, const LiveState& liv
         add("Copy", kCellCopy, !items->empty());
         add("Paste", kCellPaste, !songClipboard_.empty());
         add("Rename the channel\xE2\x80\xA6", kRename);
+        add("Colour of the channel\xE2\x80\xA6", kColour);
         break;
     }
     case K::SongPick: {
@@ -2634,6 +2641,10 @@ void GuiApp::runMenu(const PerformanceView::MenuTarget& t, int id, const LiveSta
         renameSection_ = -1;
         renameInput_ = preset_.channelNames[c];
         openRename_ = true;
+        break;
+    case kColour:
+        colourChannel_ = ch;
+        openColour_ = true;
         break;
     case kAddToSong:
         addToSong(ch, t.kind == K::Chain ? midipad::SongItem::Kind::Chain : midipad::SongItem::Kind::Clip, t.kind == K::Chain ? shown : t.slot, live);
@@ -3427,6 +3438,7 @@ void GuiApp::drawPerformance(const LiveState& live) {
     // In the session screen and edit mode, the left stick moves and the right one sets values.
     runtime_->setSessionValues(sessionView_ || editView_ || songView_);
     performance_.setChannelNames(preset_.channelNames);
+    performance_.setChannelColors(preset_.channelColors);
     performance_.setChains(shownChain_, chainNames_);
     performance_.setEditMode(editView_ && !overlaySpec_ && !optionsOpen_);
     if (sessionView_) {
@@ -4794,6 +4806,7 @@ void GuiApp::drawDialogs() {
     drawNewSongDialog();
     drawQuitDialog();
     drawCopyDialog();
+    drawColourDialog();
     drawAboutDialog();
 }
 
@@ -4929,6 +4942,69 @@ void GuiApp::drawNameDialog() {
         afterSave_ = nullptr;
         ImGui::CloseCurrentPopup();
     }
+    endDialog();
+}
+
+// A channel's colour (kept in the preset): one of 48, any other, or its own
+// again; shown at once on the session and song screens.
+void GuiApp::drawColourDialog() {
+    constexpr const char* kTitle = "Colour";
+    if (openColour_) {
+        ImGui::OpenPopup(kTitle);
+        openColour_ = false;
+    }
+    if (colourChannel_ < 0 || colourChannel_ >= kChannelCount || !beginDialog(kTitle))
+        return;
+    auto& own = preset_.channelColors[static_cast<std::size_t>(colourChannel_)];
+    const ImU32 shown = performance_.channelColor(colourChannel_);
+    auto set = [&](std::optional<std::uint32_t> colour) {
+        if (colour == own)
+            return;
+        own = colour;
+        dirty_ = true;  // the preset changed; the engine has no use for it
+    };
+    ImGui::TextUnformatted(channelLabel(colourChannel_).c_str());
+    ImGui::Spacing();
+    // 12 hues on 4 rows: pale, bright, deep, dark.
+    static constexpr float kRows[4][2] = {{0.45f, 1.0f}, {0.70f, 1.0f}, {0.85f, 0.85f}, {0.90f, 0.60f}};
+    const float swatch = ImGui::GetFontSize() * 1.5f;
+    for (int row = 0; row < 4; ++row)
+        for (int hue = 0; hue < 12; ++hue) {
+            float r = 0, g = 0, b = 0;
+            ImGui::ColorConvertHSVtoRGB(static_cast<float>(hue) / 12.0f, kRows[row][0], kRows[row][1], r, g, b);
+            const auto rgb = static_cast<std::uint32_t>(std::lround(r * 255)) << 16 | static_cast<std::uint32_t>(std::lround(g * 255)) << 8 |
+                             static_cast<std::uint32_t>(std::lround(b * 255));
+            if (hue > 0)
+                ImGui::SameLine(0, ImGui::GetFontSize() * 0.25f);
+            ImGui::PushID(row * 12 + hue);
+            const bool chosen = own && *own == rgb;
+            if (chosen)
+                ImGui::PushStyleColor(ImGuiCol_Border, IM_COL32(255, 255, 255, 255));
+            if (chosen)
+                ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 2.0f);
+            if (ImGui::ColorButton("##swatch", ImVec4(r, g, b, 1), ImGuiColorEditFlags_NoTooltip | ImGuiColorEditFlags_NoBorder * !chosen,
+                                   ImVec2(swatch, swatch)))
+                set(rgb);
+            if (chosen) {
+                ImGui::PopStyleVar();
+                ImGui::PopStyleColor();
+            }
+            ImGui::PopID();
+        }
+    ImGui::Spacing();
+    float rgb[3] = {static_cast<float>((shown >> IM_COL32_R_SHIFT) & 0xFF) / 255.0f, static_cast<float>((shown >> IM_COL32_G_SHIFT) & 0xFF) / 255.0f,
+                    static_cast<float>((shown >> IM_COL32_B_SHIFT) & 0xFF) / 255.0f};
+    ImGui::SetNextItemWidth(swatch * 12 + ImGui::GetFontSize() * 0.25f * 11 - ImGui::GetFrameHeight() - ImGui::GetStyle().ItemInnerSpacing.x);
+    if (ImGui::ColorPicker3("##picker", rgb,
+                            ImGuiColorEditFlags_NoSidePreview | ImGuiColorEditFlags_PickerHueBar | ImGuiColorEditFlags_DisplayRGB |
+                                ImGuiColorEditFlags_DisplayHex))
+        set(static_cast<std::uint32_t>(std::lround(rgb[0] * 255)) << 16 | static_cast<std::uint32_t>(std::lround(rgb[1] * 255)) << 8 |
+            static_cast<std::uint32_t>(std::lround(rgb[2] * 255)));
+    const int button = dialogButtons({"Default", "Close"});
+    if (button == 0)
+        set(std::nullopt);
+    if (button == 1 || ImGui::IsKeyPressed(ImGuiKey_Escape))
+        ImGui::CloseCurrentPopup();
     endDialog();
 }
 

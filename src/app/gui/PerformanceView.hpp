@@ -175,6 +175,11 @@ public:
     std::optional<int> takeRenameRequest() { return std::exchange(renameRequest_, std::nullopt); }
     // The channels' names (Preset::channelNames), shown with their numbers.
     void setChannelNames(const std::array<std::string, midipad::kChannelCount>& names) { channelNames_ = names; }
+    // The channels' colours (Preset::channelColors, 0xRRGGBB); a channel
+    // without one has its default.
+    void setChannelColors(const std::array<std::optional<std::uint32_t>, midipad::kChannelCount>& colors) { channelColors_ = colors; }
+    ImU32 channelColor(int channel) const;
+    static ImU32 defaultChannelColor(int channel);
     // The chain the session screen shows for each channel, and the chains' names.
     using ChainNames = std::array<std::array<std::string, midipad::Engine::kChains>, midipad::kChannelCount>;
     void setChains(const std::array<int, midipad::kChannelCount>& shown, const ChainNames& names) {
@@ -297,6 +302,7 @@ private:
     std::optional<int> channelRequest_;
     std::optional<int> renameRequest_;
     std::array<std::string, midipad::kChannelCount> channelNames_;
+    std::array<std::optional<std::uint32_t>, midipad::kChannelCount> channelColors_;
     std::array<int, midipad::kChannelCount> shownChains_{};
     int songScroll_ = 0, songFirst_ = 0;  // the first section row shown; the first channel shown, in songChannels
     int songDragBars_ = 0;                // an item being dragged: by how many bars

@@ -51,12 +51,12 @@ had: a looper, clips, chains and a song arranger you drive with your thumbs.
   1/8 down to 1/64, triplets too, up to 16 repeats, each with its own velocity.
   Record them into your loop and they stay.
 - **Sixteen channels, one controller.** Drums on one channel, bass on another,
-  pads on a third, each with its own layout and name. Switch while playing;
+  pads on a third, each with its own layout, name and colour. Switch while playing;
   every channel keeps looping.
 
 ## Build a track with your thumbs
 
-![The session screen: a column of clips per channel, each clip a card with its channel's colour, its notes or its movement, those playing outlined in green, and the chain of channel 1 underneath](docs/media/session.png)
+![The session screen: a column of clips per channel, each clip filled with its channel's colour, its notes or its movement, those playing outlined in green, and the chain of channel 1 underneath](docs/media/session.png)
 
 1. **Record clips.** Each channel keeps up to eight clips, each a full set of
    loops. The session screen shows them all, a column per channel. Launch a clip

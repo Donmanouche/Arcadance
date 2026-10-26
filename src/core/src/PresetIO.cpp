@@ -6,6 +6,8 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <cctype>
+#include <cstdio>
 #include <cstdlib>
 #include <iterator>
 #include <string_view>
@@ -800,6 +802,24 @@ Preset presetFromJson(const Json& j) {
             p.channelNames[static_cast<std::size_t>(channel - 1)] = truncateUtf8(value.get<std::string>(), 24);
         }
     }
+    if (j.contains("channel_colors")) {
+        for (const auto& [key, value] : requireObject(j["channel_colors"], "channel_colors").items()) {
+            int channel = 0;
+            try {
+                std::size_t used = 0;
+                channel = std::stoi(key, &used);
+                if (used != key.size())
+                    channel = 0;
+            } catch (const std::exception&) {
+            }
+            const std::string text = value.is_string() ? value.get<std::string>() : std::string();
+            const bool hex = text.size() == 7 && text[0] == '#' &&
+                             std::all_of(text.begin() + 1, text.end(), [](char c) { return std::isxdigit(static_cast<unsigned char>(c)) != 0; });
+            if (channel < 1 || channel > kChannelCount || !hex)
+                fail("channel_colors." + key, "expected a channel number from 1 to 16 and a colour such as \"#FF785A\"");
+            p.channelColors[static_cast<std::size_t>(channel - 1)] = static_cast<std::uint32_t>(std::stoul(text.substr(1), nullptr, 16));
+        }
+    }
     if (j.contains("chromatic_channels")) {
         const Json& list = j["chromatic_channels"];
         if (!list.is_array())
@@ -837,6 +857,15 @@ Json presetToJson(const Preset& p) {
             names[std::to_string(i + 1)] = p.channelNames[static_cast<std::size_t>(i)];
     if (!names.empty())
         j["channel_names"] = names;
+    Json colors = Json::object();
+    for (int i = 0; i < kChannelCount; ++i)
+        if (const auto& c = p.channelColors[static_cast<std::size_t>(i)]) {
+            char text[8];
+            std::snprintf(text, sizeof text, "#%06X", static_cast<unsigned>(*c & 0xFFFFFFu));
+            colors[std::to_string(i + 1)] = text;
+        }
+    if (!colors.empty())
+        j["channel_colors"] = colors;
     Json chromatic = Json::array();
     for (int i = 0; i < kChannelCount; ++i)
         if ((p.chromaticChannels >> i) & 1u)
