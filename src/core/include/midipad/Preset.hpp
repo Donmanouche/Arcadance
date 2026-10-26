@@ -20,14 +20,33 @@ enum class ActionType : std::uint8_t {
     None, Note, ControlChange, Chord, Transport, ChannelStep, Freeze, LoopRecord, ProgramChange, Shift, TapTempo,
     SessionScreen,  // opens and closes the session screen
     RecenterTilt,   // the tilt's center: where the controller is held now
-    Retrigger       // the notes sounding on the active channel, played again
+    Effect          // a MIDI effect on the notes of the active channel (EffectKind)
 };
 
-// Retrigger: how many times, and every how much of a beat (by the tempo).
-inline constexpr int kMaxRetriggers = 16;
-inline constexpr int kRetriggerChoices = 7;
-inline constexpr std::array<std::string_view, kRetriggerChoices> kRetriggerEveryNames{"1/8", "1/8T", "1/16", "1/16T", "1/32", "1/32T", "1/64"};
-inline constexpr std::array<double, kRetriggerChoices> kRetriggerEveryBeats{0.5, 1.0 / 3.0, 0.25, 1.0 / 6.0, 0.125, 1.0 / 12.0, 0.0625};
+// The MIDI effects:
+// - Retrigger: each note sounding on the active channel when pressed (played
+//   live or by a loop) ends and starts again;
+// - Delay: each note played live on the active channel while it is on (held,
+//   or latched by a Toggle press) echoes, each echo transposed by
+//   effectTranspose semitones more than the one before; an echo lasts as the
+//   note, at most 90% of the time between echoes.
+// Both repeat effectRepeats times, one every kEffectEveryBeats[effectEvery]
+// beats of the tempo, repeat k at effectVelocity[k] percent of the note's
+// velocity (1 to 127).
+enum class EffectKind : std::uint8_t { Retrigger, Delay };
+inline constexpr int kEffectKinds = 2;
+inline constexpr std::array<std::string_view, kEffectKinds> kEffectNames{"retrigger", "delay"};
+inline constexpr int kMaxEffectRepeats = 16;
+inline constexpr int kMaxEffectVelocity = 200;  // percent
+inline constexpr int kMaxEffectTranspose = 12;
+inline constexpr int kEffectEveryChoices = 7;
+inline constexpr std::array<std::string_view, kEffectEveryChoices> kEffectEveryNames{"1/8", "1/8T", "1/16", "1/16T", "1/32", "1/32T", "1/64"};
+inline constexpr std::array<double, kEffectEveryChoices> kEffectEveryBeats{0.5, 1.0 / 3.0, 0.25, 1.0 / 6.0, 0.125, 1.0 / 12.0, 0.0625};
+inline constexpr std::array<std::uint8_t, kMaxEffectRepeats> kFullEffectVelocity = [] {
+    std::array<std::uint8_t, kMaxEffectRepeats> v{};
+    v.fill(100);
+    return v;
+}();
 
 enum class TransportCommand : std::uint8_t { Start, Stop, Continue };
 
@@ -60,11 +79,12 @@ struct TriggerBinding {
     std::int8_t programStep = 0;
     bool programWrap = true;
     std::int16_t bankMsb = -1, bankLsb = -1;  // -1: none
-    // Retrigger: each note sounding on the active channel when pressed (played
-    // live or by a loop) ends and starts again `retriggers` times, one every
-    // kRetriggerEveryBeats[retriggerEvery] beats of the tempo, at its velocity.
-    std::uint8_t retriggers = 4;      // 1 to kMaxRetriggers
-    std::uint8_t retriggerEvery = 2;  // 1/16
+    // Effect: see EffectKind.
+    EffectKind effect = EffectKind::Retrigger;
+    std::uint8_t effectRepeats = 4;  // 1 to kMaxEffectRepeats
+    std::uint8_t effectEvery = 2;    // 1/16
+    std::array<std::uint8_t, kMaxEffectRepeats> effectVelocity = kFullEffectVelocity;  // percent, per repeat
+    std::int8_t effectTranspose = 0;  // Delay
 
     bool isSet() const { return type != ActionType::None; }
 };

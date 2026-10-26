@@ -558,15 +558,41 @@ private:
     bool finishRecording(int channel);
     bool held(Button button) const;
     // Every note sounding, per channel (whoever sent it), at its velocity; and
-    // each channel's retrigger running: its notes, the times left, the next.
+    // each channel's retrigger running: its notes and their velocities when it
+    // started, the repeats done and to do, the next.
     std::array<std::bitset<128>, kChannelCount> soundingNotes_{};
     std::array<std::array<std::uint8_t, 128>, kChannelCount> soundingVelocity_{};
     struct RetriggerRun {
         std::bitset<128> notes;
-        int left = 0;
+        std::array<std::uint8_t, 128> velocity{};
+        std::array<std::uint8_t, kMaxEffectRepeats> percent{};
+        int done = 0, repeats = 0;
         std::uint64_t nextAt = 0, interval = 0;
     };
     std::array<RetriggerRun, kChannelCount> retriggerRuns_{};
+    // Each channel's delay while on (the slot holding it, -1 latched; its
+    // settings), and the echoes waiting, in no order. An echo's end is
+    // brought forward when its note ends sooner (`source`: the note's start).
+    struct DelayOn {
+        bool on = false;
+        int slot = -1;
+        int repeats = 0, transpose = 0;
+        std::uint64_t interval = 0;
+        std::array<std::uint8_t, kMaxEffectRepeats> percent{};
+    };
+    std::array<DelayOn, kChannelCount> delays_{};
+    struct Echo {
+        std::uint64_t at = 0, source = 0, startedAt = 0;
+        std::uint8_t channel = 0, note = 0, sourceNote = 0, velocity = 0;  // velocity 0: its end
+    };
+    static constexpr std::size_t kMaxEchoes = 1024;
+    std::array<Echo, kMaxEchoes> echoes_{};
+    std::size_t echoCount_ = 0;
+    bool echoing_ = false;  // an echo being sent: not echoed again
+    std::array<std::array<std::uint64_t, 128>, kChannelCount> liveNoteAt_{};  // when each live note started
+    void pressDelay(int slot, const TriggerBinding& binding);
+    void echo(int channel, int note, int velocity, bool on);
+    void runEchoes();
     // Notes started per channel, and those started while none sounded: an
     // envelope starts again when its count moves.
     std::array<std::uint32_t, kChannelCount> notesStarted_{}, notesStartedAlone_{};

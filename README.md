@@ -43,16 +43,20 @@ had: a looper, clips, chains and a song arranger you drive with your thumbs.
   faster, widen or narrow its swing, move it up or down, play it in steps like
   a sequencer, let one loop modulate the depth of others. All while it plays,
   from the controller.
-- **Stutter on demand.** A MIDI retrigger button repeats whatever is sounding
-  on the beat: 1/8 down to 1/64, triplets too, 1 to 16 times. Record it into
-  your loop and the stutter stays.
+- **Gestures as envelopes.** Set a movement loop to Envelope and it plays once
+  from its start each time a note starts: a filter that opens on every chord,
+  a hand-drawn attack and decay. Legato restarts it only after a silence.
+- **MIDI effects on a button.** Retrigger stutters whatever is sounding on the
+  beat; Delay echoes what you play, each echo softer, or an octave higher.
+  1/8 down to 1/64, triplets too, up to 16 repeats, each with its own velocity.
+  Record them into your loop and they stay.
 - **Sixteen channels, one controller.** Drums on one channel, bass on another,
   pads on a third, each with its own layout and name. Switch while playing;
   every channel keeps looping.
 
 ## Build a track with your thumbs
 
-![The session screen: a column of clips per channel, each clip a small screen in its channel's colour, those playing outlined in green, and the chain of channel 1 underneath](docs/media/session.png)
+![The session screen: a column of clips per channel, each clip a card with its channel's colour, its notes or its movement, those playing outlined in green, and the chain of channel 1 underneath](docs/media/session.png)
 
 1. **Record clips.** Each channel keeps up to eight clips, each a full set of
    loops. The session screen shows them all, a column per channel. Launch a clip
@@ -63,8 +67,8 @@ had: a looper, clips, chains and a song arranger you drive with your thumbs.
    Eight chains per channel, each going on to the next or looping.
 3. **Arrange the song.** The song screen lays out sections (intro, drop,
    break…), and in each one what every channel plays and when. Play from any
-   section, loop one while you jam over it, watch the playhead run across the
-   whole track.
+   section, loop one while you jam over it, or loop the whole song, and watch
+   the playhead run across the track.
 4. **Save the session.** Clips, chains, song, preset, key and tempo in one file.
    Quitting asks before losing anything.
 
@@ -154,11 +158,11 @@ reconnect the controller.
 
 Most Linux music programs see Arcadance's MIDI port directly. Some only list
 hardware ports: Arcadance can then create virtual hardware ports for them
-(☰ › **Options** › MIDI INTERFACE › *VirMIDI ports*, with your administrator
+(☰ › **Settings** › MIDI INTERFACE › *VirMIDI ports*, with your administrator
 password). Choose `VirMIDI N-0` in Arcadance and `Virtual Raw MIDI` as the input
 of the other program.
 
-![The Options window](docs/media/options.png)
+![The Settings window](docs/media/settings.png)
 
 ## Without a window
 

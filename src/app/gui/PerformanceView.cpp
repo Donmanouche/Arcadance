@@ -127,7 +127,7 @@ std::string compact(const TriggerBinding& b, bool flats) {
     case ActionType::TapTempo: return "Tap";
     case ActionType::SessionScreen: return "Session";
     case ActionType::RecenterTilt: return "Center";
-    case ActionType::Retrigger: return "Retrig \xC3\x97" + std::to_string(b.retriggers);
+    case ActionType::Effect: return (b.effect == EffectKind::Delay ? "Delay \xC3\x97" : "Retrig \xC3\x97") + std::to_string(b.effectRepeats);
     case ActionType::ProgramChange:
         return b.programStep != 0 ? std::string("PC ") + (b.programStep > 0 ? "+1" : "-1") : "PC " + std::to_string(b.number + 1);
     }
@@ -248,6 +248,35 @@ void screen(ImDrawList* dl, ImVec2 a, ImVec2 b, ImU32 tint, Content&& content) {
     dl->PopClipRect();
     if (gLook == 0)
         dl->AddRect(a, b, IM_COL32(0, 0, 0, 220), px(4), 1.5f);
+}
+
+// A clip or a section in the default look: a flat card; a screen in a
+// phosphor look.
+template <typename Content>
+void card(ImDrawList* dl, ImVec2 a, ImVec2 b, ImU32 tint, Content&& content) {
+    if (gLook != 0) {
+        screen(dl, a, b, tint, content);
+        return;
+    }
+    dl->AddRectFilled(a, b, IM_COL32(0x23, 0x26, 0x2B, 255), px(6));
+    dl->AddRect(a, b, IM_COL32(0x30, 0x34, 0x3A, 255), px(6), px(1));
+    dl->PushClipRect(a, b, true);
+    content();
+    dl->PopClipRect();
+}
+
+// An empty one in the default look: darker, a dashed outline.
+void emptyCard(ImDrawList* dl, ImVec2 a, ImVec2 b) {
+    const ImU32 dash = IM_COL32(0x36, 0x3A, 0x41, 255);
+    dl->AddRectFilled(a, b, IM_COL32(0x1E, 0x20, 0x24, 255), px(6));
+    for (float x = a.x + px(6); x < b.x - px(6); x += px(8)) {
+        dl->AddLine(ImVec2(x, a.y + 0.5f), ImVec2(std::min(x + px(4), b.x - px(6)), a.y + 0.5f), dash, px(1));
+        dl->AddLine(ImVec2(x, b.y - 0.5f), ImVec2(std::min(x + px(4), b.x - px(6)), b.y - 0.5f), dash, px(1));
+    }
+    for (float y = a.y + px(6); y < b.y - px(6); y += px(8)) {
+        dl->AddLine(ImVec2(a.x + 0.5f, y), ImVec2(a.x + 0.5f, std::min(y + px(4), b.y - px(6))), dash, px(1));
+        dl->AddLine(ImVec2(b.x - 0.5f, y), ImVec2(b.x - 0.5f, std::min(y + px(4), b.y - px(6))), dash, px(1));
+    }
 }
 
 // A screen off (an empty clip slot): dark grey glass.
@@ -1859,15 +1888,18 @@ std::optional<PerformanceView::SessionAction> PerformanceView::drawSession(const
                 action = SessionAction{SessionAction::Kind::Launch, ch, slot};
             if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Right))
                 menuRequest_ = MenuRequest{MenuTarget{MenuTarget::Kind::Clip, ch, slot}, ImGui::GetIO().MousePos};
-            if (!clip.sources) {  // empty: a screen off
-                screen(dl, a, b, kScreenOff, [] {});
+            if (!clip.sources) {  // empty: a card or a screen off
+                if (gLook == 0)
+                    emptyCard(dl, a, b);
+                else
+                    screen(dl, a, b, kScreenOff, [] {});
                 if (hovered)
-                    dl->AddRect(a, b, T::kControlBorder, px(4), px(1));
-            } else {  // a screen in the channel's colour, its state around it
+                    dl->AddRect(a, b, T::kControlBorder, px(gLook == 0 ? 6 : 4), px(1));
+            } else {  // a card or a screen in the channel's colour, its state around it
                 const ImU32 outline = clip.recording ? T::kRed : clipPlays ? T::kGreen : queued ? alpha(T::kGreen, blink ? 0.9f : 0.3f)
                                     : hovered      ? T::kControlBorder
                                                    : 0;
-                screen(dl, a, b, chColor, [&] {
+                card(dl, a, b, chColor, [&] {
                     // Its name and a green LED (lit playing or recording, blinking
                     // waiting to start), its notes below, else one of its curves.
                     dl->AddRectFilled(ImVec2(a.x + px(2), a.y + px(4)), ImVec2(a.x + px(5), b.y - px(4)), chColor, px(1));
@@ -1886,7 +1918,8 @@ std::optional<PerformanceView::SessionAction> PerformanceView::drawSession(const
                             const float nx1 = std::max(x0 + (x1 - x0) * static_cast<float>(n[1]) / 255.0f, nx0 + px(3));
                             const float t = hi > lo ? static_cast<float>(n[2] - lo) / static_cast<float>(hi - lo) : 0.5f;
                             const float ny = y1 - th - t * (y1 - y0 - th);
-                            dl->AddRectFilled(ImVec2(nx0, ny), ImVec2(nx1, ny + th), IM_COL32(0xF0, 0xF2, 0xF5, 242), th * 0.4f);
+                            dl->AddRectFilled(ImVec2(nx0, ny), ImVec2(nx1, ny + th), gLook == 0 ? IM_COL32(0xC9, 0xCE, 0xD6, 255) : IM_COL32(0xF0, 0xF2, 0xF5, 242),
+                                              th * 0.4f);
                         }
                     } else {
                         for (const auto& curve : clip.curves) {
@@ -1909,7 +1942,7 @@ std::optional<PerformanceView::SessionAction> PerformanceView::drawSession(const
                     }
                 });
                 if (outline)
-                    dl->AddRect(a, b, outline, px(4), px(clip.recording || clipPlays || queued ? 2.0f : 1.0f));
+                    dl->AddRect(a, b, outline, px(gLook == 0 ? 6 : 4), px(clip.recording || clipPlays || queued ? 2.0f : 1.0f));
             }
             if (active && slot == cursorSlot) {  // the cursor
                 sessionCursorBox_ = {a, b};
@@ -2168,7 +2201,7 @@ std::optional<PerformanceView::SessionAction> PerformanceView::drawChainStrip(Im
         const bool isNext = nextHere && chains.next == k;
         if (clipSlot == Engine::kChainSilence) {  // a silence step: a rest, its bars
             constexpr ImU32 kRest = IM_COL32(0x78, 0x82, 0x96, 255);
-            screen(dl, a, b, kRest, [&] {
+            card(dl, a, b, kRest, [&] {
                 const ImU32 ink = playsNow ? T::kText : T::kLabel;
                 const float rx = x0 + px(24), ry = y0 + px(14), u = px(4);  // a quarter rest
                 const ImVec2 rest[] = {{rx, ry}, {rx + u * 1.6f, ry + u * 2.0f}, {rx + u * 0.2f, ry + u * 3.6f}, {rx + u * 1.8f, ry + u * 5.8f},
@@ -2197,17 +2230,23 @@ std::optional<PerformanceView::SessionAction> PerformanceView::drawChainStrip(Im
             });
             const ImU32 outline = playsNow ? T::kGreen : isNext ? alpha(T::kGreen, blink ? 0.9f : 0.3f) : hovered ? T::kControlBorder : 0;
             if (outline)
-                dl->AddRect(a, b, outline, px(4), px(playsNow || isNext ? 2.0f : 1.0f));
+                dl->AddRect(a, b, outline, px(gLook == 0 ? 6 : 4), px(playsNow || isNext ? 2.0f : 1.0f));
         } else if (clipSlot < 0) {
             // Empty: a dashed outline and a +; before the last step that plays, a bar of silence.
-            const ImU32 dash = hovered ? T::kControlBorder : IM_COL32(0x4A, 0x4F, 0x57, 255);
-            for (float t = 0; t < stepW; t += px(8)) {
-                dl->AddLine(ImVec2(x0 + t, y0), ImVec2(std::min(x0 + t + px(4), x1), y0), dash, px(1));
-                dl->AddLine(ImVec2(x0 + t, y1), ImVec2(std::min(x0 + t + px(4), x1), y1), dash, px(1));
-            }
-            for (float t = 0; t < y1 - y0; t += px(8)) {
-                dl->AddLine(ImVec2(x0, y0 + t), ImVec2(x0, std::min(y0 + t + px(4), y1)), dash, px(1));
-                dl->AddLine(ImVec2(x1, y0 + t), ImVec2(x1, std::min(y0 + t + px(4), y1)), dash, px(1));
+            if (gLook == 0) {  // an empty card, as the grid's
+                emptyCard(dl, a, b);
+                if (hovered)
+                    dl->AddRect(a, b, T::kControlBorder, px(6), px(1));
+            } else {
+                const ImU32 dash = hovered ? T::kControlBorder : IM_COL32(0x4A, 0x4F, 0x57, 255);
+                for (float t = 0; t < stepW; t += px(8)) {
+                    dl->AddLine(ImVec2(x0 + t, y0), ImVec2(std::min(x0 + t + px(4), x1), y0), dash, px(1));
+                    dl->AddLine(ImVec2(x0 + t, y1), ImVec2(std::min(x0 + t + px(4), x1), y1), dash, px(1));
+                }
+                for (float t = 0; t < y1 - y0; t += px(8)) {
+                    dl->AddLine(ImVec2(x0, y0 + t), ImVec2(x0, std::min(y0 + t + px(4), y1)), dash, px(1));
+                    dl->AddLine(ImVec2(x1, y0 + t), ImVec2(x1, std::min(y0 + t + px(4), y1)), dash, px(1));
+                }
             }
             const bool bar = k < lastFilled;
             text(dl, gBold, px(16), (x0 + x1) * 0.5f, (y0 + y1) * 0.5f - (bar ? px(6) : 0.0f), IM_COL32(0x5A, 0x5F, 0x67, 255), "+", H::Center,
@@ -2220,7 +2259,7 @@ std::optional<PerformanceView::SessionAction> PerformanceView::drawChainStrip(Im
                 const ImVec2 ta(x0 + px(6), y1 - px(6.5f)), tb(x1 - px(6), y1 - px(3));
                 dl->AddRectFilled(ta, tb, IM_COL32(0, 0, 0, 170), px(2));
                 dl->AddRectFilled(ta, ImVec2(ta.x + (tb.x - ta.x) * p, tb.y), T::kGreen, px(2));
-                dl->AddRect(a, b, T::kGreen, px(4), px(2.0f));
+                dl->AddRect(a, b, T::kGreen, px(gLook == 0 ? 6 : 4), px(2.0f));
             }
         } else {
             // A random step: R, and while it plays the clip it picked.
@@ -2229,7 +2268,7 @@ std::optional<PerformanceView::SessionAction> PerformanceView::drawChainStrip(Im
             static const LiveState::Clip kNone{};
             const LiveState::Clip& clip = shown >= 0 ? live.clips[c * Engine::kClipSlots + static_cast<std::size_t>(shown)] : kNone;
             const ImU32 outline = playsNow ? T::kGreen : isNext ? alpha(T::kGreen, blink ? 0.9f : 0.3f) : hovered ? T::kControlBorder : 0;
-            screen(dl, a, b, random ? T::kViolet : chColor, [&] {  // a screen, its state around it
+            card(dl, a, b, random ? T::kViolet : chColor, [&] {  // a card or a screen, its state around it
             dl->AddRectFilled(ImVec2(x0 + px(2), y0 + px(6)), ImVec2(x0 + px(5), y1 - px(6)), chColor, px(1));
             const ImU32 kViolet = T::kViolet;
             if (random) {
@@ -2308,7 +2347,7 @@ std::optional<PerformanceView::SessionAction> PerformanceView::drawChainStrip(Im
             }
             });
             if (outline)
-                dl->AddRect(a, b, outline, px(4), px(playsNow || isNext ? 2.0f : 1.0f));
+                dl->AddRect(a, b, outline, px(gLook == 0 ? 6 : 4), px(playsNow || isNext ? 2.0f : 1.0f));
         }
         if (cursor == k)
             sessionCursorBox_ = {a, b};
@@ -2342,9 +2381,9 @@ std::optional<PerformanceView::SessionAction> PerformanceView::drawChainStrip(Im
     if (endHovered && ImGui::IsMouseClicked(ImGuiMouseButton_Right))
         menuRequest_ = MenuRequest{MenuTarget{MenuTarget::Kind::Chain, ch, shownChain}, io.MousePos};
     ImGui::PopID();
-    screen(dl, ImVec2(ex0, y0), ImVec2(ex1, y1), runs ? T::kGreen : kScreenOff, [] {});
+    card(dl, ImVec2(ex0, y0), ImVec2(ex1, y1), runs ? T::kGreen : kScreenOff, [] {});
     if (runs || endHovered)
-        dl->AddRect(ImVec2(ex0, y0), ImVec2(ex1, y1), runs ? T::kGreen : T::kControlBorder, px(4), px(runs ? 2.0f : 1.0f));
+        dl->AddRect(ImVec2(ex0, y0), ImVec2(ex1, y1), runs ? T::kGreen : T::kControlBorder, px(gLook == 0 ? 6 : 4), px(runs ? 2.0f : 1.0f));
     text(dl, gBold, px(7.5f), letterX, y0 + px(8), T::kDim, "CHAIN", H::Center, V::Middle);
     const ImU32 arrowColor = endHovered ? T::kCyan : alpha(T::kCyan, 0.6f);
     dl->AddTriangleFilled(ImVec2(arrowX - px(5), letterY - px(4)), ImVec2(arrowX + px(5), letterY - px(4)), ImVec2(arrowX, letterY - px(10)), arrowColor);
@@ -2493,8 +2532,8 @@ std::optional<PerformanceView::SongAction> PerformanceView::drawSong(const LiveS
         dl->AddRectFilled(origin, ImVec2(origin.x + width, origin.y + px(38)), T::kPanelHeader, px(8), ImDrawFlags_RoundCornersTop);
         dl->AddRect(origin, ImVec2(origin.x + width, origin.y + topH), T::kBorder, px(8), px(1));
     }
-    // The song at scale on a screen, as the modules show what they do.
-    screen(dl, ImVec2(origin.x + px(8), origin.y + px(38)), ImVec2(origin.x + width - px(8), origin.y + topH - px(6)), kSongScreen, [] {});
+    // The song at scale on a card (a screen in a phosphor look).
+    card(dl, ImVec2(origin.x + px(8), origin.y + px(38)), ImVec2(origin.x + width - px(8), origin.y + topH - px(6)), kSongScreen, [] {});
     const float hy = origin.y + px(19);
     text(dl, gBold, px(16.5f), origin.x + px(12), hy, T::kText, "SONG", H::Left, V::Middle);
     std::string summary = std::to_string(sections) + (sections == 1 ? " section" : " sections") + "  \xC2\xB7  " + std::to_string(startOf.back()) +
@@ -2586,8 +2625,8 @@ std::optional<PerformanceView::SongAction> PerformanceView::drawSong(const LiveS
     }
 
     // --- The sections, a row each; a column per channel ---
-    const float editorH = px(205), gy0 = origin.y + topH + px(6), gy1 = origin.y + height - editorH - px(6);
-    const float nameW = px(160), headH = px(35), rowH = px(70), gap = px(6);
+    const float editorH = px(172), gy0 = origin.y + topH + px(6), gy1 = origin.y + height - editorH - px(6);
+    const float nameW = px(132), headH = px(32), rowH = px(48), gap = px(5);
     if (gLook) {
         frame(dl, ImVec2(origin.x, gy0), ImVec2(origin.x + width, gy1), headH, gLook == 1 ? kNeon : kSongScreen);
     } else {
@@ -2635,6 +2674,11 @@ std::optional<PerformanceView::SongAction> PerformanceView::drawSong(const LiveS
     if (ImGui::IsMouseHoveringRect(clipA, clipB) && io.MouseWheel != 0.0f && !io.KeyCtrl)
         songScroll_ = std::clamp(songScroll_ - (io.MouseWheel > 0 ? 1 : -1), 0, std::max(sections + 1 - visible, 0));
     dl->PushClipRect(clipA, clipB, true);
+    struct Frame {
+        ImVec2 a, b;
+        ImU32 color = 0;
+    };
+    std::optional<Frame> cursorFrame;  // drawn over every row: the next one would cover its bottom
     for (int r = songScroll_; r <= sections && r < songScroll_ + visible; ++r) {
         const float y = gy0 + headH + px(5) + static_cast<float>(r - songScroll_) * (rowH + px(4));  // room for the cursor's frame
         const ImVec2 na(origin.x + px(8), y), nb(origin.x + px(8) + nameW, y + rowH);
@@ -2644,14 +2688,14 @@ std::optional<PerformanceView::SongAction> PerformanceView::drawSong(const LiveS
             for (float t = 0; t < nameW; t += px(8))
                 dl->AddLine(ImVec2(na.x + t, na.y), ImVec2(std::min(na.x + t + px(4), nb.x), na.y), dash, px(1));
             for (float t = 0; t < nameW; t += px(8))
-                dl->AddLine(ImVec2(na.x + t, na.y + px(46)), ImVec2(std::min(na.x + t + px(4), nb.x), na.y + px(46)), dash, px(1));
-            text(dl, gMedium, px(15.75f), (na.x + nb.x) * 0.5f, na.y + px(23), T::kLabel, "+ section", H::Center, V::Middle);
+                dl->AddLine(ImVec2(na.x + t, na.y + px(36)), ImVec2(std::min(na.x + t + px(4), nb.x), na.y + px(36)), dash, px(1));
+            text(dl, gMedium, px(15.75f), (na.x + nb.x) * 0.5f, na.y + px(18), T::kLabel, "+ section", H::Center, V::Middle);
             ImGui::SetCursorScreenPos(na);
-            if (ImGui::InvisibleButton("##add", ImVec2(nameW, px(46))))
+            if (ImGui::InvisibleButton("##add", ImVec2(nameW, px(36))))
                 action = SongAction{SongAction::Kind::AddSection, r};
             if (cursor.row == r) {
-                dl->AddRect(ImVec2(na.x - px(3), na.y - px(3)), ImVec2(nb.x + px(3), na.y + px(49)), T::kCyan, px(8), px(2.5f));
-                sessionCursorBox_ = {na, ImVec2(nb.x, na.y + px(46))};
+                cursorFrame = {ImVec2(na.x - px(3), na.y - px(3)), ImVec2(nb.x + px(3), na.y + px(39)), T::kCyan};
+                sessionCursorBox_ = {na, ImVec2(nb.x, na.y + px(36))};
             }
             ImGui::PopID();
             break;
@@ -2660,15 +2704,15 @@ std::optional<PerformanceView::SongAction> PerformanceView::drawSong(const LiveS
         const int bars = barsOf[static_cast<std::size_t>(r)];
         const bool now = playing && live.song.section == r;
         // Its name, length, and a play sign.
-        screen(dl, na, nb, kSectionColors[r % 7], [] {});  // a screen in the section's colour
+        card(dl, na, nb, kSectionColors[r % 7], [] {});  // a card or a screen in the section's colour
         if (now)
-            dl->AddRect(na, nb, T::kGreen, px(4), px(2));
+            dl->AddRect(na, nb, T::kGreen, px(gLook == 0 ? 6 : 4), px(2));
         dl->AddRectFilled(ImVec2(na.x + px(2), na.y + px(7)), ImVec2(na.x + px(5), nb.y - px(7)), kSectionColors[r % 7], px(1));
-        text(dl, gBold, px(16.5f), na.x + px(12), na.y + px(17), T::kText, fit(gBold, px(16.5f), sec.name.empty() ? "SECTION " + std::to_string(r + 1) : sec.name, nameW - px(36)),
+        text(dl, gBold, px(15), na.x + px(12), na.y + px(15), T::kText, fit(gBold, px(15), sec.name.empty() ? "SECTION " + std::to_string(r + 1) : sec.name, nameW - px(36)),
              H::Left, V::Middle);
-        text(dl, gMedium, px(15), na.x + px(12), na.y + px(38), T::kLabel, std::to_string(bars) + (bars == 1 ? " bar" : " bars"), H::Left, V::Middle);
-        text(dl, gMedium, px(12.75f), na.x + px(12), na.y + px(55), T::kDim, sec.fit ? "= longest" : "fixed", H::Left, V::Middle);
-        const ImVec2 pc(nb.x - px(18), na.y + px(17));
+        text(dl, gMedium, px(13.5f), na.x + px(12), na.y + px(34), T::kLabel,
+             std::to_string(bars) + (bars == 1 ? " bar" : " bars") + (sec.fit ? "  \xC2\xB7  = longest" : ""), H::Left, V::Middle);
+        const ImVec2 pc(nb.x - px(16), na.y + px(15));
         ImGui::SetCursorScreenPos(ImVec2(na.x, na.y));
         const bool nameClicked = ImGui::InvisibleButton("##name", ImVec2(nameW, rowH));
         const bool nameHovered = ImGui::IsItemHovered();
@@ -2686,7 +2730,7 @@ std::optional<PerformanceView::SongAction> PerformanceView::drawSong(const LiveS
             dl->AddTriangleFilled(ImVec2(pc.x - px(4), pc.y - px(6)), ImVec2(pc.x - px(4), pc.y + px(6)), ImVec2(pc.x + px(6), pc.y),
                                   nameHovered ? T::kGreen : alpha(T::kGreen, 0.55f));
         if (cursor.row == r && cursor.col < 0) {
-            dl->AddRect(ImVec2(na.x - px(3), na.y - px(3)), ImVec2(nb.x + px(3), nb.y + px(3)), T::kCyan, px(8), px(2.5f));
+            cursorFrame = {ImVec2(na.x - px(3), na.y - px(3)), ImVec2(nb.x + px(3), nb.y + px(3)), T::kCyan};
             sessionCursorBox_ = {na, nb};
         }
         // Its cells: each item at scale in the section, hollow on to the next while it loops; red where the section cuts it.
@@ -2698,11 +2742,14 @@ std::optional<PerformanceView::SongAction> PerformanceView::drawSong(const LiveS
             const auto& items = sec.cells[c];
             const bool here = cursor.row == r && cursor.col == ch;
             if (items.empty()) {
-                dl->AddRectFilled(a, b, IM_COL32(0x26, 0x29, 0x2E, 255), px(6));
-            } else {  // a screen in the channel's colour
-                screen(dl, a, b, kChannelColors[ch % 8], [] {});
+                if (gLook == 0)
+                    emptyCard(dl, a, b);
+                else
+                    dl->AddRectFilled(a, b, IM_COL32(0x26, 0x29, 0x2E, 255), px(6));
+            } else {  // a card or a screen in the channel's colour
+                card(dl, a, b, kChannelColors[ch % 8], [] {});
                 if (now)
-                    dl->AddRect(a, b, alpha(T::kGreen, 0.8f), px(4), px(1));
+                    dl->AddRect(a, b, alpha(T::kGreen, 0.8f), px(gLook == 0 ? 6 : 4), px(1));
             }
             const float ix0 = a.x + px(6), ix1 = b.x - px(6), barW = (ix1 - ix0) / static_cast<float>(bars);
             const ImU32 chColor = kChannelColors[ch % 8];
@@ -2731,7 +2778,7 @@ std::optional<PerformanceView::SongAction> PerformanceView::drawSong(const LiveS
                 const std::string short_ = (it.kind == SongItem::Kind::Clip ? "Clip " + std::to_string(it.index + 1) : "Chain " + chainLetter(it.index)) +
                                            (it.repeats > 1 ? " \xC3\x97" + std::to_string(it.repeats) : std::string());
                 if (x1 - x0 > px(14))
-                    text(dl, gBold, px(13.5f), x0 + px(5), a.y + px(21), T::kText, fit(gBold, px(13.5f), short_, x1 - x0 - px(6)), H::Left, V::Middle);
+                    text(dl, gBold, px(13.5f), x0 + px(5), (a.y + b.y) * 0.5f, T::kText, fit(gBold, px(13.5f), short_, x1 - x0 - px(6)), H::Left, V::Middle);
             }
             if (now && !items.empty()) {  // the playhead in the section
                 const float px_ = ix0 + static_cast<float>(std::clamp(live.song.beat / bar, 0.0, static_cast<double>(bars))) * barW;
@@ -2745,13 +2792,15 @@ std::optional<PerformanceView::SongAction> PerformanceView::drawSong(const LiveS
                 menuRequest_ = MenuRequest{MenuTarget{MenuTarget::Kind::SongCell, ch, r}, io.MousePos};
             ImGui::PopID();
             if (here) {
-                dl->AddRect(ImVec2(a.x - px(3), a.y - px(3)), ImVec2(b.x + px(3), b.y + px(3)), cursor.editing ? alpha(T::kCyan, 0.5f) : T::kCyan, px(8), px(2.5f));
+                cursorFrame = {ImVec2(a.x - px(3), a.y - px(3)), ImVec2(b.x + px(3), b.y + px(3)), cursor.editing ? alpha(T::kCyan, 0.5f) : T::kCyan};
                 if (!cursor.editing)
                     sessionCursorBox_ = {a, b};
             }
         }
         ImGui::PopID();
     }
+    if (cursorFrame)
+        dl->AddRect(cursorFrame->a, cursorFrame->b, cursorFrame->color, px(8), px(2.5f));
     dl->PopClipRect();
 
     // --- The editor of the cell under the cursor ---
@@ -2793,7 +2842,7 @@ std::optional<PerformanceView::SongAction> PerformanceView::drawSong(const LiveS
         std::snprintf(buf, sizeof buf, "%.1f of %d bars played", std::min(used, static_cast<double>(bars)), bars);
         text(dl, gMedium, px(15), origin.x + width - px(12), ey0 + px(19), T::kDim, buf, H::Right, V::Middle);
     }
-    screen(dl, ImVec2(origin.x + px(8), ey0 + px(37)), ImVec2(origin.x + width - px(8), ey1 - px(8)), kSongScreen, [] {});  // the cell's timeline, on a screen
+    card(dl, ImVec2(origin.x + px(8), ey0 + px(37)), ImVec2(origin.x + width - px(8), ey1 - px(8)), kSongScreen, [] {});  // the cell's timeline, on a card or a screen
     const float ex0 = origin.x + px(14), ex1 = origin.x + width - px(60), barW = (ex1 - ex0) / static_cast<float>(bars);
     const float ry = ey0 + px(42);
     const int every = bars <= 16 ? 1 : bars <= 32 ? 2 : bars <= 64 ? 4 : 8;

@@ -885,7 +885,7 @@ bool MappingEditor::drawTriggerEditor(TriggerBinding& b) {
     bool changed = false;
     static const char* kTypes[] = {"No action", "Note", "CC", "Chord", "Transport", "Channel change", "Axis freeze",
                                    "Loop record", "Program change", "Shift", "Tap tempo", "Mode (session, edit)", "Recenter tilt",
-                                   "MIDI retrigger"};
+                                   "MIDI effect"};
     int type = static_cast<int>(b.type);
     ImGui::SetNextItemWidth(ImGui::GetFontSize() * 14);
     if (ImGui::Combo("Action", &type, kTypes, IM_ARRAYSIZE(kTypes)) && type != static_cast<int>(b.type)) {
@@ -991,39 +991,41 @@ bool MappingEditor::drawTriggerEditor(TriggerBinding& b) {
     case ActionType::SessionScreen:
     case ActionType::RecenterTilt:
         break;
-    case ActionType::Retrigger: {
-        int count = b.retriggers;
+    case ActionType::Effect: {
+        static constexpr const char* kEffects[kEffectKinds] = {"Retrigger", "Delay"};
+        int effect = static_cast<int>(b.effect);
         ImGui::SetNextItemWidth(ImGui::GetFontSize() * 8);
-        if (ImGui::InputInt("Retriggers", &count)) {
-            b.retriggers = static_cast<std::uint8_t>(std::clamp(count, 1, kMaxRetriggers));
+        if (ImGui::Combo("Effect", &effect, kEffects, kEffectKinds) && effect != static_cast<int>(b.effect)) {
+            b.effect = static_cast<EffectKind>(effect);
             changed = true;
         }
-        static constexpr const char* kEvery[kRetriggerChoices] = {"1/8", "1/8 triplet", "1/16", "1/16 triplet", "1/32", "1/32 triplet", "1/64"};
-        int every = std::clamp<int>(b.retriggerEvery, 0, kRetriggerChoices - 1);
+        const bool delay = b.effect == EffectKind::Delay;
+        int count = b.effectRepeats;
         ImGui::SetNextItemWidth(ImGui::GetFontSize() * 8);
-        if (ImGui::Combo("Every", &every, kEvery, kRetriggerChoices) && every != b.retriggerEvery) {
-            b.retriggerEvery = static_cast<std::uint8_t>(every);
+        if (ImGui::InputInt(delay ? "Echoes" : "Retriggers", &count)) {
+            const int before = b.effectRepeats;
+            b.effectRepeats = static_cast<std::uint8_t>(std::clamp(count, 1, kMaxEffectRepeats));
+            for (int k = before; k < b.effectRepeats; ++k)  // the new ones as the last
+                b.effectVelocity[static_cast<std::size_t>(k)] = b.effectVelocity[static_cast<std::size_t>(std::max(before - 1, 0))];
             changed = true;
         }
-        // What it plays: a note sounding, then its retriggers on two beats' grid of 16ths.
-        ImDrawList* dl = ImGui::GetWindowDrawList();
-        const float em = ImGui::GetFontSize();
-        const ImVec2 o = ImGui::GetCursorScreenPos();
-        const float w = em * 22, h = em * 3.2f, perBeat = (w - 4) / 2.0f;
-        ImGui::Dummy(ImVec2(w, h + em * 0.4f));
-        dl->AddRectFilled(o, ImVec2(o.x + w, o.y + h), IM_COL32(0x20, 0x22, 0x26, 255), 4);
-        for (int i = 0; i <= 8; ++i) {
-            const float x = o.x + 2 + perBeat * 0.25f * static_cast<float>(i);
-            dl->AddLine(ImVec2(x, o.y + 2), ImVec2(x, o.y + h - 2), i % 4 == 0 ? IM_COL32(255, 255, 255, 50) : IM_COL32(255, 255, 255, 18));
+        static constexpr const char* kEvery[kEffectEveryChoices] = {"1/8", "1/8 triplet", "1/16", "1/16 triplet", "1/32", "1/32 triplet", "1/64"};
+        int every = std::clamp<int>(b.effectEvery, 0, kEffectEveryChoices - 1);
+        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 8);
+        if (ImGui::Combo("Every", &every, kEvery, kEffectEveryChoices) && every != b.effectEvery) {
+            b.effectEvery = static_cast<std::uint8_t>(every);
+            changed = true;
         }
-        const float step = perBeat * static_cast<float>(kRetriggerEveryBeats[static_cast<std::size_t>(every)]), noteY = o.y + h * 0.5f;
-        dl->AddRectFilled(ImVec2(o.x + 2, noteY - 6), ImVec2(o.x + w - 2, noteY + 6), IM_COL32(0x4D, 0xB2, 0xFF, 120), 3);
-        for (int r = 1; r <= b.retriggers; ++r) {
-            const float x = o.x + 2 + step * static_cast<float>(r);
-            if (x > o.x + w - 4)
-                break;
-            dl->AddRectFilled(ImVec2(x - 2, noteY - 9), ImVec2(x + 2, noteY + 9), IM_COL32(0xFF, 0xB0, 0x20, 255), 2);
+        if (delay) {
+            int transpose = b.effectTranspose;
+            ImGui::SetNextItemWidth(ImGui::GetFontSize() * 12);
+            if (ImGui::SliderInt("Transpose each echo", &transpose, -kMaxEffectTranspose, kMaxEffectTranspose, transpose == 0 ? "0" : "%+d semitones")) {
+                b.effectTranspose = static_cast<std::int8_t>(transpose);
+                changed = true;
+            }
+            changed |= modeRadio(b.mode);
         }
+        changed |= drawEffectVelocity(b);
         break;
     }
     case ActionType::TapTempo:
@@ -1031,6 +1033,81 @@ bool MappingEditor::drawTriggerEditor(TriggerBinding& b) {
     case ActionType::LoopRecord:
         break;
     }
+    return changed;
+}
+
+// The velocity of each repeat of an effect, in percent of the note's: a bar
+// each after the note's, drawn with the mouse or set with the controller (a
+// vertical slider each), or one of four shapes.
+bool MappingEditor::drawEffectVelocity(TriggerBinding& b) {
+    bool changed = false;
+    const int n = std::clamp<int>(b.effectRepeats, 1, kMaxEffectRepeats);
+    auto shape = [&](auto percent) {
+        for (int k = 0; k < n; ++k)
+            b.effectVelocity[static_cast<std::size_t>(k)] = static_cast<std::uint8_t>(std::clamp((percent(k) + 2) / 5 * 5, 5, kMaxEffectVelocity));
+        changed = true;
+    };
+    ImGui::TextUnformatted("Velocity");
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Flat"))
+        shape([](int) { return 100; });
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Fade out"))
+        shape([&](int k) { return 100 * (n - k) / (n + 1); });
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Fade in"))
+        shape([&](int k) { return 100 * (k + 1) / n; });
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Accent"))
+        shape([](int k) { return k % 2 ? 100 : 60; });
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const float em = ImGui::GetFontSize();
+    const ImVec2 o = ImGui::GetCursorScreenPos();
+    const float w = em * 22, h = em * 4.5f, colW = w / static_cast<float>(n + 1), y1 = o.y + h;
+    dl->AddRectFilled(o, ImVec2(o.x + w, y1), IM_COL32(0x20, 0x22, 0x26, 255), 4);
+    const float full = y1 - h * 0.5f;  // 100%
+    for (float x = o.x + 2; x < o.x + w - 2; x += 6)
+        dl->AddLine(ImVec2(x, full), ImVec2(std::min(x + 3, o.x + w - 2), full), IM_COL32(255, 255, 255, 40));
+    auto bar = [&](int column, int percent, ImU32 color) {
+        const float x0 = o.x + colW * static_cast<float>(column) + colW * 0.18f, x1 = o.x + colW * static_cast<float>(column + 1) - colW * 0.18f;
+        dl->AddRectFilled(ImVec2(x0, y1 - h * static_cast<float>(percent) / kMaxEffectVelocity), ImVec2(x1, y1), color, 2, ImDrawFlags_RoundCornersTop);
+    };
+    bar(0, 100, IM_COL32(0x78, 0x7E, 0x8A, 255));  // the note
+    ImGui::PushStyleColor(ImGuiCol_FrameBg, IM_COL32(0, 0, 0, 0));
+    ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, IM_COL32(255, 255, 255, 14));
+    ImGui::PushStyleColor(ImGuiCol_FrameBgActive, IM_COL32(255, 255, 255, 24));
+    ImGui::PushStyleColor(ImGuiCol_SliderGrab, IM_COL32(0, 0, 0, 0));
+    ImGui::PushStyleColor(ImGuiCol_SliderGrabActive, IM_COL32(0, 0, 0, 0));
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);
+    const ImU32 color = b.effect == EffectKind::Delay ? IM_COL32(0x9B, 0x7B, 0xE0, 255) : IM_COL32(0xFF, 0xB0, 0x20, 255);
+    for (int k = 0; k < n; ++k) {
+        auto& v = b.effectVelocity[static_cast<std::size_t>(k)];
+        int percent = v;
+        ImGui::SetCursorScreenPos(ImVec2(o.x + colW * static_cast<float>(k + 1), o.y));
+        ImGui::PushID(k);
+        if (ImGui::VSliderInt("##velocity", ImVec2(colW, h), &percent, 5, kMaxEffectVelocity, "")) {
+            v = static_cast<std::uint8_t>(std::clamp((percent + 2) / 5 * 5, 5, kMaxEffectVelocity));
+            changed = true;
+        }
+        if (ImGui::IsItemHovered() || ImGui::IsItemActive())
+            ImGui::SetTooltip("%d%%", v);
+        ImGui::PopID();
+        bar(k + 1, v, color);
+    }
+    ImGui::PopStyleVar();
+    ImGui::PopStyleColor(5);
+    // Under each bar, its percentage.
+    const float ty = y1 + em * 0.15f;
+    auto label = [&](int column, const char* text) {
+        const ImVec2 size = ImGui::CalcTextSize(text);
+        if (size.x * 0.8f < colW)
+            dl->AddText(ImGui::GetFont(), em * 0.8f, ImVec2(o.x + colW * (static_cast<float>(column) + 0.5f) - size.x * 0.4f, ty), IM_COL32(0x8D, 0x93, 0x9C, 255), text);
+    };
+    label(0, "note");
+    for (int k = 0; k < n; ++k)
+        label(k + 1, std::to_string(b.effectVelocity[static_cast<std::size_t>(k)]).c_str());
+    ImGui::SetCursorScreenPos(ImVec2(o.x, y1));
+    ImGui::Dummy(ImVec2(w, em * 1.2f));
     return changed;
 }
 

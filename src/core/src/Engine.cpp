@@ -168,6 +168,7 @@ void Engine::tick(std::uint64_t nowNs) {
     }
     runLoops();
     runRetriggers();
+    runEchoes();
     stretchFromControls();
     navigate();
     // Programs chosen by axes, once settled.
@@ -244,6 +245,8 @@ void Engine::emit(const MidiMessage& message, bool fromLoop) {
         soundingNotes_[channel].set(note, on);
         if (on)
             soundingVelocity_[channel][note] = message.bytes[2];
+        if (!fromLoop && !echoing_)  // a note played live: its echoes, while a delay is on
+            echo(static_cast<int>(channel), static_cast<int>(note), message.bytes[2], on);
     }
     sink_.send(message);
     if (observer_ && (kind == 0x90 || kind == 0x80))
@@ -443,13 +446,97 @@ void Engine::touchReleased(int finger) {
     current.reset();
 }
 
+namespace {
+// The time between two repeats of an effect, at `tempo`.
+std::uint64_t effectInterval(const TriggerBinding& binding, double tempo) {
+    const double beats = kEffectEveryBeats[static_cast<std::size_t>(std::clamp<int>(binding.effectEvery, 0, kEffectEveryChoices - 1))];
+    return static_cast<std::uint64_t>(beats * 60e9 / std::max(tempo, 1.0));
+}
+
+// A repeat's velocity: `percent` of the note's.
+int effectVelocity(int velocity, int percent) {
+    return std::clamp((velocity * percent + 50) / 100, 1, 127);
+}
+}  // namespace
+
 void Engine::startRetrigger(const TriggerBinding& binding) {
     RetriggerRun& run = retriggerRuns_[static_cast<std::size_t>(channel_)];
     run.notes = soundingNotes_[static_cast<std::size_t>(channel_)];
-    run.left = run.notes.any() ? std::clamp<int>(binding.retriggers, 1, kMaxRetriggers) : 0;
-    const double beats = kRetriggerEveryBeats[static_cast<std::size_t>(std::clamp<int>(binding.retriggerEvery, 0, kRetriggerChoices - 1))];
-    run.interval = static_cast<std::uint64_t>(beats * 60e9 / std::max(clock_.tempo, 1.0));
+    run.velocity = soundingVelocity_[static_cast<std::size_t>(channel_)];
+    run.percent = binding.effectVelocity;
+    run.done = 0;
+    run.repeats = run.notes.any() ? std::clamp<int>(binding.effectRepeats, 1, kMaxEffectRepeats) : 0;
+    run.interval = effectInterval(binding, clock_.tempo);
     run.nextAt = now_ + run.interval;
+}
+
+// A delay pressed: on for the active channel while held, or on and off at each
+// press (Toggle).
+void Engine::pressDelay(int slot, const TriggerBinding& binding) {
+    DelayOn& d = delays_[static_cast<std::size_t>(channel_)];
+    d.on = binding.mode == Mode::Toggle ? !d.on : true;
+    d.slot = binding.mode == Mode::Toggle ? -1 : slot;
+    d.repeats = std::clamp<int>(binding.effectRepeats, 1, kMaxEffectRepeats);
+    d.transpose = std::clamp<int>(binding.effectTranspose, -kMaxEffectTranspose, kMaxEffectTranspose);
+    d.interval = effectInterval(binding, clock_.tempo);
+    d.percent = binding.effectVelocity;
+}
+
+// A note played live starting (`on`) or ending. Starting while its channel's
+// delay is on, its echoes wait their turn, each lasting 90% of the time between
+// two; ending, those still to end end as much after their start as it did.
+void Engine::echo(int channel, int note, int velocity, bool on) {
+    const auto c = static_cast<std::size_t>(channel);
+    std::uint64_t& startedAt = liveNoteAt_[c][static_cast<std::size_t>(note)];
+    if (!on) {
+        if (startedAt == 0)
+            return;
+        const std::uint64_t length = std::max<std::uint64_t>(now_ - startedAt, 1'000'000);
+        for (std::size_t i = 0; i < echoCount_; ++i) {
+            Echo& e = echoes_[i];
+            if (e.velocity == 0 && e.channel == channel && e.sourceNote == note && e.source == startedAt)
+                e.at = std::min(e.at, e.startedAt + length);
+        }
+        startedAt = 0;
+        return;
+    }
+    const DelayOn& d = delays_[c];
+    startedAt = d.on ? std::max<std::uint64_t>(now_, 1) : 0;
+    if (!d.on)
+        return;
+    for (int k = 1; k <= d.repeats && echoCount_ + 2 <= kMaxEchoes; ++k) {
+        const int pitch = note + k * d.transpose;
+        if (pitch < 0 || pitch > 127)
+            break;
+        const std::uint64_t at = now_ + static_cast<std::uint64_t>(k) * d.interval;
+        const auto vel = static_cast<std::uint8_t>(effectVelocity(velocity, d.percent[static_cast<std::size_t>(k - 1)]));
+        echoes_[echoCount_++] = {at, startedAt, at, static_cast<std::uint8_t>(channel), static_cast<std::uint8_t>(pitch), static_cast<std::uint8_t>(note), vel};
+        echoes_[echoCount_++] = {at + d.interval * 9 / 10, startedAt, at, static_cast<std::uint8_t>(channel), static_cast<std::uint8_t>(pitch),
+                                 static_cast<std::uint8_t>(note), 0};
+    }
+}
+
+// The echoes due, in time order (an end before a start at the same time), as
+// notes played live: recorded into the note loop when it records or overdubs.
+void Engine::runEchoes() {
+    while (echoCount_ > 0) {
+        std::size_t next = echoCount_;
+        for (std::size_t i = 0; i < echoCount_; ++i) {
+            const Echo& e = echoes_[i];
+            if (e.at > now_)
+                continue;
+            if (next == echoCount_ || e.at < echoes_[next].at || (e.at == echoes_[next].at && e.velocity == 0))
+                next = i;
+        }
+        if (next == echoCount_)
+            return;
+        const Echo e = echoes_[next];
+        echoes_[next] = echoes_[--echoCount_];
+        echoing_ = true;
+        recordNote(e.channel, e.note, e.velocity, e.at);
+        emit(e.velocity > 0 ? MidiMessage::noteOn(e.channel, e.note, e.velocity) : MidiMessage::noteOff(e.channel, e.note), false);
+        echoing_ = false;
+    }
 }
 
 std::uint32_t Engine::livePress(int channel, int note) const {
@@ -478,7 +565,7 @@ std::uint32_t Engine::livePress(int channel, int note) const {
 void Engine::runRetriggers() {
     for (int channel = 0; channel < kChannelCount; ++channel) {
         RetriggerRun& run = retriggerRuns_[static_cast<std::size_t>(channel)];
-        if (run.left <= 0 || now_ < run.nextAt)
+        if (run.done >= run.repeats || now_ < run.nextAt)
             continue;
         const auto c = static_cast<std::size_t>(channel);
         run.notes &= soundingNotes_[c];  // those that ended meanwhile are done
@@ -486,7 +573,7 @@ void Engine::runRetriggers() {
             if (!run.notes.test(static_cast<std::size_t>(n)))
                 continue;
             const bool fromLoop = loopSounding_[c].test(static_cast<std::size_t>(n));
-            const int velocity = std::max<int>(soundingVelocity_[c][static_cast<std::size_t>(n)], 1);
+            const int velocity = effectVelocity(std::max<int>(run.velocity[static_cast<std::size_t>(n)], 1), run.percent[static_cast<std::size_t>(run.done)]);
             if (!fromLoop)
                 if (const std::uint32_t press = livePress(channel, n)) {
                     recordNote(channel, n, 0, now_, press);
@@ -495,14 +582,21 @@ void Engine::runRetriggers() {
             emit(MidiMessage::noteOff(channel, n), fromLoop);
             emit(MidiMessage::noteOn(channel, n, velocity), fromLoop);
         }
-        run.left = run.notes.any() ? run.left - 1 : 0;
+        run.repeats = run.notes.any() ? run.repeats : 0;
+        ++run.done;
         run.nextAt += run.interval;
     }
 }
 
 void Engine::releaseAll() {
     for (RetriggerRun& run : retriggerRuns_)  // a retrigger stops with the notes
-        run.left = 0;
+        run.repeats = 0;
+    for (DelayOn& d : delays_)  // and the delays, their echoes started ending now
+        d.on = false;
+    for (std::size_t i = 0; i < echoCount_; ++i)
+        if (echoes_[i].velocity == 0 && echoes_[i].startedAt <= now_)
+            emit(MidiMessage::noteOff(echoes_[i].channel, echoes_[i].note), false);
+    echoCount_ = 0;
     // Releases still waiting go out now; notes not started yet never will.
     for (std::size_t i = 0; i < delayedCount_; ++i)
         if ((delayed_[i].message.bytes[0] & 0xF0) == 0x80)
@@ -704,8 +798,11 @@ void Engine::press(int slot) {
     case ActionType::RecenterTilt:
         recenterTilt();
         return;
-    case ActionType::Retrigger:
-        startRetrigger(binding);
+    case ActionType::Effect:
+        if (binding.effect == EffectKind::Delay)
+            pressDelay(slot, binding);
+        else
+            startRetrigger(binding);
         return;
     case ActionType::Shift:
         if (!stretchHeld()) {
@@ -771,6 +868,9 @@ void Engine::release(int slot) {
             endRecordHold();
     }
     stretchHolders_.reset(static_cast<std::size_t>(slot));  // the stretch stays as it is
+    for (DelayOn& d : delays_)  // a delay held: off (its echoes go on)
+        if (d.on && d.slot == slot)
+            d.on = false;
     Sounding& s = held_[static_cast<std::size_t>(slot)];
     if (s.active())
         stop(s);

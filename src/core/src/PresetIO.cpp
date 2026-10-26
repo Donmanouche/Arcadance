@@ -187,16 +187,38 @@ TriggerBinding triggerFromJson(const Json& j, const std::string& where) {
         b.type = ActionType::SessionScreen;
     } else if (type == "recenter_tilt") {
         b.type = ActionType::RecenterTilt;
-    } else if (type == "retrigger") {
-        b.type = ActionType::Retrigger;
-        b.retriggers = readU7(j, "count", 4, where);
-        if (b.retriggers < 1 || b.retriggers > kMaxRetriggers)
+    } else if (type == "effect" || type == "retrigger") {  // "retrigger": before the effects
+        b.type = ActionType::Effect;
+        const std::string effect = type == "retrigger" ? "retrigger" : readString(j, "effect", nullptr, where);
+        const auto kind = std::find(kEffectNames.begin(), kEffectNames.end(), effect);
+        if (kind == kEffectNames.end())
+            fail(where + ".effect", "expected \"retrigger\" or \"delay\"");
+        b.effect = static_cast<EffectKind>(kind - kEffectNames.begin());
+        b.effectRepeats = readU7(j, "count", 4, where);
+        if (b.effectRepeats < 1 || b.effectRepeats > kMaxEffectRepeats)
             fail(where + ".count", "expected 1 to 16");
         const std::string every = readString(j, "every", "1/16", where);
-        const auto name = std::find(kRetriggerEveryNames.begin(), kRetriggerEveryNames.end(), every);
-        if (name == kRetriggerEveryNames.end())
+        const auto name = std::find(kEffectEveryNames.begin(), kEffectEveryNames.end(), every);
+        if (name == kEffectEveryNames.end())
             fail(where + ".every", "expected 1/8, 1/8T, 1/16, 1/16T, 1/32, 1/32T or 1/64");
-        b.retriggerEvery = static_cast<std::uint8_t>(name - kRetriggerEveryNames.begin());
+        b.effectEvery = static_cast<std::uint8_t>(name - kEffectEveryNames.begin());
+        if (j.contains("velocity")) {  // percent, per repeat; the last one on for the others
+            const Json& v = j["velocity"];
+            if (!v.is_array() || v.empty() || v.size() > static_cast<std::size_t>(kMaxEffectRepeats))
+                fail(where + ".velocity", "expected a list of 1 to 16 percentages");
+            for (std::size_t k = 0; k < b.effectVelocity.size(); ++k) {
+                const Json& e = v[std::min(k, v.size() - 1)];
+                if (!e.is_number_integer() || e.get<int>() < 1 || e.get<int>() > kMaxEffectVelocity)
+                    fail(where + ".velocity", "expected percentages from 1 to 200");
+                b.effectVelocity[k] = static_cast<std::uint8_t>(e.get<int>());
+            }
+        }
+        if (j.contains("transpose")) {
+            const Json& t = j["transpose"];
+            if (!t.is_number_integer() || std::abs(t.get<int>()) > kMaxEffectTranspose)
+                fail(where + ".transpose", "expected -12 to 12 semitones");
+            b.effectTranspose = static_cast<std::int8_t>(t.get<int>());
+        }
     } else if (type == "freeze") {
         b.type = ActionType::Freeze;
         if (!j.contains("axes"))
@@ -279,11 +301,20 @@ Json triggerToJson(const TriggerBinding& b) {
     case ActionType::RecenterTilt:
         j["type"] = "recenter_tilt";
         return j;
-    case ActionType::Retrigger:
-        j["type"] = "retrigger";
-        j["count"] = b.retriggers;
-        j["every"] = std::string(kRetriggerEveryNames[static_cast<std::size_t>(std::clamp<int>(b.retriggerEvery, 0, kRetriggerChoices - 1))]);
+    case ActionType::Effect: {
+        j["type"] = "effect";
+        j["effect"] = std::string(kEffectNames[static_cast<std::size_t>(b.effect)]);
+        if (b.effect == EffectKind::Delay && b.mode == Mode::Toggle)
+            j["mode"] = "toggle";
+        j["count"] = b.effectRepeats;
+        j["every"] = std::string(kEffectEveryNames[static_cast<std::size_t>(std::clamp<int>(b.effectEvery, 0, kEffectEveryChoices - 1))]);
+        const auto repeats = static_cast<std::size_t>(std::clamp<int>(b.effectRepeats, 1, kMaxEffectRepeats));
+        if (std::any_of(b.effectVelocity.begin(), b.effectVelocity.begin() + static_cast<std::ptrdiff_t>(repeats), [](std::uint8_t v) { return v != 100; }))
+            j["velocity"] = std::vector<int>(b.effectVelocity.begin(), b.effectVelocity.begin() + static_cast<std::ptrdiff_t>(repeats));
+        if (b.effect == EffectKind::Delay && b.effectTranspose != 0)
+            j["transpose"] = b.effectTranspose;
         return j;
+    }
     case ActionType::ProgramChange:
         j["type"] = "program";
         if (b.programStep != 0) {
