@@ -37,8 +37,11 @@ had: a looper, clips, chains and a song arranger you drive with your thumbs.
   cutoff, ride a send, open a reverb, all at once, with a range and a direction
   you choose for each.
 - **Loop as you go.** Hold Record, play, let go: notes and gestures loop
-  straight away, in time. A filter sweep becomes a hand-drawn LFO; each axis
-  has its own loop and its own length, so polyrhythms come by themselves.
+  straight away, in time. Or set Record to toggle, on any channel: press once,
+  play a drum groove with both hands, press again. A filter sweep becomes a
+  hand-drawn LFO on the very CC you swept, and the stick takes over again the
+  moment you touch it; each axis has its own loop and its own length, so
+  polyrhythms come by themselves.
 - **Loops that keep moving.** Stretch a loop up to 100 times slower or 20 times
   faster, widen or narrow its swing, move it up or down, play it in steps like
   a sequencer, let one loop modulate the depth of others. All while it plays,
@@ -47,9 +50,9 @@ had: a looper, clips, chains and a song arranger you drive with your thumbs.
   from its start each time a note starts: a filter that opens on every chord,
   a hand-drawn attack and decay. Legato restarts it only after a silence.
 - **MIDI effects on a button.** Retrigger stutters whatever is sounding on the
-  beat; Delay echoes what you play, each echo softer, or an octave higher.
-  1/8 down to 1/64, triplets too, up to 16 repeats, each with its own velocity.
-  Record them into your loop and they stay.
+  beat, each repeat at its own velocity; Delay echoes what you play, fading
+  away with its feedback, or climbing an octave each time. 1/8 down to 1/64,
+  triplets too. Record them into your loop and they stay.
 - **Sixteen channels, one controller.** Drums on one channel, bass on another,
   pads on a third, each with its own layout, name and colour. Switch while playing;
   every channel keeps looping.

@@ -182,8 +182,8 @@ std::string describe(const TriggerBinding& b, bool flats) {
     case ActionType::RecenterTilt:
         return "Recenter tilt";
     case ActionType::Effect:
-        return std::string(b.effect == EffectKind::Delay ? "Delay" : "Retrigger") + " \xC3\x97" + std::to_string(b.effectRepeats) + ", " +
-               std::string(kEffectEveryNames[static_cast<std::size_t>(std::clamp<int>(b.effectEvery, 0, kEffectEveryChoices - 1))]);
+        return (b.effect == EffectKind::Delay ? "Delay " + std::to_string(b.effectFeedback) + "%" : "Retrigger \xC3\x97" + std::to_string(b.effectRepeats)) +
+               ", " + std::string(kEffectEveryNames[static_cast<std::size_t>(std::clamp<int>(b.effectEvery, 0, kEffectEveryChoices - 1))]);
     case ActionType::ProgramChange:
         if (b.programStep != 0)
             return std::string("Program ") + (b.programStep > 0 ? "+1" : "-1");

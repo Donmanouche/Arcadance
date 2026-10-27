@@ -678,6 +678,7 @@ private:
     bool openCopyDialog_ = false;
     // A channel's colour: the channel (from its menu).
     void drawColourDialog();
+    static Preset newPreset();
     bool openColour_ = false;
     int colourChannel_ = -1;
     int copyTo_ = 0, copyFrom_ = 0;
@@ -1218,8 +1219,16 @@ void GuiApp::openFirstOrUntitled() {
     startUntitled();
 }
 
+// A new preset: its movement loops play on their axes' CCs.
+Preset GuiApp::newPreset() {
+    Preset p;
+    for (LoopBinding& loop : p.base.loops)
+        loop.ownCcs = false;
+    return p;
+}
+
 void GuiApp::startUntitled() {
-    preset_ = Preset{};
+    preset_ = newPreset();
     hasFile_ = false;
     dirty_ = false;
     presetTime_.reset();
@@ -3023,7 +3032,7 @@ void GuiApp::drawPerformance(const LiveState& live) {
             openNameDialog_ = true;
         }
         ImGui::Separator();
-        if (ImGui::MenuItem("Settings…", nullptr, false)) {
+        if (ImGui::MenuItem("Settings", nullptr, false)) {
             refreshPorts();
             virmidiStatus_ = virmidi::status();
             if (virmidiStatus_.loaded && virmidiPortCount() > 0)
@@ -4330,6 +4339,20 @@ void GuiApp::drawMappingOverlay(const LiveState& live) {
             edited();
         }
         ImGui::EndDisabled();
+        // Channel 1's Loop record control: held or toggled, chosen on each channel.
+        if (const TriggerBinding* rec = specBinding(preset_.base, spec); rec && rec->type == ActionType::LoopRecord) {
+            const auto bit = static_cast<std::uint16_t>(1u << live.channel);
+            const bool toggle = (preset_.loopRecordToggle & bit) != 0;
+            ImGui::AlignTextToFramePadding();
+            ImGui::Text("Mode on channel %d", live.channel + 1);
+            for (int k = 0; k < 2; ++k) {
+                ImGui::SameLine();
+                if (ImGui::RadioButton(k == 0 ? "Momentary##recordmode" : "Toggle##recordmode", toggle == (k == 1)) && toggle != (k == 1)) {
+                    preset_.loopRecordToggle = static_cast<std::uint16_t>(preset_.loopRecordToggle ^ bit);
+                    edited();
+                }
+            }
+        }
         if (backToBase) {
             own.reset();
             edited();
@@ -4921,7 +4944,7 @@ void GuiApp::drawNameDialog() {
         } else if (library_->contains(nameInput_)) {
             nameError_ = "A preset already has this name.";
         } else if (nameDialog_ == NameDialog::New) {
-            preset_ = Preset{};
+            preset_ = newPreset();
             preset_.name = nameInput_;
             hasFile_ = true;
             dirty_ = true;

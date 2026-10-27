@@ -215,6 +215,12 @@ TriggerBinding triggerFromJson(const Json& j, const std::string& where) {
                 b.effectVelocity[k] = static_cast<std::uint8_t>(e.get<int>());
             }
         }
+        if (j.contains("feedback")) {
+            const Json& f = j["feedback"];
+            if (!f.is_number_integer() || f.get<int>() < kMinEffectFeedback || f.get<int>() > kMaxEffectFeedback)
+                fail(where + ".feedback", "expected 10 to 95 (percent)");
+            b.effectFeedback = static_cast<std::uint8_t>(f.get<int>());
+        }
         if (j.contains("transpose")) {
             const Json& t = j["transpose"];
             if (!t.is_number_integer() || std::abs(t.get<int>()) > kMaxEffectTranspose)
@@ -308,13 +314,17 @@ Json triggerToJson(const TriggerBinding& b) {
         j["effect"] = std::string(kEffectNames[static_cast<std::size_t>(b.effect)]);
         if (b.effect == EffectKind::Delay && b.mode == Mode::Toggle)
             j["mode"] = "toggle";
-        j["count"] = b.effectRepeats;
         j["every"] = std::string(kEffectEveryNames[static_cast<std::size_t>(std::clamp<int>(b.effectEvery, 0, kEffectEveryChoices - 1))]);
+        if (b.effect == EffectKind::Delay) {  // as many echoes as the feedback lets sound
+            j["feedback"] = b.effectFeedback;
+            if (b.effectTranspose != 0)
+                j["transpose"] = b.effectTranspose;
+            return j;
+        }
+        j["count"] = b.effectRepeats;
         const auto repeats = static_cast<std::size_t>(std::clamp<int>(b.effectRepeats, 1, kMaxEffectRepeats));
         if (std::any_of(b.effectVelocity.begin(), b.effectVelocity.begin() + static_cast<std::ptrdiff_t>(repeats), [](std::uint8_t v) { return v != 100; }))
             j["velocity"] = std::vector<int>(b.effectVelocity.begin(), b.effectVelocity.begin() + static_cast<std::ptrdiff_t>(repeats));
-        if (b.effect == EffectKind::Delay && b.effectTranspose != 0)
-            j["transpose"] = b.effectTranspose;
         return j;
     }
     case ActionType::ProgramChange:
@@ -596,6 +606,12 @@ Mapping mappingFromJson(const Json& j, const std::string& where) {
                     fail(at + ".legato", "expected true or false");
                 loop.legato = value["legato"].get<bool>();
             }
+            if (value.contains("on")) {  // "axis": on the CC of the axis it recorded; absent: its own (0.2.47 and before)
+                const std::string on = value["on"].is_string() ? value["on"].get<std::string>() : std::string();
+                if (on != "axis" && on != "own")
+                    fail(at + ".on", "expected \"axis\" or \"own\"");
+                loop.ownCcs = on == "own";
+            }
             loop.ccX = readU7(value, "cc_x", loop.ccX, at);
             loop.ccY = readU7(value, "cc_y", loop.ccY, at);
             // Steps, per axis: {"levels": 8, "step": "1/16"}.
@@ -723,6 +739,8 @@ Json mappingToJson(const Mapping& m) {
                                                                    : "back_and_forth";
         if (loop.legato)
             lj["legato"] = true;
+        if (!loop.ownCcs)
+            lj["on"] = "axis";
         lj["cc_x"] = loop.ccX;
         lj["cc_y"] = loop.ccY;
         for (int axis = 0; axis < 2; ++axis) {
@@ -830,6 +848,16 @@ Preset presetFromJson(const Json& j) {
             p.chromaticChannels = static_cast<std::uint16_t>(p.chromaticChannels | (1u << (c.get<int>() - 1)));
         }
     }
+    if (j.contains("loop_record_toggle")) {
+        const Json& list = j["loop_record_toggle"];
+        if (!list.is_array())
+            fail("loop_record_toggle", "expected a list of channels from 1 to 16");
+        for (const Json& c : list) {
+            if (!c.is_number_integer() || c.get<int>() < 1 || c.get<int>() > kChannelCount)
+                fail("loop_record_toggle", "expected a list of channels from 1 to 16");
+            p.loopRecordToggle = static_cast<std::uint16_t>(p.loopRecordToggle | (1u << (c.get<int>() - 1)));
+        }
+    }
     // Channel 1's mapping is the base one, which every channel without its own
     // plays: a mapping saved for channel 1 takes its place.
     if (p.channels[0]) {
@@ -872,6 +900,12 @@ Json presetToJson(const Preset& p) {
             chromatic.push_back(i + 1);
     if (!chromatic.empty())
         j["chromatic_channels"] = chromatic;
+    Json toggle = Json::array();
+    for (int i = 0; i < kChannelCount; ++i)
+        if ((p.loopRecordToggle >> i) & 1u)
+            toggle.push_back(i + 1);
+    if (!toggle.empty())
+        j["loop_record_toggle"] = toggle;
     return j;
 }
 

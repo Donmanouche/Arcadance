@@ -64,6 +64,7 @@ private:
 
     bool drawTriggerEditor(midipad::TriggerBinding& b);
     bool drawEffectVelocity(midipad::TriggerBinding& b);
+    void drawEchoes(const midipad::TriggerBinding& b);
     bool drawChordFields(midipad::TriggerBinding& b);
     bool drawNoteField(std::uint8_t& note);
     bool drawHumanizeCheckbox(midipad::TriggerBinding& b);

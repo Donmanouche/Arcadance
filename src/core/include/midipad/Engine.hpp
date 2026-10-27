@@ -576,9 +576,8 @@ private:
     struct DelayOn {
         bool on = false;
         int slot = -1;
-        int repeats = 0, transpose = 0;
+        int feedback = 0, transpose = 0;
         std::uint64_t interval = 0;
-        std::array<std::uint8_t, kMaxEffectRepeats> percent{};
     };
     std::array<DelayOn, kChannelCount> delays_{};
     struct Echo {
@@ -862,11 +861,18 @@ private:
     std::array<std::array<float, 2>, kFingerCount> fingerPosition_{};  // raw touchpad X, Y
     std::array<bool, kFingerCount> fingerDown_{};
     std::array<float, 4> stickPosition_{0.5f, 0.5f, 0.5f, 0.5f};  // [0, 1], LeftX..RightY
+    std::array<bool, kAxisCount> axisMoving_{};  // a stick axis away from its centre, a trigger pressed, sending
+    // The control a loop recorded moving now (a stick axis or a trigger off
+    // rest, a finger down, the tilt active), and whether a loop of the
+    // channel plays on that control's CC (LoopBinding::ownCcs off).
+    bool controlMoving(int source, int axis) const;
+    bool loopOnAxisCc(int channel, int source, int axis) const;
     std::array<float, 2> tiltPosition_{0.5f, 0.5f}, tiltCenter_{};  // X, Y in [0, 1]; roll, pitch at the center
     bool tiltActive_ = false, tiltCentered_ = false;
     std::uint32_t buttonsDown_ = 0;  // a bit per Button held (not the D-pad's)
     std::array<float, 2> triggerPosition_{};                       // [0, 1], L2 and R2
     std::bitset<kSlotCount> recordHolders_;
+    std::bitset<kSlotCount> recordLatched_;  // Loop record on Toggle: pressed once, held until pressed again
     // Shift: who holds it, each stick's turn along X and along Y not yet a
     // whole step, the finger sliding and where it last counted.
     std::bitset<kSlotCount> stretchHolders_;

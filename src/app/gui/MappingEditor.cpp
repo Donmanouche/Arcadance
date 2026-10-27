@@ -609,21 +609,40 @@ bool MappingEditor::drawLoopForm(int source, Mapping& m, const LiveState& live) 
             return "Transpose";
         return nullptr;
     };
-    auto loopCc = [&](const AxisBinding& axis, const char* name, std::uint8_t& cc) {
+    // On the axis' own CC (the control taking over while it moves), or on CCs of its own.
+    const char* what = finger ? "finger" : triggers ? "triggers" : tilt ? "tilt" : "stick";
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted("Plays on");
+    ImGui::SameLine();
+    if (ImGui::RadioButton("The axis' CC", !loop.ownCcs) && loop.ownCcs) {
+        loop.ownCcs = false;
+        changed = true;
+    }
+    ImGui::SameLine();
+    if (ImGui::RadioButton("Its own CCs", loop.ownCcs) && !loop.ownCcs) {
+        loop.ownCcs = true;
+        changed = true;
+    }
+    auto loopCcField = [&](const AxisBinding& axis, const char* name, std::uint8_t& cc) {
         if (const char* as = shapesAs(axis)) {  // no CC to choose: the loop plays as its axis
             ImGui::TextDisabled("%s: plays as %s", name, as);
+            return false;
+        }
+        if (!loop.ownCcs && axis.enabled && axis.sendsCc()) {
+            ImGui::TextDisabled("%s: on CC %d", name, axis.cc);
             return false;
         }
         return inputU7((std::string("Loop CC for ") + name).c_str(), cc);
     };
     const std::string leftName = label(Button::LeftTrigger), rightName = label(Button::RightTrigger);
-    changed |= loopCc(own, triggers ? leftName.c_str() : "X", loop.ccX);
-    changed |= loopCc(ownY, triggers ? rightName.c_str() : "Y", loop.ccY);
+    changed |= loopCcField(own, triggers ? leftName.c_str() : "X", loop.ccX);
+    changed |= loopCcField(ownY, triggers ? rightName.c_str() : "Y", loop.ccY);
 
     // The loop plays beside the sticks and fingers: a CC they send too would fight.
     std::string clash;
     auto check = [&](const AxisBinding& b, const std::string& name) {
-        if (b.enabled && b.sendsCc() && ((own.sendsCc() && b.cc == loop.ccX) || (ownY.sendsCc() && b.cc == loop.ccY)))
+        const bool xOwn = own.sendsCc() && loopCc(loop, own, 0) == loop.ccX, yOwn = ownY.sendsCc() && loopCc(loop, ownY, 1) == loop.ccY;
+        if (b.enabled && b.sendsCc() && ((xOwn && b.cc == loop.ccX) || (yOwn && b.cc == loop.ccY)))
             clash += (clash.empty() ? "" : ", ") + name + " (CC " + std::to_string(b.cc) + ")";
     };
     for (int a = 0; a < kAxisCount; ++a)
@@ -641,13 +660,13 @@ bool MappingEditor::drawLoopForm(int source, Mapping& m, const LiveState& live) 
     }
     {
         ImGui::PushStyleColor(ImGuiCol_Text, kHintColor);
-        const char* what = finger ? "finger" : triggers ? "triggers" : tilt ? "tilt" : "stick";
-        auto plays = [&](const AxisBinding& axis, int cc) {
+        auto plays = [&](const AxisBinding& axis, int which) {
             const char* as = shapesAs(axis);
-            return as ? std::string("as ") + as : "on CC " + std::to_string(cc);
+            return as ? std::string("as ") + as : "on CC " + std::to_string(loopCc(loop, axis, which));
         };
-        const std::string text = std::string("The loop plays beside the ") + what + ": " + (triggers ? leftName + " " : std::string("X ")) +
-                                 plays(own, loop.ccX) + ", " + (triggers ? rightName + " " : std::string("Y ")) + plays(ownY, loop.ccY) + ".";
+        const std::string text = std::string(loop.ownCcs ? "The loop plays beside the " : "The loop plays on the CCs of the ") + what + ": " +
+                                 (triggers ? leftName + " " : std::string("X ")) + plays(own, 0) + ", " + (triggers ? rightName + " " : std::string("Y ")) +
+                                 plays(ownY, 1) + (loop.ownCcs ? "." : std::string("; the ") + what + " takes over while it moves.");
         ImGui::TextWrapped("%s", text.c_str());
         ImGui::PopStyleColor();
     }
@@ -807,7 +826,7 @@ void MappingEditor::drawAxisLanes(int source, const Mapping& m, const LiveState&
         dl->AddRect(la, lb2, dragging ? kViolet : alpha(color, 0.8f), 6);
         dl->AddText(ImVec2(la.x + 4, la.y + 1), dragging ? kViolet : T::kText, label.c_str());
         const bool shapes = binding.enabled && (binding.mode == AxisMode::Velocity || binding.mode == AxisMode::Transpose);
-        const std::string cc = shapes ? (binding.mode == AxisMode::Velocity ? "VEL" : "TR") : "CC " + std::to_string(axis == 0 ? lb.ccX : lb.ccY);
+        const std::string cc = shapes ? (binding.mode == AxisMode::Velocity ? "VEL" : "TR") : "CC " + std::to_string(loopCc(lb, binding, axis));
         const ImVec2 ccSize = ImGui::CalcTextSize(cc.c_str());
         dl->AddText(ImVec2(b.x - 16 - ccSize.x, b.y - ccSize.y - 4), T::kDim, cc.c_str());
         // The end: hovered, dragged.
@@ -1002,7 +1021,7 @@ bool MappingEditor::drawTriggerEditor(TriggerBinding& b) {
         const bool delay = b.effect == EffectKind::Delay;
         int count = b.effectRepeats;
         ImGui::SetNextItemWidth(ImGui::GetFontSize() * 8);
-        if (ImGui::InputInt(delay ? "Echoes" : "Retriggers", &count)) {
+        if (!delay && ImGui::InputInt("Retriggers", &count)) {
             const int before = b.effectRepeats;
             b.effectRepeats = static_cast<std::uint8_t>(std::clamp(count, 1, kMaxEffectRepeats));
             for (int k = before; k < b.effectRepeats; ++k)  // the new ones as the last
@@ -1017,6 +1036,13 @@ bool MappingEditor::drawTriggerEditor(TriggerBinding& b) {
             changed = true;
         }
         if (delay) {
+            int feedback = b.effectFeedback;
+            ImGui::SetNextItemWidth(ImGui::GetFontSize() * 12);
+            if (ImGui::SliderInt("Feedback", &feedback, kMinEffectFeedback, kMaxEffectFeedback, "%d%%")) {
+                b.effectFeedback = static_cast<std::uint8_t>(feedback);
+                changed = true;
+            }
+            ImGui::SetItemTooltip("Each echo at this share of the velocity of the one before");
             int transpose = b.effectTranspose;
             ImGui::SetNextItemWidth(ImGui::GetFontSize() * 12);
             if (ImGui::SliderInt("Transpose each echo", &transpose, -kMaxEffectTranspose, kMaxEffectTranspose, transpose == 0 ? "0" : "%+d semitones")) {
@@ -1024,8 +1050,10 @@ bool MappingEditor::drawTriggerEditor(TriggerBinding& b) {
                 changed = true;
             }
             changed |= modeRadio(b.mode);
+            drawEchoes(b);
+        } else {
+            changed |= drawEffectVelocity(b);
         }
-        changed |= drawEffectVelocity(b);
         break;
     }
     case ActionType::TapTempo:
@@ -1034,6 +1062,31 @@ bool MappingEditor::drawTriggerEditor(TriggerBinding& b) {
         break;
     }
     return changed;
+}
+
+// What a delay plays: the note, then each echo at the feedback of the one
+// before, until too soft to hear (a note at velocity 100).
+void MappingEditor::drawEchoes(const TriggerBinding& b) {
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const float em = ImGui::GetFontSize();
+    const ImVec2 o = ImGui::GetCursorScreenPos();
+    const float w = em * 22, h = em * 3.5f, y1 = o.y + h;
+    dl->AddRectFilled(o, ImVec2(o.x + w, y1), IM_COL32(0x20, 0x22, 0x26, 255), 4);
+    std::array<int, kMaxEffectRepeats + 1> velocity{100};
+    int n = 1;
+    for (; n <= kMaxEffectRepeats; ++n) {
+        velocity[static_cast<std::size_t>(n)] = (velocity[static_cast<std::size_t>(n - 1)] * b.effectFeedback + 50) / 100;
+        if (velocity[static_cast<std::size_t>(n)] < kMinEchoVelocity)
+            break;
+    }
+    const float colW = w / static_cast<float>(kMaxEffectRepeats + 1);
+    for (int k = 0; k < n; ++k) {
+        const float x0 = o.x + colW * static_cast<float>(k) + colW * 0.2f, x1 = o.x + colW * static_cast<float>(k + 1) - colW * 0.2f;
+        dl->AddRectFilled(ImVec2(x0, y1 - (h - 4) * static_cast<float>(velocity[static_cast<std::size_t>(k)]) / 127.0f), ImVec2(x1, y1), 
+                          k == 0 ? IM_COL32(0x78, 0x7E, 0x8A, 255) : IM_COL32(0x9B, 0x7B, 0xE0, 255), 2, ImDrawFlags_RoundCornersTop);
+    }
+    ImGui::Dummy(ImVec2(w, h));
+    ImGui::TextDisabled("%d echoes", n - 1);
 }
 
 // The velocity of each repeat of an effect, in percent of the note's: a bar

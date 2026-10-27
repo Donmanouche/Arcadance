@@ -335,12 +335,14 @@ void Engine::axisMoved(Axis axis, float value) {
     if (isTrigger(axis))
         updateDigitalTrigger(axis, position);
 
+    axisMoving_[static_cast<std::size_t>(axis)] = false;
     if (navigating() && !isTrigger(axis))
         return;  // the sticks move the session screen's cursor (tick())
     if (stretchHeld() && !isTrigger(axis))
         return;  // the stick stretches its loop (tick()), it does not play
     const AxisBinding& binding = mapping_->axes[static_cast<std::size_t>(axis)];
     const bool atRest = isTrigger(axis) ? position < 0.04f : std::abs(position - 0.5f) < 0.06f;
+    axisMoving_[static_cast<std::size_t>(axis)] = binding.enabled && !isFrozen(axis) && !atRest;
     if (binding.enabled && !isFrozen(axis))
         sendAxis(binding, position, static_cast<int>(axis), atRest);
 }
@@ -476,15 +478,15 @@ void Engine::pressDelay(int slot, const TriggerBinding& binding) {
     DelayOn& d = delays_[static_cast<std::size_t>(channel_)];
     d.on = binding.mode == Mode::Toggle ? !d.on : true;
     d.slot = binding.mode == Mode::Toggle ? -1 : slot;
-    d.repeats = std::clamp<int>(binding.effectRepeats, 1, kMaxEffectRepeats);
+    d.feedback = std::clamp<int>(binding.effectFeedback, kMinEffectFeedback, kMaxEffectFeedback);
     d.transpose = std::clamp<int>(binding.effectTranspose, -kMaxEffectTranspose, kMaxEffectTranspose);
     d.interval = effectInterval(binding, clock_.tempo);
-    d.percent = binding.effectVelocity;
 }
 
 // A note played live starting (`on`) or ending. Starting while its channel's
-// delay is on, its echoes wait their turn, each lasting 90% of the time between
-// two; ending, those still to end end as much after their start as it did.
+// delay is on, its echoes wait their turn, each at the feedback of the one
+// before until too soft, each lasting 90% of the time between two; ending,
+// those still to end end as much after their start as it did.
 void Engine::echo(int channel, int note, int velocity, bool on) {
     const auto c = static_cast<std::size_t>(channel);
     std::uint64_t& startedAt = liveNoteAt_[c][static_cast<std::size_t>(note)];
@@ -504,12 +506,14 @@ void Engine::echo(int channel, int note, int velocity, bool on) {
     startedAt = d.on ? std::max<std::uint64_t>(now_, 1) : 0;
     if (!d.on)
         return;
-    for (int k = 1; k <= d.repeats && echoCount_ + 2 <= kMaxEchoes; ++k) {
+    int echoVelocity = velocity;
+    for (int k = 1; k <= kMaxEffectRepeats && echoCount_ + 2 <= kMaxEchoes; ++k) {
         const int pitch = note + k * d.transpose;
-        if (pitch < 0 || pitch > 127)
+        echoVelocity = (echoVelocity * d.feedback + 50) / 100;
+        if (pitch < 0 || pitch > 127 || echoVelocity < kMinEchoVelocity)
             break;
         const std::uint64_t at = now_ + static_cast<std::uint64_t>(k) * d.interval;
-        const auto vel = static_cast<std::uint8_t>(effectVelocity(velocity, d.percent[static_cast<std::size_t>(k - 1)]));
+        const auto vel = static_cast<std::uint8_t>(echoVelocity);
         echoes_[echoCount_++] = {at, startedAt, at, static_cast<std::uint8_t>(channel), static_cast<std::uint8_t>(pitch), static_cast<std::uint8_t>(note), vel};
         echoes_[echoCount_++] = {at + d.interval * 9 / 10, startedAt, at, static_cast<std::uint8_t>(channel), static_cast<std::uint8_t>(pitch),
                                  static_cast<std::uint8_t>(note), 0};
@@ -632,6 +636,7 @@ std::uint64_t Engine::soundingSlots() const {
 void Engine::reset() {
     if (recordHolders_.any()) {  // the release will never come
         recordHolders_.reset();
+        recordLatched_.reset();
         endRecordHold();
     }
     releaseAll();
@@ -787,9 +792,17 @@ void Engine::press(int slot) {
         return;
     }
     case ActionType::LoopRecord:
+        if (recordLatched_.test(static_cast<std::size_t>(slot))) {  // a toggle pressed again: let go
+            recordLatched_.reset(static_cast<std::size_t>(slot));
+            recordHolders_.reset(static_cast<std::size_t>(slot));
+            if (recordHolders_.none())
+                endRecordHold();
+            return;
+        }
         if (recordHolders_.none())
             beginRecordHold();
         recordHolders_.set(static_cast<std::size_t>(slot));
+        recordLatched_.set(static_cast<std::size_t>(slot), ((preset_->loopRecordToggle >> channel_) & 1u) != 0);
         return;
     case ActionType::TapTempo:
         if (const auto tempo = tapTempo_.tap(now_))
@@ -862,7 +875,7 @@ void Engine::release(int slot) {
     }
     if (slot >= kHatSlotBase && slot < kZoneSlotBase)
         hatNav_.reset();
-    if (recordHolders_.test(static_cast<std::size_t>(slot))) {
+    if (recordHolders_.test(static_cast<std::size_t>(slot)) && !recordLatched_.test(static_cast<std::size_t>(slot))) {
         recordHolders_.reset(static_cast<std::size_t>(slot));
         if (recordHolders_.none())
             endRecordHold();
@@ -985,10 +998,42 @@ void Engine::sendAxis(const AxisBinding& binding, float position, int key, bool 
         }
         return;
     }
+    // At rest, a stick or trigger leaves its CC to a loop playing on it.
+    if (atRest && key < kAxisCount &&
+        loopOnAxisCc(channel_, key < 4 ? key / 2 : static_cast<int>(LoopSource::Triggers), key < 4 ? key % 2 : key - 4))
+        return;
     // Controllers report far more steps than a 7-bit CC has: skip repeats.
     if (lastCc_[static_cast<std::size_t>(channel_)][binding.cc & 0x7F] == value)
         return;
     sendCc(channel_, binding.cc, value);
+}
+
+bool Engine::controlMoving(int source, int axis) const {
+    if (source < 2)
+        return axisMoving_[static_cast<std::size_t>(source * 2 + axis)];
+    if (source == static_cast<int>(LoopSource::Triggers))
+        return axisMoving_[static_cast<std::size_t>(axis == 0 ? Axis::LeftTrigger : Axis::RightTrigger)];
+    if (source == static_cast<int>(LoopSource::Tilt))
+        return tiltActive_;
+    if (source == static_cast<int>(LoopSource::Notes))
+        return false;
+    return fingerDown_[static_cast<std::size_t>(source - 2)];
+}
+
+bool Engine::loopOnAxisCc(int channel, int source, int axis) const {
+    if (!preset_ || source == static_cast<int>(LoopSource::Notes))
+        return false;
+    const std::size_t index = loopIndex(channel, trackOf(source, axis));
+    const Loop& loop = loops_[index];
+    if (loop.state != LoopStatus::State::Playing || (!loop.sendsCc && modulatesOthers(index)))
+        return false;
+    const Mapping& m = preset_->forChannel(channel);
+    const AxisBinding* a = source < 2                                           ? &m.axes[static_cast<std::size_t>(source * 2 + axis)]
+                           : source == static_cast<int>(LoopSource::Triggers) ? &m.axes[static_cast<std::size_t>(axis == 0 ? Axis::LeftTrigger : Axis::RightTrigger)]
+                           : source == static_cast<int>(LoopSource::Tilt)     ? (axis == 0 ? &m.tilt.x : &m.tilt.y)
+                           : axis == 0                                        ? &m.fingers[static_cast<std::size_t>(source - 2)].x
+                                                                              : &m.fingers[static_cast<std::size_t>(source - 2)].y;
+    return !m.loops[static_cast<std::size_t>(source)].ownCcs && a->enabled && a->mode == AxisMode::Cc;
 }
 
 void Engine::sendProgram(int channel, int program, int bankMsb, int bankLsb) {
@@ -1863,11 +1908,18 @@ void Engine::sendLoopValue(std::size_t index, float p) {
         loop.sentX = -1;
         return;
     }
+    // On the axis' own CC, the control takes over while it moves (the loop
+    // goes on, silent, and sends again once the control is back at rest).
+    const bool onAxis = !binding.ownCcs && a->enabled && a->mode == AxisMode::Cc;
+    if (onAxis && channel == channel_ && controlMoving(source, axis)) {
+        loop.sentX = -1;
+        return;
+    }
     const float position = a->invert ? 1.0f - p : p;
     const int lo = a->enabled ? a->min : 0, hi = a->enabled ? a->max : 127;
     const int v = lo + static_cast<int>(std::lround(position * static_cast<float>(hi - lo)));
     if (v != loop.sentX) {
-        sendCc(channel, axis == 0 ? binding.ccX : binding.ccY, v);
+        sendCc(channel, loopCc(binding, *a, axis), v);
         loop.sentX = v;
     }
 }
@@ -3461,6 +3513,7 @@ void Engine::loadSessionLoops(const std::vector<SessionLoop>& loops) {
     pendingStopChannel_ = -1;
     shiftTapAt_ = 0;
     recordHolders_.reset();
+    recordLatched_.reset();
     overdubChannel_ = -1;
     queued_.fill(-1);
     for (int channel = 0; channel < kChannelCount; ++channel)

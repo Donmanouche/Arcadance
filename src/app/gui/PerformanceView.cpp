@@ -127,7 +127,8 @@ std::string compact(const TriggerBinding& b, bool flats) {
     case ActionType::TapTempo: return "Tap";
     case ActionType::SessionScreen: return "Session";
     case ActionType::RecenterTilt: return "Center";
-    case ActionType::Effect: return (b.effect == EffectKind::Delay ? "Delay \xC3\x97" : "Retrig \xC3\x97") + std::to_string(b.effectRepeats);
+    case ActionType::Effect:
+        return b.effect == EffectKind::Delay ? "Delay " + std::to_string(b.effectFeedback) + "%" : "Retrig \xC3\x97" + std::to_string(b.effectRepeats);
     case ActionType::ProgramChange:
         return b.programStep != 0 ? std::string("PC ") + (b.programStep > 0 ? "+1" : "-1") : "PC " + std::to_string(b.number + 1);
     }
@@ -2506,7 +2507,8 @@ std::optional<PerformanceView::SongAction> PerformanceView::drawSong(const LiveS
     const ImVec2 origin = ImGui::GetCursorScreenPos();
     const float width = ImGui::GetContentRegionAvail().x, height = ImGui::GetContentRegionAvail().y;
     constexpr int kColumns = 8;
-    static constexpr ImU32 kSectionColors[] = {IM_COL32(0x78, 0x82, 0x96, 255), T::kBlue, T::kOrange, T::kPink, T::kViolet, T::kGreen, T::kCyan};
+    // Sections have no colour of their own: only the channels do.
+    constexpr ImU32 kSectionGrey = IM_COL32(0x78, 0x82, 0x96, 255);
     const int sections = static_cast<int>(song.sections.size());
     const double bar = std::max(live.beatsPerBar, 1);
     // The channels in use, eight at a time, each column and lane its usual size.
@@ -2595,11 +2597,10 @@ std::optional<PerformanceView::SongAction> PerformanceView::drawSong(const LiveS
     auto xOf = [&](double bars) { return sx0 + static_cast<float>(bars / totalBars) * (sx1 - sx0); };
     for (int s = 0; s < sections; ++s) {
         const SongSection& sec = song.sections[static_cast<std::size_t>(s)];
-        const ImU32 col = kSectionColors[s % 7];
         const ImVec2 a(xOf(startOf[static_cast<std::size_t>(s)]) + px(1), sy0), b(xOf(startOf[static_cast<std::size_t>(s) + 1]) - px(1), sy1);
         const bool now = playing && live.song.section == s;
-        dl->AddRectFilled(a, b, alpha(col, 0.28f), px(4));
-        dl->AddRect(a, b, now ? T::kGreen : s == cursor.row ? T::kCyan : alpha(col, 0.9f), px(4), px(now || s == cursor.row ? 2.0f : 1.0f));
+        dl->AddRectFilled(a, b, IM_COL32(0x2A, 0x2D, 0x33, 255), px(4));
+        dl->AddRect(a, b, now ? T::kGreen : s == cursor.row ? T::kCyan : IM_COL32(0x4A, 0x4F, 0x57, 255), px(4), px(now || s == cursor.row ? 2.0f : 1.0f));
         const std::string label = (sec.name.empty() ? "SECTION " + std::to_string(s + 1) : sec.name) + "  " + std::to_string(barsOf[static_cast<std::size_t>(s)]);
         if (b.x - a.x > px(24))
             text(dl, gBold, px(13.5f), a.x + px(5), (sy0 + sy1) * 0.5f, T::kText, fit(gBold, px(13.5f), label, b.x - a.x - px(8)), H::Left, V::Middle);
@@ -2724,10 +2725,9 @@ std::optional<PerformanceView::SongAction> PerformanceView::drawSong(const LiveS
         const int bars = barsOf[static_cast<std::size_t>(r)];
         const bool now = playing && live.song.section == r;
         // Its name, length, and a play sign.
-        card(dl, na, nb, kSectionColors[r % 7], [] {});  // a card or a screen in the section's colour
+        card(dl, na, nb, kSectionGrey, [] {});  // a card, or a grey screen
         if (now)
             dl->AddRect(na, nb, T::kGreen, px(gLook == 0 ? 6 : 4), px(2));
-        dl->AddRectFilled(ImVec2(na.x + px(2), na.y + px(7)), ImVec2(na.x + px(5), nb.y - px(7)), kSectionColors[r % 7], px(1));
         text(dl, gBold, px(15), na.x + px(12), na.y + px(15), T::kText, fit(gBold, px(15), sec.name.empty() ? "SECTION " + std::to_string(r + 1) : sec.name, nameW - px(36)),
              H::Left, V::Middle);
         text(dl, gMedium, px(13.5f), na.x + px(12), na.y + px(34), T::kLabel,
@@ -3239,8 +3239,8 @@ void PerformanceView::drawStick(int index, const Mapping& m, const LiveState& li
     const LiveState::Loop& loop = live.loops[static_cast<std::size_t>(index)];
     const LoopBinding& lb = m.loops[static_cast<std::size_t>(index)];
     const LaneLook lanes[2] = {
-        {&loop.lanes[0], Engine::trackOf(index, 0), accent, "X", bx.enabled, bx.invert, false, laneTarget(bx, lb.ccX), lb.steps[0]},
-        {&loop.lanes[1], Engine::trackOf(index, 1), mix(accent, T::kText, 0.5f), "Y", by.enabled, by.invert, false, laneTarget(by, lb.ccY), lb.steps[1]}};
+        {&loop.lanes[0], Engine::trackOf(index, 0), accent, "X", bx.enabled, bx.invert, false, laneTarget(bx, loopCc(lb, bx, 0)), lb.steps[0]},
+        {&loop.lanes[1], Engine::trackOf(index, 1), mix(accent, T::kText, 0.5f), "Y", by.enabled, by.invert, false, laneTarget(by, loopCc(lb, by, 1)), lb.steps[1]}};
     drawLoopPanel(dl, x, w, loopY, y + h - px(10), loop.status, lb.playback, lanes, 2, accent, artFor(live.channel, index),
                   "REC", index == 0 ? "##loopL" : "##loopR", index == 0 ? "axes:left_x,left_y" : "axes:right_x,right_y",
                   index);
@@ -3624,8 +3624,8 @@ void PerformanceView::drawTriggers(const Mapping& m, const LiveState& live, floa
     const LiveState::Loop& loop = live.loops[static_cast<std::size_t>(kTriggers)];
     const LoopBinding& lb = m.loops[static_cast<std::size_t>(kTriggers)];
     const std::string leftName = label(Button::LeftTrigger), rightName = label(Button::RightTrigger);
-    const LaneLook lanes[2] = {{&loop.lanes[0], Engine::trackOf(kTriggers, 0), T::kPink, leftName.c_str(), bl.enabled, bl.invert, false, laneTarget(bl, lb.ccX), lb.steps[0]},
-                               {&loop.lanes[1], Engine::trackOf(kTriggers, 1), pinkLight, rightName.c_str(), br.enabled, br.invert, false, laneTarget(br, lb.ccY), lb.steps[1]}};
+    const LaneLook lanes[2] = {{&loop.lanes[0], Engine::trackOf(kTriggers, 0), T::kPink, leftName.c_str(), bl.enabled, bl.invert, false, laneTarget(bl, loopCc(lb, bl, 0)), lb.steps[0]},
+                               {&loop.lanes[1], Engine::trackOf(kTriggers, 1), pinkLight, rightName.c_str(), br.enabled, br.invert, false, laneTarget(br, loopCc(lb, br, 1)), lb.steps[1]}};
     drawLoopPanel(dl, x, w, loopY, y + h - px(10), loop.status, lb.playback, lanes, 2, T::kPink, artFor(live.channel, 2),
                   "REC", "##looptriggers", "axes:left_trigger,right_trigger", kTriggers);
 }
@@ -3852,19 +3852,18 @@ void PerformanceView::drawTouchpad(const Mapping& m, const LiveState& live, floa
         const LoopBinding& lb = m.loops[static_cast<std::size_t>(source)];
         const bool axisMode = fb.mode == TouchMode::Axis;
         lanes[laneCount++] = {&loops[f]->lanes[0], Engine::trackOf(source, 0), fingerColors[f], f == 0 ? "1 X" : "2 X",
-                              axisMode && fb.x.enabled, fb.x.invert, false, laneTarget(fb.x, lb.ccX), lb.steps[0]};
+                              axisMode && fb.x.enabled, fb.x.invert, false, laneTarget(fb.x, loopCc(lb, fb.x, 0)), lb.steps[0]};
         lanes[laneCount++] = {&loops[f]->lanes[1], Engine::trackOf(source, 1), mix(fingerColors[f], T::kText, 0.45f), f == 0 ? "1 Y" : "2 Y",
-                              axisMode && fb.y.enabled, fb.y.invert, true, laneTarget(fb.y, lb.ccY), lb.steps[1]};
+                              axisMode && fb.y.enabled, fb.y.invert, true, laneTarget(fb.y, loopCc(lb, fb.y, 1)), lb.steps[1]};
         if (ls.state == LoopStatus::State::Recording || (ls.state == LoopStatus::State::Playing && st.state != LoopStatus::State::Recording))
             st.state = ls.state;
         st.waiting = st.waiting || ls.waiting;
         st.locked = st.locked || ls.locked;
         st.length = std::max(st.length, ls.length);
     }
-    if (laneCount == 0) {  // both fingers off: the screen all the same, and why it waits
+    if (laneCount == 0) {  // both fingers off: the screen all the same
         drawLoopPanel(dl, x, w, loopY, boxBottom, LoopStatus{}, m.loops[2].playback, lanes, 0, fingerColors[0], artFor(live.channel, 3), "", "##touchloop",
                       "fingers", static_cast<int>(LoopSource::Finger1));
-        text(dl, gMedium, px(10), x + w * 0.5f, boxBottom - px(14), alpha(T::kLabel, 0.8f), "touchpad off", H::Center, V::Middle);
         return;
     }
     const int shown = loops[0]->status.state != LoopStatus::State::Empty ? 0 : 1;
@@ -3967,8 +3966,8 @@ void PerformanceView::drawTilt(const Mapping& m, const LiveState& live, float x,
     const LiveState::Loop& loop = live.loops[static_cast<std::size_t>(kSource)];
     const LoopBinding& lb = m.loops[static_cast<std::size_t>(kSource)];
     const LaneLook lanes[2] = {
-        {&loop.lanes[0], Engine::trackOf(kSource, 0), accent, "X", on && t.x.enabled, t.x.invert, false, laneTarget(t.x, lb.ccX), lb.steps[0]},
-        {&loop.lanes[1], Engine::trackOf(kSource, 1), mix(accent, T::kText, 0.5f), "Y", on && t.y.enabled, t.y.invert, false, laneTarget(t.y, lb.ccY), lb.steps[1]}};
+        {&loop.lanes[0], Engine::trackOf(kSource, 0), accent, "X", on && t.x.enabled, t.x.invert, false, laneTarget(t.x, loopCc(lb, t.x, 0)), lb.steps[0]},
+        {&loop.lanes[1], Engine::trackOf(kSource, 1), mix(accent, T::kText, 0.5f), "Y", on && t.y.enabled, t.y.invert, false, laneTarget(t.y, loopCc(lb, t.y, 1)), lb.steps[1]}};
     drawLoopPanel(dl, x, w, loopY, y + h - px(10), loop.status, lb.playback, lanes, 2, accent, artFor(live.channel, 3),
                   "REC", "##looptilt", "tilt", kSource);
 }
