@@ -242,6 +242,8 @@ public:
     // instead of all of them, after any preset given before.
     std::optional<std::vector<midipad::SessionLoop>> sessionLoops();
     void loadSessionLoops(std::vector<midipad::SessionLoop> loops);
+    // Engine::restoreClip: a clip given back loops (from sessionLoops()), in order.
+    void restoreClip(int channel, int slot, std::vector<midipad::SessionLoop> loops);
     void loadSessionChains(std::vector<midipad::SessionChain> chains);  // Engine::loadSessionChains
     // The song (Engine::setSong, playSong, stopSong, setSongLoop).
     void setSong(midipad::Song song);
@@ -307,7 +309,7 @@ private:
     struct Command {
         enum class Kind : std::uint8_t {
             SetChannel, Panic, ClearLoop, ToggleLock, ChainStep, ChainThen, ChainGo, ChainStop, ClearClip, CopyClip, ResetShape, LaunchClip, RecordSlot, StretchLoop, AmplifyLoop, AxisLength, PauseLoops, PlayLoops,
-            SaveLoops, LoadLoops, LoadChains, LoadSong, SongPlay, SongStop, SongLoop, Mute, Solo, MuteSolo, Modulation, ModulationCc, OffsetLoop, EditNotes, RecenterTilt
+            SaveLoops, LoadLoops, RestoreClip, LoadChains, LoadSong, SongPlay, SongStop, SongLoop, Mute, Solo, MuteSolo, Modulation, ModulationCc, OffsetLoop, EditNotes, RecenterTilt
         } kind;
         int channel = 0;
         int value = 0;
@@ -345,6 +347,7 @@ private:
     std::mutex sessionMutex_;  // the loops going to and from a session file
     std::optional<std::promise<std::vector<midipad::SessionLoop>>> loopsWanted_;
     std::vector<midipad::SessionLoop> loopsToLoad_;
+    std::vector<std::vector<midipad::SessionLoop>> clipsToRestore_;  // one per RestoreClip command waiting
     std::vector<midipad::SessionChain> chainsToLoad_;
     std::atomic<int> transportSong_{-1};
     std::optional<midipad::Song> songToLoad_;

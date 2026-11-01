@@ -479,6 +479,9 @@ public:
     // every loop and plays them (synced ones on the beat clock again).
     // Both allocate.
     std::vector<SessionLoop> sessionLoops() const;
+    // A clip given back its loops (those of a clip, of any channel and slot);
+    // it plays at once if it is its channel's current clip and that plays.
+    void restoreClip(int channel, int slot, const std::vector<SessionLoop>& loops);
     void loadSessionLoops(const std::vector<SessionLoop>& loops);
     // Every chain of every channel as `chains` has them (the others emptied, back to step 1 at their end); none runs.
     void loadSessionChains(const std::vector<SessionChain>& chains);
@@ -606,6 +609,7 @@ private:
     TapTempo tapTempo_;
     std::optional<double> tappedTempo_;
     int snapBeats_ = 1, beatsPerBar_ = 4, quantize_ = 0;
+    void fillLoop(const SessionLoop& l);
     void sendLoopValue(std::size_t loop, float v);
     void playLoopNotes(std::size_t loop);
     // `press`: the press the note comes from (0: none); `leadAt`: when the

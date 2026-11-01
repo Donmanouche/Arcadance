@@ -1894,6 +1894,25 @@ std::optional<PerformanceView::SessionAction> PerformanceView::drawSession(const
             ImGui::SetCursorScreenPos(a);
             const bool clicked = ImGui::InvisibleButton("##clip", ImVec2(b.x - a.x, b.y - a.y));
             const bool hovered = ImGui::IsItemHovered();
+            const bool doubleClicked = hovered && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left);
+            // Its play button, top right (where its light was): launches it, or stops it while it plays.
+            const ImVec2 pc(b.x - px(13), a.y + px(13));
+            const ImVec2 mouse = ImGui::GetIO().MousePos;
+            const bool overPlay = clip.sources && std::abs(mouse.x - pc.x) <= px(11) && std::abs(mouse.y - pc.y) <= px(10);
+            const double clipBars = static_cast<double>(live.clipBeats[c][static_cast<std::size_t>(slot)]) / std::max(live.beatsPerBar, 1);
+            if (clip.sources && hovered && !ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+                if (overPlay) {
+                    ImGui::SetTooltip(clipPlays ? "Stop" : "Launch clip %d", slot + 1);
+                } else {  // what it holds
+                    static constexpr const char* kSources[] = {"left stick", "right stick", "finger 1", "finger 2", "triggers", "tilt", "notes"};
+                    std::string held;
+                    for (int s = kLoopSourceCount - 1; s >= 0; --s)
+                        if (clip.sources & (1u << s))
+                            held += (held.empty() ? "" : ", ") + std::string(kSources[s]);
+                    held[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(held[0])));
+                    ImGui::SetItemTooltip("%s", held.c_str());
+                }
+            }
             if (clip.sources && ImGui::BeginDragDropSource()) {  // onto a step of the chain
                 const int payload[2] = {ch, slot};
                 ImGui::SetDragDropPayload("MIDIPAD_CLIP", payload, sizeof payload);
@@ -1901,8 +1920,12 @@ std::optional<PerformanceView::SessionAction> PerformanceView::drawSession(const
                 ImGui::EndDragDropSource();
             }
             ImGui::PopID();
-            if (clicked)
+            if (clicked && clip.sources && overPlay)
+                action = clipPlays ? SessionAction{SessionAction::Kind::Stop, ch, 0} : SessionAction{SessionAction::Kind::Launch, ch, slot};
+            else if (doubleClicked && clip.sources)
                 action = SessionAction{SessionAction::Kind::Launch, ch, slot};
+            else if (clicked)
+                action = SessionAction{clip.sources ? SessionAction::Kind::Select : SessionAction::Kind::Launch, ch, slot};
             if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Right))
                 menuRequest_ = MenuRequest{MenuTarget{MenuTarget::Kind::Clip, ch, slot}, ImGui::GetIO().MousePos};
             if (!clip.sources) {  // empty: a card or a screen off
@@ -1923,8 +1946,27 @@ std::optional<PerformanceView::SessionAction> PerformanceView::drawSession(const
                     // a bar of its channel's colour on a screen.
                     if (gLook != 0)
                         dl->AddRectFilled(ImVec2(a.x + px(2), a.y + px(4)), ImVec2(a.x + px(5), b.y - px(4)), chColor, px(1));
-                    text(dl, gBold, px(12.5f), a.x + px(11), a.y + px(13), T::kText, "Clip " + std::to_string(slot + 1), H::Left, V::Middle);
-                    led(dl, ImVec2(b.x - px(12), a.y + px(13)), px(4.5f), T::kGreen, clipPlays || clip.recording || (queued && blink));
+                    const std::string name = "Clip " + std::to_string(slot + 1);
+                    text(dl, gBold, px(12.5f), a.x + px(11), a.y + px(13), T::kText, name, H::Left, V::Middle);
+                    if (clipBars > 0) {  // its length, beside its name, where it fits
+                        char len[24];
+                        if (std::abs(clipBars - std::round(clipBars)) < 0.01)
+                            std::snprintf(len, sizeof len, "%d %s", static_cast<int>(std::lround(clipBars)), std::lround(clipBars) == 1 ? "bar" : "bars");
+                        else
+                            std::snprintf(len, sizeof len, "%.1f bars", clipBars);
+                        const float lx = a.x + px(17) + textWidth(gBold, px(12.5f), name);
+                        if (lx + textWidth(gMedium, px(10.5f), len) < pc.x - px(13))
+                            text(dl, gMedium, px(10.5f), lx, a.y + px(13), alpha(T::kText, 0.6f), len, H::Left, V::Middle);
+                    }
+                    // The play button: green with a stop sign while it plays, blinking while it waits, red while recording.
+                    const ImVec2 pa(pc.x - px(9), pc.y - px(8)), pb(pc.x + px(9), pc.y + px(8));
+                    const bool lit = clipPlays || (queued && blink);
+                    dl->AddRectFilled(pa, pb, clip.recording ? T::kRed : lit ? T::kGreen : overPlay && hovered ? alpha(T::kGreen, 0.35f) : IM_COL32(0, 0, 0, 90), px(4));
+                    const ImU32 sign = clip.recording || lit ? IM_COL32(0x0B, 0x1A, 0x10, 255) : IM_COL32(0xE6, 0xE8, 0xEC, 230);
+                    if (clipPlays || clip.recording)
+                        dl->AddRectFilled(ImVec2(pc.x - px(3), pc.y - px(3)), ImVec2(pc.x + px(3), pc.y + px(3)), sign, px(1));
+                    else
+                        dl->AddTriangleFilled(ImVec2(pc.x - px(3), pc.y - px(5)), ImVec2(pc.x - px(3), pc.y + px(5)), ImVec2(pc.x + px(5), pc.y), sign);
                     const float x0 = a.x + px(11), x1 = b.x - px(9), y0 = a.y + px(26), y1 = b.y - px(8), th = px(3);
                     if ((clip.sources & (1u << static_cast<int>(LoopSource::Notes))) && clip.noteCount > 0) {
                         int lo = 127, hi = 0;
@@ -2208,6 +2250,25 @@ std::optional<PerformanceView::SessionAction> PerformanceView::drawChainStrip(Im
         }
         if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Right))
             menuRequest_ = MenuRequest{MenuTarget{MenuTarget::Kind::Step, ch, k}, ImGui::GetIO().MousePos};
+        // Its repeats, dragged up or down from the chip (a notch each 10 pixels), or typed after a double-click.
+        const bool overChip = clipSlot >= 0 && io.MousePos.x >= x0 + stepW * 0.45f && io.MousePos.y < y0 + px(30);
+        if (ImGui::IsItemActivated()) {
+            chipDrag_ = overChip ? k : -1;
+            chipStart_ = repeats;
+            dragNotches_ = 0;
+        }
+        if (overChip && hovered)
+            ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
+        if (ImGui::IsItemActive() && chipDrag_ == k) {
+            ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
+            const int notches = static_cast<int>(-ImGui::GetMouseDragDelta(ImGuiMouseButton_Left, 0.0f).y / px(10));
+            if (notches != dragNotches_) {
+                dragNotches_ = notches;
+                action = SessionAction{SessionAction::Kind::ChainSet, ch, k, clipSlot, nextRepeats(chipStart_, notches)};
+            }
+        }
+        if (overChip && hovered && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
+            action = SessionAction{SessionAction::Kind::RepeatsAsk, ch, k, clipSlot, repeats};
         if (hovered && io.MouseWheel != 0.0f) {  // over its number: the clip; over its chip: the repeats
             const int notch = io.MouseWheel > 0 ? 1 : -1;
             if (io.MousePos.x < x0 + stepW * 0.45f || clipSlot < 0)
@@ -2736,7 +2797,27 @@ std::optional<PerformanceView::SongAction> PerformanceView::drawSong(const LiveS
         ImGui::SetCursorScreenPos(ImVec2(na.x, na.y));
         const bool nameClicked = ImGui::InvisibleButton("##name", ImVec2(nameW, rowH));
         const bool nameHovered = ImGui::IsItemHovered();
-        if (nameClicked)
+        // Dragged up or down: its length (a bar each 12 pixels); double-clicked: its name, or (on its bars) its length typed.
+        if (ImGui::IsItemActivated()) {
+            songDragAxis_ = 0;
+            dragNotches_ = 0;
+        }
+        if (ImGui::IsItemActive() && ImGui::IsMouseDragging(ImGuiMouseButton_Left, px(5))) {
+            const ImVec2 d = ImGui::GetMouseDragDelta(ImGuiMouseButton_Left, 0.0f);
+            if (songDragAxis_ == 0)
+                songDragAxis_ = std::abs(d.y) > std::abs(d.x) ? 2 : 1;
+            if (songDragAxis_ == 2) {
+                ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
+                const int notches = static_cast<int>(-d.y / px(12));
+                if (notches != dragNotches_) {
+                    action = SongAction{SongAction::Kind::Bars, r, -1, 0, notches - dragNotches_};
+                    dragNotches_ = notches;
+                }
+            }
+        }
+        if (nameHovered && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) && io.MousePos.x < nb.x - px(30))
+            action = SongAction{io.MousePos.y > na.y + rowH * 0.5f ? SongAction::Kind::BarsAsk : SongAction::Kind::Rename, r, -1};
+        if (nameClicked && songDragAxis_ != 2)
             action = io.MousePos.x > pc.x - px(12) && io.MousePos.y < pc.y + px(12)
                          ? (now ? SongAction{SongAction::Kind::Stop} : SongAction{SongAction::Kind::Play, r})
                          : SongAction{SongAction::Kind::Cursor, r, -1};
@@ -2808,6 +2889,10 @@ std::optional<PerformanceView::SongAction> PerformanceView::drawSong(const LiveS
             ImGui::SetCursorScreenPos(a);
             if (ImGui::InvisibleButton("##cell", ImVec2(colW, rowH)))
                 action = SongAction{SongAction::Kind::EditCell, r, ch};
+            if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))  // a new item, after the last
+                action = SongAction{SongAction::Kind::AddItem, r, ch};
+            if (ImGui::IsItemHovered() && items.empty())
+                text(dl, gBold, px(18), (a.x + b.x) * 0.5f, (a.y + b.y) * 0.5f, T::kDim, "+", H::Center, V::Middle);
             if (ImGui::IsItemHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Right))
                 menuRequest_ = MenuRequest{MenuTarget{MenuTarget::Kind::SongCell, ch, r}, io.MousePos};
             ImGui::PopID();
@@ -2891,8 +2976,28 @@ std::optional<PerformanceView::SongAction> PerformanceView::drawSong(const LiveS
         if (ImGui::InvisibleButton("##item", ImVec2(x1 - x0, iy1 - iy0)))
             action = SongAction{SongAction::Kind::ItemSelect, r, ch, static_cast<int>(i)};
         const bool hovered = ImGui::IsItemHovered();
-        if (ImGui::IsItemActive() && ImGui::IsMouseDragging(ImGuiMouseButton_Left))
-            songDragBars_ = static_cast<int>(std::lround(ImGui::GetMouseDragDelta(ImGuiMouseButton_Left).x / barW));
+        // Dragged sideways: to another bar; up or down: its repeats (a silence: its beats).
+        if (ImGui::IsItemActivated()) {
+            songDragAxis_ = 0;
+            dragNotches_ = 0;
+        }
+        if (ImGui::IsItemActive() && ImGui::IsMouseDragging(ImGuiMouseButton_Left, px(5))) {
+            const ImVec2 d = ImGui::GetMouseDragDelta(ImGuiMouseButton_Left, 0.0f);
+            if (songDragAxis_ == 0)
+                songDragAxis_ = std::abs(d.x) >= std::abs(d.y) ? 1 : 2;
+            if (songDragAxis_ == 1) {
+                songDragBars_ = static_cast<int>(std::lround(d.x / barW));
+            } else {
+                ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
+                const int notches = static_cast<int>(-d.y / px(12));
+                if (notches != dragNotches_) {
+                    action = SongAction{SongAction::Kind::ItemRepeats, r, ch, static_cast<int>(i), notches - dragNotches_};
+                    dragNotches_ = notches;
+                }
+            }
+        }
+        if (hovered && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
+            action = SongAction{SongAction::Kind::RepeatsAsk, r, ch, static_cast<int>(i)};
         if (ImGui::IsItemDeactivated() && songDragBars_ != 0) {
             action = SongAction{SongAction::Kind::ItemMove, r, ch, static_cast<int>(i), static_cast<int>(std::floor(at + 1e-6)) + songDragBars_};
             songDragBars_ = 0;
@@ -2957,6 +3062,10 @@ std::optional<PerformanceView::SongAction> PerformanceView::drawSong(const LiveS
             action = SongAction{SongAction::Kind::AddItem, r, ch};
         ImGui::SetItemTooltip("Add a clip, a chain of the channel or a silence after the last item");
     }
+    // A double-click on the timeline, off its items: a new item on that bar.
+    if (ImGui::IsMouseHoveringRect(ImVec2(ex0, iy0), ImVec2(ex1, iy1)) && !ImGui::IsAnyItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
+        action = SongAction{SongAction::Kind::AddItem, r, ch, 0,
+                            std::clamp(static_cast<int>(std::floor((io.MousePos.x - ex0) / barW)), 0, bars - 1) + 1};
     if (playing && live.song.section == r && live.song.beat >= 0) {
         const float x = ex0 + static_cast<float>(std::min(live.song.beat / bar, static_cast<double>(bars))) * barW;
         dl->AddLine(ImVec2(x, ry), ImVec2(x, iy1 + px(2)), T::kGreen, px(1.6f));

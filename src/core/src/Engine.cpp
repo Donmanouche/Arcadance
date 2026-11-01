@@ -3508,6 +3508,75 @@ std::vector<SessionLoop> Engine::sessionLoops() const {
     return out;
 }
 
+// A loop of a session into its clip (its channel's, its slot), playing there.
+void Engine::fillLoop(const SessionLoop& l) {
+    const int source = static_cast<int>(l.source);
+    auto fill = [&](int track, const std::vector<std::uint16_t>* samples) {
+        const std::size_t index = slotIndex(l.channel, l.clip, track);
+        Loop& loop = loops_[index];
+        if (track == kNoteTrack) {
+            auto& events = noteEvents_[index / kTrackCount];
+            events.clear();
+            for (const SessionLoop::Note& n : l.notes)
+                if (events.size() < kMaxNoteEvents)
+                    events.push_back({std::clamp(n.at, 0, l.length - 1), static_cast<std::uint8_t>(n.note & 0x7F), n.velocity, n.on, n.press});
+            for (const SessionLoop::Note& n : l.notes)  // new presses never take a number of these
+                pressCount_ = std::max(pressCount_, n.press);
+        } else {
+            if (static_cast<int>(samples->size()) < l.length)
+                return;
+            std::copy(samples->begin(), samples->begin() + l.length, loop.x.begin());
+            loop.stretch = std::clamp(l.stretch, kMinStretch, kMaxStretch);
+            loop.amplitude = std::clamp(l.amplitude, 0, kMaxAmplitude);
+            loop.amplitudeNow = static_cast<float>(loop.amplitude) / 100.0f;
+            if (l.modulation.source >= 0 && l.modulation.source < kNoteTrack && l.modulation.source != track) {
+                loop.modulation = l.modulation;
+                loop.modulation.depth = std::clamp(loop.modulation.depth, 0, 100);
+            }
+            loop.sendsCc = l.sendsCc;
+            loop.offset = std::clamp(l.offset, -100, 100);
+            loop.offsetNow = static_cast<float>(loop.offset) / 100.0f;
+        }
+        loop.length = l.length;
+        loop.syncBeats = l.syncBeats;
+        loop.anchorBeat = l.anchorBeat;
+        loop.locked = l.locked;
+        loop.state = LoopStatus::State::Playing;
+        if (track != kNoteTrack)
+            findMiddle(loop);
+    };
+    if (l.source == LoopSource::Notes) {
+        fill(kNoteTrack, nullptr);
+    } else if (l.axis >= 0) {
+        fill(trackOf(source, l.axis), &l.x);
+    } else {  // from before X and Y were apart: both, alike
+        fill(trackOf(source, 0), &l.x);
+        fill(trackOf(source, 1), &l.y);
+    }
+}
+
+// A clip given back its loops (`loops`: those of a clip, of any channel and
+// slot): what it held goes, and it plays at once if it is its channel's
+// current clip and that plays.
+void Engine::restoreClip(int channel, int slot, const std::vector<SessionLoop>& loops) {
+    channel = std::clamp(channel, 0, kChannelCount - 1);
+    slot = std::clamp(slot, 0, kClipSlots - 1);
+    const auto c = static_cast<std::size_t>(channel);
+    const bool playing = slot == currentSlot_[c] && clipPlaying_[c];
+    clearClip(channel, slot);
+    for (SessionLoop l : loops) {
+        if (l.length < 2 || l.length > kMaxLoopSamples)
+            continue;
+        l.channel = channel;
+        l.clip = slot;
+        fillLoop(l);
+    }
+    if (playing && currentHasLoops(channel)) {
+        clipPlaying_[c] = true;
+        startClipLoops(channel);
+    }
+}
+
 void Engine::loadSessionLoops(const std::vector<SessionLoop>& loops) {
     waiting_.fill(false);
     pendingStopChannel_ = -1;
@@ -3537,49 +3606,7 @@ void Engine::loadSessionLoops(const std::vector<SessionLoop>& loops) {
         if (l.current)
             currentSlot_[c] = l.clip;
         playing[c] = playing[c] || l.playing;
-        const int source = static_cast<int>(l.source);
-        auto fill = [&](int track, const std::vector<std::uint16_t>* samples) {
-            const std::size_t index = slotIndex(l.channel, l.clip, track);
-            Loop& loop = loops_[index];
-            if (track == kNoteTrack) {
-                auto& events = noteEvents_[index / kTrackCount];
-                events.clear();
-                for (const SessionLoop::Note& n : l.notes)
-                    if (events.size() < kMaxNoteEvents)
-                        events.push_back({std::clamp(n.at, 0, l.length - 1), static_cast<std::uint8_t>(n.note & 0x7F), n.velocity, n.on, n.press});
-                for (const SessionLoop::Note& n : l.notes)  // new presses never take a number of these
-                    pressCount_ = std::max(pressCount_, n.press);
-            } else {
-                if (static_cast<int>(samples->size()) < l.length)
-                    return;
-                std::copy(samples->begin(), samples->begin() + l.length, loop.x.begin());
-                loop.stretch = std::clamp(l.stretch, kMinStretch, kMaxStretch);
-                loop.amplitude = std::clamp(l.amplitude, 0, kMaxAmplitude);
-                loop.amplitudeNow = static_cast<float>(loop.amplitude) / 100.0f;
-                if (l.modulation.source >= 0 && l.modulation.source < kNoteTrack && l.modulation.source != track) {
-                    loop.modulation = l.modulation;
-                    loop.modulation.depth = std::clamp(loop.modulation.depth, 0, 100);
-                }
-                loop.sendsCc = l.sendsCc;
-                loop.offset = std::clamp(l.offset, -100, 100);
-                loop.offsetNow = static_cast<float>(loop.offset) / 100.0f;
-            }
-            loop.length = l.length;
-            loop.syncBeats = l.syncBeats;
-            loop.anchorBeat = l.anchorBeat;
-            loop.locked = l.locked;
-            loop.state = LoopStatus::State::Playing;
-            if (track != kNoteTrack)
-                findMiddle(loop);
-        };
-        if (l.source == LoopSource::Notes) {
-            fill(kNoteTrack, nullptr);
-        } else if (l.axis >= 0) {
-            fill(trackOf(source, l.axis), &l.x);
-        } else {  // from before X and Y were apart: both, alike
-            fill(trackOf(source, 0), &l.x);
-            fill(trackOf(source, 1), &l.y);
-        }
+        fillLoop(l);
     }
     for (int channel = 0; channel < kChannelCount; ++channel) {
         const auto c = static_cast<std::size_t>(channel);

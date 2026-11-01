@@ -221,6 +221,14 @@ void Runtime::loadSessionLoops(std::vector<midipad::SessionLoop> loops) {
     commands_.push({Command::Kind::LoadLoops});
 }
 
+void Runtime::restoreClip(int channel, int slot, std::vector<midipad::SessionLoop> loops) {
+    {
+        std::lock_guard lock(sessionMutex_);
+        clipsToRestore_.push_back(std::move(loops));
+    }
+    commands_.push({Command::Kind::RestoreClip, channel, slot});
+}
+
 void Runtime::setSong(midipad::Song song) {
     {
         std::lock_guard lock(sessionMutex_);
@@ -691,6 +699,12 @@ void Runtime::run(std::stop_token stop, Options options, std::shared_ptr<const P
                 std::lock_guard lock(sessionMutex_);
                 engine.loadSessionLoops(loopsToLoad_);
                 loopsToLoad_.clear();
+            } else if (command->kind == Command::Kind::RestoreClip) {
+                std::lock_guard lock(sessionMutex_);
+                if (!clipsToRestore_.empty()) {
+                    engine.restoreClip(command->channel, command->value, clipsToRestore_.front());
+                    clipsToRestore_.erase(clipsToRestore_.begin());
+                }
             } else if (command->kind == Command::Kind::LoadSong) {
                 std::lock_guard lock(sessionMutex_);
                 if (songToLoad_)

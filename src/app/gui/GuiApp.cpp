@@ -559,12 +559,50 @@ private:
     void toggleSong(const LiveState& live);
     void songEvent(Engine::SessionEvent e, const LiveState& live);
     void songAction(const PerformanceView::SongAction& a, const LiveState& live);
-    void songEdited() { runtime_->setSong(song_); }
+    void songEdited() {
+        songUndo();
+        runtime_->setSong(song_);
+    }
+    // Undo and redo, for the edits of the session and song screens: each step
+    // keeps the song, a channel's chains (with their names) or clips' loops
+    // as they were before it; undoing one keeps them as they are, for redo.
+    struct UndoStep {
+        enum class Kind : std::uint8_t { Song, Chains, Clips } kind = Kind::Song;
+        std::string what;
+        double at = 0;  // when: the same edit soon after only moves this on
+        midipad::Song song;
+        int channel = 0;
+        std::array<LiveState::Chain, Engine::kChains> chains{};
+        std::array<std::string, Engine::kChains> chainNames;
+        std::vector<int> slots;
+        std::vector<midipad::SessionLoop> loops;
+    };
+    std::vector<UndoStep> undo_, redo_;
+    midipad::Song songShadow_;  // the song before the edit being made
+    std::string undoWhat_;      // what the edit being made is (the menu entry chosen), this frame
+    std::array<LiveState::Chains, kChannelCount> liveChains_{};  // as last drawn
+    std::string toast_;  // in the status bar, a moment: what was done, undone or redone
+    bool toastUndone_ = false;
+    double toastUntil_ = 0;
+    void pushUndo(UndoStep step);
+    void songUndo();
+    void rememberChains(int channel, const char* what);
+    void rememberClips(int channel, std::vector<int> slots, const char* what);
+    UndoStep currentState(const UndoStep& like);
+    void applyState(const UndoStep& state);
+    void undoRedo(bool redo);
+    void resetUndo();
+    // The keyboard on the session and song screens: the arrows and Enter as
+    // the controller's cursor, Space as Play / Stop, Delete, Ctrl+C, Ctrl+V,
+    // Ctrl+D on what the cursor is on.
+    void screenKeys(const LiveState& live);
+    std::vector<midipad::SessionLoop> clipClipboard_;  // a clip copied (Ctrl+C), for Ctrl+V
     std::vector<midipad::SongItem>* songCell(int row, int col);
     int placeSongItem(int row, int col, midipad::SongItem item, const LiveState& live);  // on its bar, in playing order: its index there
     // A new item after the cell's last (the menu picks what it plays).
     void addSongItem(int row, int col, const LiveState& live, midipad::SongItem::Kind kind, int index);
-    void openSongPick(int row, int col, int item, const LiveState& live, bool fromController, ImVec2 at);
+    // `bar`: a new item on that bar + 1 (0: after the last).
+    void openSongPick(int row, int col, int item, const LiveState& live, bool fromController, ImVec2 at, int bar = 0);
     void addToSong(int channel, midipad::SongItem::Kind kind, int index, const LiveState& live);  // from the session screen
     std::string songTargetName() const;  // the section addToSong puts it in
     void addSongSection(int at);
@@ -596,6 +634,17 @@ private:
         ImVec2 at;
     };
     std::optional<ContextMenu> menu_;
+    // An entry chosen in `menu`, said for undo: "Clear (clip 3)".
+    static std::string menuWhat(const ContextMenu& menu, std::string label) {
+        if (label.size() >= 3 && label.compare(label.size() - 3, 3, "\xE2\x80\xA6") == 0)
+            label.resize(label.size() - 3);
+        std::string title = menu.title.substr(0, menu.title.find('\n'));
+        for (char& ch : title)
+            ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+        while (title.find("  ") != std::string::npos)
+            title.erase(title.find("  "), 1);
+        return title.empty() ? label : label + " (" + title + ")";
+    }
     bool menuFromController_ = false;  // the menu last chosen from, for a menu it opens in turn
     ImVec2 menuAt_{};
     // Renaming a channel (its block's menu).
@@ -645,7 +694,10 @@ private:
     void chainEvent(Engine::SessionEvent e, const LiveState& live);
     // On the chain the session screen shows for the channel.
     int shownChain(int channel) const { return shownChain_[static_cast<std::size_t>(std::clamp(channel, 0, kChannelCount - 1))]; }
-    void setChainStep(int channel, int step, int clip, int repeats) { runtime_->setChainStep(channel, shownChain(channel), step, clip, repeats); }
+    void setChainStep(int channel, int step, int clip, int repeats) {
+        rememberChains(channel, "Chain step changed");
+        runtime_->setChainStep(channel, shownChain(channel), step, clip, repeats);
+    }
     void showChain(int channel, int chain) {
         shownChain_[static_cast<std::size_t>(std::clamp(channel, 0, kChannelCount - 1))] = (chain % Engine::kChains + Engine::kChains) % Engine::kChains;
     }
@@ -678,6 +730,15 @@ private:
     bool openCopyDialog_ = false;
     // A channel's colour: the channel (from its menu).
     void drawColourDialog();
+    // A value typed after a double-click: a chain step's repeats (0: forever; row: the step, item: its
+    // clip), a song item's repeats or a silence's beats (col, row, item), a section's bars (row).
+    struct ValueAsk {
+        enum class Kind : std::uint8_t { ChainRepeats, ItemRepeats, RestBeats, SectionBars } kind = Kind::ItemRepeats;
+        int col = 0, row = 0, item = 0, value = 0;
+    };
+    std::optional<ValueAsk> valueAsk_;
+    bool openValueAsk_ = false;
+    void drawValueAsk();
     static Preset newPreset();
     bool openColour_ = false;
     int colourChannel_ = -1;
@@ -1503,6 +1564,11 @@ void GuiApp::draw() {
         guard([this] { quitAsked(); });
     if (ImGui::Shortcut(ImGuiKey_F11, ImGuiInputFlags_RouteGlobal))
         toggleFullscreen();
+    if (!ImGui::GetIO().WantTextInput && ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_Z, ImGuiInputFlags_RouteGlobal))
+        undoRedo(false);
+    if (!ImGui::GetIO().WantTextInput && (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_Z, ImGuiInputFlags_RouteGlobal) ||
+                                          ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_Y, ImGuiInputFlags_RouteGlobal)))
+        undoRedo(true);
     if (!ImGui::GetIO().WantTextInput && !overlaySpec_ && !optionsOpen_ && ImGui::Shortcut(ImGuiKey_Tab, ImGuiInputFlags_RouteGlobal)) {
         if (sessionView_ || songView_)  // the session screen, then the song, then back
             toggleSong(live);
@@ -1914,10 +1980,10 @@ void GuiApp::addSongItem(int row, int col, const LiveState& live, midipad::SongI
 }
 
 // The clips that hold loops and the chains that have steps on the channel, to pick from.
-void GuiApp::openSongPick(int row, int col, int item, const LiveState& live, bool fromController, ImVec2 at) {
+void GuiApp::openSongPick(int row, int col, int item, const LiveState& live, bool fromController, ImVec2 at, int bar) {
     if (!songCell(row, col))
         return;
-    openMenu({PerformanceView::MenuTarget::Kind::SongPick, col, row, 0, item}, live, fromController, at);
+    openMenu({PerformanceView::MenuTarget::Kind::SongPick, col, row, bar, item}, live, fromController, at);
 }
 
 std::string GuiApp::songTargetName() const {
@@ -1950,6 +2016,132 @@ void GuiApp::playSongFrom(int section, const LiveState& live) {
     if (live.loopChannels != 0 && !live.loopsPaused)
         runtime_->transportStop();
     runtime_->transportPlay(section);
+}
+
+// --- Undo and redo -----------------------------------------------------------
+
+void GuiApp::pushUndo(UndoStep step) {
+    step.at = ImGui::GetTime();
+    UndoStep* top = undo_.empty() ? nullptr : &undo_.back();
+    if (top && step.kind != UndoStep::Kind::Clips && top->kind == step.kind && top->channel == step.channel && top->what == step.what &&
+        step.at - top->at < 1.0) {
+        top->at = step.at;  // the same edit again (a wheel, a stick held): one step
+    } else {
+        undo_.push_back(std::move(step));
+        if (undo_.size() > 100)
+            undo_.erase(undo_.begin());
+    }
+    redo_.clear();
+    toast_ = undo_.back().what;
+    toastUndone_ = false;
+    toastUntil_ = ImGui::GetTime() + 4.0;
+}
+
+// The song changed (songEdited): a step with the song as it was.
+void GuiApp::songUndo() {
+    if (song_ == songShadow_)
+        return;
+    UndoStep step;
+    step.what = undoWhat_.empty() ? "Song changed" : undoWhat_;
+    step.song = songShadow_;
+    songShadow_ = song_;
+    pushUndo(std::move(step));
+}
+
+// A channel's chains about to change: a step with them as they are.
+void GuiApp::rememberChains(int channel, const char* what) {
+    UndoStep step;
+    step.kind = UndoStep::Kind::Chains;
+    step.what = undoWhat_.empty() ? what : undoWhat_;
+    step.channel = std::clamp(channel, 0, kChannelCount - 1);
+    step = currentState(step);
+    pushUndo(std::move(step));
+}
+
+// Clips about to change: a step with their loops as they are.
+void GuiApp::rememberClips(int channel, std::vector<int> slots, const char* what) {
+    UndoStep step;
+    step.kind = UndoStep::Kind::Clips;
+    step.what = undoWhat_.empty() ? what : undoWhat_;
+    step.channel = std::clamp(channel, 0, kChannelCount - 1);
+    step.slots = std::move(slots);
+    step = currentState(step);
+    pushUndo(std::move(step));
+}
+
+// What `like` keeps (the song, its channel's chains, its clips), as it is now.
+GuiApp::UndoStep GuiApp::currentState(const UndoStep& like) {
+    UndoStep now = like;
+    const auto c = static_cast<std::size_t>(like.channel);
+    switch (like.kind) {
+    case UndoStep::Kind::Song: now.song = song_; break;
+    case UndoStep::Kind::Chains:
+        now.chains = liveChains_[c].list;
+        now.chainNames = chainNames_[c];
+        break;
+    case UndoStep::Kind::Clips:
+        now.loops.clear();
+        if (const auto loops = runtime_->sessionLoops())
+            for (const midipad::SessionLoop& l : *loops)
+                if (l.channel == like.channel && std::find(like.slots.begin(), like.slots.end(), l.clip) != like.slots.end())
+                    now.loops.push_back(l);
+        break;
+    }
+    return now;
+}
+
+void GuiApp::applyState(const UndoStep& state) {
+    const auto c = static_cast<std::size_t>(state.channel);
+    switch (state.kind) {
+    case UndoStep::Kind::Song:
+        song_ = state.song;
+        songShadow_ = song_;
+        runtime_->setSong(song_);
+        songCursor_.row = std::clamp(songCursor_.row, 0, static_cast<int>(song_.sections.size()));
+        songCursor_.editing = false;
+        break;
+    case UndoStep::Kind::Chains:
+        for (int k = 0; k < Engine::kChains; ++k) {
+            const LiveState::Chain& chain = state.chains[static_cast<std::size_t>(k)];
+            for (int i = 0; i < Engine::kChainSteps; ++i)
+                runtime_->setChainStep(state.channel, k, i, chain.clip[static_cast<std::size_t>(i)], chain.repeats[static_cast<std::size_t>(i)]);
+            runtime_->setChainThen(state.channel, k, chain.then);
+        }
+        chainNames_[c] = state.chainNames;
+        break;
+    case UndoStep::Kind::Clips:
+        for (int slot : state.slots) {
+            std::vector<midipad::SessionLoop> loops;
+            for (const midipad::SessionLoop& l : state.loops)
+                if (l.clip == slot)
+                    loops.push_back(l);
+            runtime_->restoreClip(state.channel, slot, std::move(loops));
+        }
+        break;
+    }
+}
+
+void GuiApp::undoRedo(bool redo) {
+    auto& from = redo ? redo_ : undo_;
+    auto& to = redo ? undo_ : redo_;
+    if (from.empty())
+        return;
+    UndoStep step = std::move(from.back());
+    from.pop_back();
+    UndoStep now = currentState(step);
+    applyState(step);
+    to.push_back(std::move(now));
+    toast_ = (redo ? "Redone: " : "Undone: ") + step.what;
+    toastUndone_ = !redo;
+    toastUntil_ = ImGui::GetTime() + 4.0;
+}
+
+// A session opened or a new song: nothing to undo.
+void GuiApp::resetUndo() {
+    undo_.clear();
+    redo_.clear();
+    songShadow_ = song_;
+    toastUntil_ = 0;
 }
 
 void GuiApp::addSongSection(int at) {
@@ -2048,7 +2240,34 @@ void GuiApp::songAction(const PerformanceView::SongAction& a, const LiveState& l
         c.col = a.col;
         c.editing = true;
         c.item = static_cast<int>(songCell(a.row, a.col) ? songCell(a.row, a.col)->size() : 0);
-        openSongPick(a.row, a.col, -1, live, false, ImGui::GetIO().MousePos);
+        openSongPick(a.row, a.col, -1, live, false, ImGui::GetIO().MousePos, a.value);
+        break;
+    case K::RepeatsAsk:
+        if (hasItem) {
+            const midipad::SongItem& it = (*items)[static_cast<std::size_t>(a.item)];
+            const bool rest = it.kind == midipad::SongItem::Kind::Rest;
+            c = {a.row, a.col, a.item, true};
+            valueAsk_ = ValueAsk{rest ? ValueAsk::Kind::RestBeats : ValueAsk::Kind::ItemRepeats, a.col, a.row, a.item, rest ? it.beats : it.repeats};
+            openValueAsk_ = true;
+        }
+        break;
+    case K::BarsAsk:
+        if (a.row >= 0 && a.row < static_cast<int>(song_.sections.size())) {
+            c.row = a.row;
+            c.col = -1;
+            valueAsk_ = ValueAsk{ValueAsk::Kind::SectionBars, -1, a.row, 0, PerformanceView::songSectionBars(live, song_.sections[static_cast<std::size_t>(a.row)])};
+            openValueAsk_ = true;
+        }
+        break;
+    case K::Rename:
+        if (a.row >= 0 && a.row < static_cast<int>(song_.sections.size())) {
+            c.row = a.row;
+            c.col = -1;
+            renameSection_ = a.row;
+            renameChain_ = -1;
+            renameInput_ = song_.sections[static_cast<std::size_t>(a.row)].name;
+            openRename_ = true;
+        }
         break;
     }
 }
@@ -2154,7 +2373,7 @@ enum MenuId : int {
     kLaunch, kStop, kRecordHere, kDuplicate, kAddToChain, kClearClip,
     kStartHere, kRandom, kSilence, kInsertStep, kDeleteStep, kEmptyStep,
     kChannelStop, kChannelMute, kChannelSolo, kChainOn, kChainOff, kThenLoop, kThenStop, kThenNext, kPrevChain, kNextChain, kDuplicateChain, kRenameChain, kClearChain,
-    kLock, kUnlock, kClearLoop, kResetShape, kSettings, kEditNotes, kPrevChannel, kNextChannel, kRename, kColour,
+    kLock, kUnlock, kClearLoop, kResetShape, kSettings, kEditNotes, kPrevChannel, kNextChannel, kRename, kColour, kUndo,
     kSongPlay, kSongStop, kSongLoop, kLoopSong, kSectionRename, kSectionFit, kSectionDuplicate, kSectionInsert, kSectionUp, kSectionDown, kSectionDelete,
     kCellEdit, kCellClear, kCellCopy, kCellPaste,
     kRestBarMore, kRestBarLess, kRestBeatMore, kRestBeatLess,
@@ -2168,6 +2387,104 @@ enum MenuId : int {
 bool keepsModMenu(int id) { return id == kModDepth || id == kModDirection || (id >= kModTarget && id < kModTarget + Engine::kNoteTrack); }
 
 }  // namespace
+
+void GuiApp::screenKeys(const LiveState& live) {
+    ImGuiIO& io = ImGui::GetIO();
+    const bool free = !io.WantTextInput && !overlaySpec_ && !optionsOpen_ && !menu_ && !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId);
+    // The arrows move the screen's cursor, not ImGui's own keyboard focus.
+    if (free)
+        io.ConfigFlags &= ~ImGuiConfigFlags_NavEnableKeyboard;
+    else
+        io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+    if (!free || io.KeyAlt)
+        return;
+    using E = Engine::SessionEvent;
+    using K = PerformanceView::MenuTarget::Kind;
+    const bool ctrl = io.KeyCtrl;
+    auto pressed = [&](ImGuiKey key, bool withCtrl = false) { return ctrl == withCtrl && ImGui::IsKeyPressed(key, !withCtrl); };
+    if (pressed(ImGuiKey_UpArrow))
+        sessionEvent(E::Up, live);
+    if (pressed(ImGuiKey_DownArrow))
+        sessionEvent(E::Down, live);
+    if (pressed(ImGuiKey_LeftArrow))
+        sessionEvent(E::Left, live);
+    if (pressed(ImGuiKey_RightArrow))
+        sessionEvent(E::Right, live);
+    if (!ctrl && (ImGui::IsKeyPressed(ImGuiKey_Enter, false) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false)))
+        sessionEvent(E::Press, live);
+    if (!ctrl && ImGui::IsKeyPressed(ImGuiKey_Space, false)) {  // as Play / Stop in the top bar
+        if ((live.loopChannels != 0 && !live.loopsPaused) || live.song.playing)
+            runtime_->transportStop();
+        else
+            runtime_->transportPlay(songView_ && !song_.sections.empty() ? std::clamp(songCursor_.row, 0, static_cast<int>(song_.sections.size()) - 1) : -1);
+    }
+    const bool erase = !ctrl && (ImGui::IsKeyPressed(ImGuiKey_Delete, false) || ImGui::IsKeyPressed(ImGuiKey_Backspace, false));
+    const bool copy = pressed(ImGuiKey_C, true), paste = pressed(ImGuiKey_V, true), duplicate = pressed(ImGuiKey_D, true);
+    auto run = [&](const PerformanceView::MenuTarget& target, int id, const std::string& what) {
+        undoWhat_ = what;
+        runMenu(target, id, live);
+        undoWhat_.clear();
+    };
+    if (sessionView_) {
+        const int ch = sessionChannel_;
+        if (sessionSlot_ < Engine::kClipSlots && sessionButton_ < 0) {
+            const int slot = sessionSlot_;
+            const std::string name = "clip " + std::to_string(slot + 1);
+            const bool has = live.clips[static_cast<std::size_t>(ch * Engine::kClipSlots + slot)].sources != 0;
+            if (has && erase)
+                run({K::Clip, ch, slot}, kClearClip, "Clear (" + name + ")");
+            if (has && duplicate)
+                run({K::Clip, ch, slot}, kDuplicate, "Duplicate (" + name + ")");
+            if (has && copy)
+                if (const auto loops = runtime_->sessionLoops()) {
+                    clipClipboard_.clear();
+                    for (const midipad::SessionLoop& l : *loops)
+                        if (l.channel == ch && l.clip == slot)
+                            clipClipboard_.push_back(l);
+                    toast_ = "Copied (" + name + ")";
+                    toastUndone_ = false;
+                    toastUntil_ = ImGui::GetTime() + 2.0;
+                }
+            if (paste && !clipClipboard_.empty()) {
+                undoWhat_ = "Paste (" + name + ")";
+                rememberClips(ch, {slot}, "Paste");
+                undoWhat_.clear();
+                runtime_->restoreClip(ch, slot, clipClipboard_);
+            }
+        } else if (sessionSlot_ == Engine::kClipSlots && chainCursor_ < Engine::kChainSteps && erase) {
+            run({K::Step, ch, chainCursor_}, kEmptyStep, "Empty it (step " + std::to_string(chainCursor_ + 1) + ")");
+        }
+        return;
+    }
+    if (!songView_)
+        return;
+    const PerformanceView::SongCursor cur = songCursor_;
+    if (cur.row < 0 || cur.row >= static_cast<int>(song_.sections.size()))
+        return;
+    if (cur.col < 0) {  // a section
+        const std::string name = "section " + std::to_string(cur.row + 1);
+        if (erase)
+            run({K::Section, 0, cur.row}, kSectionDelete, "Delete (" + name + ")");
+        if (duplicate)
+            run({K::Section, 0, cur.row}, kSectionDuplicate, "Duplicate (" + name + ")");
+        return;
+    }
+    const auto* items = songCell(cur.row, cur.col);
+    if (!items)
+        return;
+    if (cur.editing && cur.item >= 0 && cur.item < static_cast<int>(items->size())) {  // an item of the cell
+        if (erase)
+            run({K::SongItem, cur.col, cur.row, 0, cur.item}, kItemDelete, "Delete (item)");
+        if (duplicate)
+            run({K::SongItem, cur.col, cur.row, 0, cur.item}, kItemDuplicate, "Duplicate (item)");
+    } else if (erase && !items->empty()) {
+        run({K::SongCell, cur.col, cur.row}, kCellClear, "Clear (cell)");
+    }
+    if (copy)
+        run({K::SongCell, cur.col, cur.row}, kCellCopy, "Copy (cell)");
+    if (paste && !songClipboard_.empty())
+        run({K::SongCell, cur.col, cur.row}, kCellPaste, "Paste (cell)");
+}
 
 void GuiApp::openMenu(const PerformanceView::MenuTarget& t, const LiveState& live, bool fromController, ImVec2 at) {
     using K = PerformanceView::MenuTarget::Kind;
@@ -2408,6 +2725,11 @@ void GuiApp::openMenu(const PerformanceView::MenuTarget& t, const LiveState& liv
         break;
     }
     }
+    // The menus of the session and song screens end with Undo (the controller's way to it).
+    if ((t.kind == K::Clip || t.kind == K::Step || t.kind == K::Chain || t.kind == K::Channel || t.kind == K::Section ||
+         t.kind == K::SongCell || t.kind == K::SongItem) &&
+        !menu.items.empty())
+        add(undo_.empty() ? std::string("Undo") : "Undo: " + undo_.back().what, kUndo, !undo_.empty());
     menu.selected = 0;
     while (menu.selected < static_cast<int>(menu.items.size()) - 1 && !menu.items[static_cast<std::size_t>(menu.selected)].enabled)
         ++menu.selected;
@@ -2488,6 +2810,13 @@ void GuiApp::runMenu(const PerformanceView::MenuTarget& t, int id, const LiveSta
             addSongItem(t.slot, t.channel, live, kind, kind == midipad::SongItem::Kind::Rest ? 0 : index);
             if (kind == midipad::SongItem::Kind::Rest && !items->empty())
                 items->back().beats = beats;
+            if (t.source > 0 && !items->empty()) {  // on the bar it was asked on
+                midipad::SongItem item = items->back();
+                items->pop_back();
+                item.after = false;
+                item.bar = t.source - 1;
+                songCursor_.item = placeSongItem(t.slot, t.channel, item, live);
+            }
             songEdited();
         } else if (t.axis < static_cast<int>(items->size())) {
             (*items)[static_cast<std::size_t>(t.axis)].kind = kind;
@@ -2504,6 +2833,21 @@ void GuiApp::runMenu(const PerformanceView::MenuTarget& t, int id, const LiveSta
     const int shown = t.kind == K::Chain ? std::clamp(t.slot, 0, Engine::kChains - 1) : shownChain(ch);
     const LiveState::Chains& chains = live.chains[c];
     const LiveState::Chain& chain = chains.list[static_cast<std::size_t>(shown)];
+    switch (id) {  // what can be undone, as it is before
+    case kAddToChain: case kInsertStep: case kDeleteStep: case kThenLoop: case kThenStop: case kThenNext: case kDuplicateChain: case kClearChain:
+        rememberChains(ch, "Chain changed");
+        break;
+    case kClearClip: rememberClips(ch, {t.slot}, "Clip cleared"); break;
+    case kDuplicate:
+        for (int k = 0; k < Engine::kClipSlots; ++k)
+            if (live.clips[c * Engine::kClipSlots + static_cast<std::size_t>(k)].sources == 0) {
+                rememberClips(ch, {k}, "Clip duplicated");
+                break;
+            }
+        break;
+    case kUndo: undoRedo(false); return;
+    default: break;
+    }
     auto openWindow = [&](const std::string& spec) {
         overlayAppearing_ = overlaySpec_ != spec;
         overlaySpec_ = spec;
@@ -2834,8 +3178,10 @@ void GuiApp::menuEvent(Engine::SessionEvent e, const LiveState& live) {
         } else if (entry.enabled) {
             menuFromController_ = true;
             menuAt_ = menu_->at;
+            undoWhat_ = menuWhat(*menu_, entry.label);
             menu_.reset();
             runMenu(target, entry.id, live);
+            undoWhat_.clear();
         }
         break;
     }
@@ -2881,6 +3227,14 @@ void GuiApp::drawContextMenu(const LiveState& live) {
             const ImGuiSelectableFlags flags = (item.enabled ? 0 : ImGuiSelectableFlags_Disabled) | (keepsModMenu(item.id) ? ImGuiSelectableFlags_NoAutoClosePopups : 0);
             if (ImGui::Selectable(item.label.c_str(), menu_->fromController && k == menu_->selected, flags))
                 chosen = item.id;
+            // In the list of what a song item plays, 1 to 8 choose a clip, A to H a chain.
+            if (menu_->target.kind == PerformanceView::MenuTarget::Kind::SongPick && item.enabled && item.id >= kPick && item.id < kPick + 16) {
+                const int n = item.id - kPick;
+                if (ImGui::IsKeyPressed(n < 8 ? static_cast<ImGuiKey>(ImGuiKey_1 + n) : static_cast<ImGuiKey>(ImGuiKey_A + n - 8), false)) {
+                    chosen = item.id;
+                    ImGui::CloseCurrentPopup();
+                }
+            }
             if (item.checked) {  // drawn: the font has no check mark
                 const ImVec2 r = ImGui::GetItemRectMin();
                 const float sz = ImGui::GetFontSize();
@@ -2895,10 +3249,14 @@ void GuiApp::drawContextMenu(const LiveState& live) {
             changeModulation(*chosen, 1, live);
         } else if (chosen) {
             const PerformanceView::MenuTarget target = menu_->target;
+            for (const MenuEntry& entry : menu_->items)
+                if (entry.id == *chosen)
+                    undoWhat_ = menuWhat(*menu_, entry.label);
             menuFromController_ = menu_->fromController;
             menuAt_ = ImGui::GetIO().MousePos;
             menu_.reset();
             runMenu(target, *chosen, live);
+            undoWhat_.clear();
         }
     } else {
         menu_.reset();  // closed
@@ -2965,6 +3323,12 @@ void GuiApp::toggleFullscreen() {
 
 void GuiApp::drawPerformance(const LiveState& live) {
     using Theme = PerformanceView::Theme;
+    liveChains_ = live.chains;
+    undoWhat_.clear();
+    if (sessionView_ || songView_)
+        screenKeys(live);
+    else
+        ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
     auto color = [](ImU32 c) { return ImGui::ColorConvertU32ToFloat4(c); };
     const float em = ImGui::GetFontSize();
     auto px = [em](float v) { return v * em / 16.0f; };
@@ -3478,6 +3842,13 @@ void GuiApp::drawPerformance(const LiveState& live) {
             } else if (act->kind == Kind::Launch) {
                 moveSessionCursor(act->channel, act->slot, live);
                 pressClip(act->channel, act->slot, live);
+            } else if (act->kind == Kind::Select) {
+                moveSessionCursor(act->channel, act->slot, live);
+            } else if (act->kind == Kind::RepeatsAsk) {
+                sessionSlot_ = Engine::kClipSlots;
+                chainCursor_ = act->slot;
+                valueAsk_ = ValueAsk{ValueAsk::Kind::ChainRepeats, act->channel, act->slot, act->clip, act->repeats};
+                openValueAsk_ = true;
             } else {
                 moveSessionCursor(act->channel, live.currentClip[static_cast<std::size_t>(act->channel)], live);
             }
@@ -3591,6 +3962,27 @@ void GuiApp::drawPerformanceStatus(const LiveState& live, float height) {
     const ImVec2 lsz = medium->CalcTextSizeA(px(12), FLT_MAX, 0, "MIDI out:");
     dl->AddText(medium, px(12), ImVec2(p.x + px(6), cy - lsz.y * 0.5f), Theme::kDim, "MIDI out:");
     dl->AddText(medium, px(12), ImVec2(p.x + px(12) + lsz.x, cy - lsz.y * 0.5f), Theme::kLabel, out.c_str());
+
+    // In the middle, a moment: what was just done (Undo), or undone (Redo).
+    if (ImGui::GetTime() < toastUntil_ && !toast_.empty()) {
+        const char* link = toastUndone_ ? "Redo" : "Undo";
+        const char* keys = toastUndone_ ? "Ctrl+Shift+Z" : "Ctrl+Z";
+        const ImVec2 tsz = medium->CalcTextSizeA(px(12), FLT_MAX, 0, toast_.c_str());
+        const ImVec2 bsz = bold->CalcTextSizeA(px(12), FLT_MAX, 0, link), ksz = medium->CalcTextSizeA(px(11), FLT_MAX, 0, keys);
+        const float w = px(14) + tsz.x + px(18) + bsz.x + px(8) + ksz.x + px(14);
+        const ImVec2 a(p.x + (width - w) * 0.5f, cy - px(11)), b(a.x + w, cy + px(11));
+        dl->AddRectFilled(a, b, IM_COL32(0x23, 0x26, 0x2B, 255), px(6));
+        dl->AddRect(a, b, IM_COL32(0x3A, 0x3E, 0x45, 255), px(6), px(1));
+        dl->AddText(medium, px(12), ImVec2(a.x + px(14), cy - tsz.y * 0.5f), Theme::kText, toast_.c_str());
+        const ImVec2 la(a.x + px(14) + tsz.x + px(18), cy - bsz.y * 0.5f);
+        ImGui::SetCursorScreenPos(ImVec2(la.x - px(4), a.y));
+        const bool clicked = ImGui::InvisibleButton("##undotoast", ImVec2(bsz.x + px(8) + ksz.x + px(8), b.y - a.y));
+        dl->AddText(bold, px(12), la, ImGui::IsItemHovered() ? Theme::kText : Theme::kCyan, link);
+        dl->AddText(medium, px(11), ImVec2(la.x + bsz.x + px(8), cy - ksz.y * 0.5f), Theme::kDim, keys);
+        if (clicked)
+            undoRedo(toastUndone_);
+        ImGui::SetCursorScreenPos(p);
+    }
 
     // Right: the gamepad.
     const std::string name = live.connected ? live.gamepadName : "No gamepad";
@@ -4554,6 +4946,7 @@ void GuiApp::openSession(const std::string& name) {
     song_ = std::move(session.song);
     songCursor_ = {};
     songEdited();
+    resetUndo();
     sessionName_ = name;
     sessionPrintIn_ = 10;  // taken once its loops and chains are published
     log("Session \"" + name + "\" opened.");
@@ -4571,6 +4964,7 @@ void GuiApp::newSong() {
     song_ = {};
     songCursor_ = {};
     songEdited();
+    resetUndo();
     sessionName_.reset();
     sessionPrintIn_ = 10;
     log("New song.");
@@ -4830,6 +5224,7 @@ void GuiApp::drawDialogs() {
     drawQuitDialog();
     drawCopyDialog();
     drawColourDialog();
+    drawValueAsk();
     drawAboutDialog();
 }
 
@@ -4866,6 +5261,7 @@ void GuiApp::drawRenameDialog() {
                 song_.sections[static_cast<std::size_t>(renameSection_)].name = name;
                 songEdited();
             } else if (chain) {
+                rememberChains(renameChannel_, "Chain renamed");
                 chainNames_[static_cast<std::size_t>(renameChannel_)][static_cast<std::size_t>(renameChain_)] = name;
             } else {
                 preset_.channelNames[static_cast<std::size_t>(renameChannel_)] = name;
@@ -5029,6 +5425,61 @@ void GuiApp::drawColourDialog() {
     if (button == 1 || ImGui::IsKeyPressed(ImGuiKey_Escape))
         ImGui::CloseCurrentPopup();
     endDialog();
+}
+
+void GuiApp::drawValueAsk() {
+    constexpr const char* kId = "##valueask";
+    if (openValueAsk_) {
+        ImGui::OpenPopup(kId);
+        openValueAsk_ = false;
+    }
+    if (!valueAsk_ || !ImGui::BeginPopup(kId))
+        return;
+    using K = ValueAsk::Kind;
+    ValueAsk& v = *valueAsk_;
+    static constexpr const char* kNames[] = {"Repeats", "Repeats", "Beats", "Bars"};
+    ImGui::TextUnformatted(kNames[static_cast<int>(v.kind)]);
+    ImGui::SameLine();
+    if (ImGui::IsWindowAppearing())
+        ImGui::SetKeyboardFocusHere();
+    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 6);
+    const bool enter = ImGui::InputInt("##value", &v.value, 1, 4, ImGuiInputTextFlags_EnterReturnsTrue);
+    if (v.kind == K::ChainRepeats && v.value == 0) {
+        ImGui::SameLine();
+        ImGui::TextUnformatted("\xE2\x88\x9E");
+    }
+    if (enter) {
+        switch (v.kind) {
+        case K::ChainRepeats:
+            undoWhat_ = "Repeats (step " + std::to_string(v.row + 1) + ")";
+            setChainStep(v.col, v.row, v.item, std::clamp(v.value, 0, Engine::kMaxRepeats));
+            break;
+        case K::ItemRepeats:
+        case K::RestBeats:
+            if (auto* items = songCell(v.row, v.col); items && v.item >= 0 && v.item < static_cast<int>(items->size())) {
+                auto& it = (*items)[static_cast<std::size_t>(v.item)];
+                if (v.kind == K::RestBeats)
+                    it.beats = std::clamp(v.value, 1, midipad::kMaxRestBeats);
+                else
+                    it.repeats = std::clamp(v.value, 1, midipad::kMaxSongRepeats);
+                undoWhat_ = v.kind == K::RestBeats ? "Beats (silence)" : "Repeats (item)";
+                songEdited();
+            }
+            break;
+        case K::SectionBars:
+            if (v.row >= 0 && v.row < static_cast<int>(song_.sections.size())) {
+                auto& sec = song_.sections[static_cast<std::size_t>(v.row)];
+                sec.bars = std::clamp(v.value, 1, midipad::kMaxSectionBars);
+                sec.fit = false;
+                undoWhat_ = "Bars (section " + std::to_string(v.row + 1) + ")";
+                songEdited();
+            }
+            break;
+        }
+        undoWhat_.clear();
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
 }
 
 void GuiApp::drawCopyDialog() {

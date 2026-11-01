@@ -107,7 +107,9 @@ public:
     // its arrows or the wheel show another chain (ChainShow), a click plays
     // or stops it. The CHAIN button starts or stops it too.
     struct SessionAction {
-        enum class Kind : std::uint8_t { Launch, Stop, Mute, Solo, Channel, ChainSet, ChainCursor, ChainGo, ChainStop, ChainShow } kind = Kind::Launch;
+        // Launch: a clip's play button or a double-click (an empty slot: chosen); Select: a click on a clip.
+        // RepeatsAsk: a double-click on a step's repeats, to type them (slot: the step).
+        enum class Kind : std::uint8_t { Launch, Stop, Mute, Solo, Channel, ChainSet, ChainCursor, ChainGo, ChainStop, ChainShow, Select, RepeatsAsk } kind = Kind::Launch;
         int channel = 0, slot = 0;  // ChainSet / ChainCursor / ChainGo: slot is the step; ChainShow: the chain
         int clip = -1, repeats = 1;  // ChainSet
     };
@@ -126,8 +128,11 @@ public:
         bool editing = false;
     };
     struct SongAction {
-        enum class Kind : std::uint8_t { Cursor, Play, Stop, Loop, LoopSong, AddSection, EditCell, Bars, ItemSelect, ItemMove, ItemContent, ItemRepeats, AddItem } kind =
-            Kind::Cursor;
+        // RepeatsAsk / BarsAsk: a double-click to type an item's repeats (a silence's beats) or a
+        // section's bars; Rename: a double-click on a section's name; AddItem: value, the bar it goes on + 1 (0: after the last).
+        enum class Kind : std::uint8_t {
+            Cursor, Play, Stop, Loop, LoopSong, AddSection, EditCell, Bars, ItemSelect, ItemMove, ItemContent, ItemRepeats, AddItem, RepeatsAsk, BarsAsk, Rename
+        } kind = Kind::Cursor;
         int row = 0, col = -1, item = 0, value = 0;
     };
     std::optional<SongAction> drawSong(const LiveState& live, const midipad::Song& song, const SongCursor& cursor);
@@ -306,6 +311,9 @@ private:
     std::array<int, midipad::kChannelCount> shownChains_{};
     int songScroll_ = 0, songFirst_ = 0;  // the first section row shown; the first channel shown, in songChannels
     int songDragBars_ = 0;                // an item being dragged: by how many bars
+    int songDragAxis_ = 0;                // a drag from an item or a section: 0 not yet chosen, 1 sideways (bars), 2 up or down (repeats, bars)
+    int dragNotches_ = 0;                 // a value dragged up or down: notches already sent
+    int chipDrag_ = -1, chipStart_ = 0;   // a chain step's repeats dragged: the step, its repeats then
     ChainNames chainNames_;
     // "CHANNEL 3", or "3  PADS" when it has a name.
     std::string channelTitle(int channel) const;
