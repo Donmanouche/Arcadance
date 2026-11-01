@@ -109,9 +109,17 @@ public:
     struct SessionAction {
         // Launch: a clip's play button or a double-click (an empty slot: chosen); Select: a click on a clip.
         // RepeatsAsk: a double-click on a step's repeats, to type them (slot: the step).
-        enum class Kind : std::uint8_t { Launch, Stop, Mute, Solo, Channel, ChainSet, ChainCursor, ChainGo, ChainStop, ChainShow, Select, RepeatsAsk } kind = Kind::Launch;
+        // ClipDrop: a clip dropped on a slot (channel, slot) from another (fromChannel, fromSlot): moved
+        // there (swapped with what was there), copied with Ctrl. StepDrop: a step (fromSlot) dropped
+        // before the step `slot` (kChainSteps: after the last), or on it (onStep: swapped).
+        // ClipInsert: a clip (clip) dropped before the step `slot`.
+        enum class Kind : std::uint8_t {
+            Launch, Stop, Mute, Solo, Channel, ChainSet, ChainCursor, ChainGo, ChainStop, ChainShow, Select, RepeatsAsk, ClipDrop, StepDrop, ClipInsert
+        } kind = Kind::Launch;
         int channel = 0, slot = 0;  // ChainSet / ChainCursor / ChainGo: slot is the step; ChainShow: the chain
         int clip = -1, repeats = 1;  // ChainSet
+        int fromChannel = -1, fromSlot = -1;
+        bool copy = false, onStep = false;
     };
     // `button`: the cursor on the active channel's stop (0), mute (1) or solo (2) button; -1: not there.
     std::optional<SessionAction> drawSession(const LiveState& live, int cursorSlot, int chainCursor, int button = -1);
@@ -130,10 +138,17 @@ public:
     struct SongAction {
         // RepeatsAsk / BarsAsk: a double-click to type an item's repeats (a silence's beats) or a
         // section's bars; Rename: a double-click on a section's name; AddItem: value, the bar it goes on + 1 (0: after the last).
+        // DropNew: a clip (item 0-7) or a chain (8 + it) of the channel `col`, dropped on a bar (value: + 1)
+        // of the cell; DropItem: an item (item) of the cell (fromRow, col) dropped on a bar (value: + 1)
+        // of the cell (row, col), moved or (copy) copied; RepeatsTo: an item's repeats set to `value`;
+        // SectionMove: a section (item) moved, or copied, before the section `row` (the count: last).
         enum class Kind : std::uint8_t {
-            Cursor, Play, Stop, Loop, LoopSong, AddSection, EditCell, Bars, ItemSelect, ItemMove, ItemContent, ItemRepeats, AddItem, RepeatsAsk, BarsAsk, Rename
+            Cursor, Play, Stop, Loop, LoopSong, AddSection, EditCell, Bars, ItemSelect, ItemMove, ItemContent, ItemRepeats, AddItem, RepeatsAsk, BarsAsk, Rename,
+            DropNew, DropItem, RepeatsTo, SectionMove
         } kind = Kind::Cursor;
         int row = 0, col = -1, item = 0, value = 0;
+        int fromRow = -1;
+        bool copy = false;
     };
     std::optional<SongAction> drawSong(const LiveState& live, const midipad::Song& song, const SongCursor& cursor);
     // The channels the song screen shows, in order: those with a clip or a chain, or something in the song.
@@ -314,6 +329,13 @@ private:
     int songDragAxis_ = 0;                // a drag from an item or a section: 0 not yet chosen, 1 sideways (bars), 2 up or down (repeats, bars)
     int dragNotches_ = 0;                 // a value dragged up or down: notches already sent
     int chipDrag_ = -1, chipStart_ = 0;   // a chain step's repeats dragged: the step, its repeats then
+    // An item of a song cell grabbed by its right edge (its repeats dragged): its cell and index, -1 none.
+    int edgeRow_ = -1, edgeCol_ = -1, edgeItem_ = -1;
+    int grabItem_ = -1;  // the item of that cell grabbed by its body (dragged to a bar or another section), -1 none
+    // A section's right edge dragged in the song at scale: the section (-1 none), its bars and the mouse then, pixels a bar.
+    int secEdge_ = -1, secEdgeBars_ = 0;
+    float secEdgeX_ = 0, secEdgePerBar_ = 1;
+    bool sectionGrip_ = false;  // a section card grabbed by its grip: dragged to another place
     ChainNames chainNames_;
     // "CHANNEL 3", or "3  PADS" when it has a name.
     std::string channelTitle(int channel) const;

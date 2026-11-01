@@ -574,7 +574,7 @@ private:
         int channel = 0;
         std::array<LiveState::Chain, Engine::kChains> chains{};
         std::array<std::string, Engine::kChains> chainNames;
-        std::vector<int> slots;
+        std::vector<std::pair<int, int>> clips;  // (channel, slot)
         std::vector<midipad::SessionLoop> loops;
     };
     std::vector<UndoStep> undo_, redo_;
@@ -587,7 +587,7 @@ private:
     void pushUndo(UndoStep step);
     void songUndo();
     void rememberChains(int channel, const char* what);
-    void rememberClips(int channel, std::vector<int> slots, const char* what);
+    void rememberClips(std::vector<std::pair<int, int>> clips, const char* what);
     UndoStep currentState(const UndoStep& like);
     void applyState(const UndoStep& state);
     void undoRedo(bool redo);
@@ -596,6 +596,8 @@ private:
     // the controller's cursor, Space as Play / Stop, Delete, Ctrl+C, Ctrl+V,
     // Ctrl+D on what the cursor is on.
     void screenKeys(const LiveState& live);
+    // A clip or a chain step dropped in the session screen (or moved from a menu): see SessionAction.
+    void sessionDrop(const PerformanceView::SessionAction& a, const LiveState& live);
     std::vector<midipad::SessionLoop> clipClipboard_;  // a clip copied (Ctrl+C), for Ctrl+V
     std::vector<midipad::SongItem>* songCell(int row, int col);
     int placeSongItem(int row, int col, midipad::SongItem item, const LiveState& live);  // on its bar, in playing order: its index there
@@ -2059,12 +2061,11 @@ void GuiApp::rememberChains(int channel, const char* what) {
 }
 
 // Clips about to change: a step with their loops as they are.
-void GuiApp::rememberClips(int channel, std::vector<int> slots, const char* what) {
+void GuiApp::rememberClips(std::vector<std::pair<int, int>> clips, const char* what) {
     UndoStep step;
     step.kind = UndoStep::Kind::Clips;
     step.what = undoWhat_.empty() ? what : undoWhat_;
-    step.channel = std::clamp(channel, 0, kChannelCount - 1);
-    step.slots = std::move(slots);
+    step.clips = std::move(clips);
     step = currentState(step);
     pushUndo(std::move(step));
 }
@@ -2083,7 +2084,7 @@ GuiApp::UndoStep GuiApp::currentState(const UndoStep& like) {
         now.loops.clear();
         if (const auto loops = runtime_->sessionLoops())
             for (const midipad::SessionLoop& l : *loops)
-                if (l.channel == like.channel && std::find(like.slots.begin(), like.slots.end(), l.clip) != like.slots.end())
+                if (std::find(like.clips.begin(), like.clips.end(), std::pair{l.channel, l.clip}) != like.clips.end())
                     now.loops.push_back(l);
         break;
     }
@@ -2110,12 +2111,12 @@ void GuiApp::applyState(const UndoStep& state) {
         chainNames_[c] = state.chainNames;
         break;
     case UndoStep::Kind::Clips:
-        for (int slot : state.slots) {
+        for (const auto& [channel, slot] : state.clips) {
             std::vector<midipad::SessionLoop> loops;
             for (const midipad::SessionLoop& l : state.loops)
-                if (l.clip == slot)
+                if (l.channel == channel && l.clip == slot)
                     loops.push_back(l);
-            runtime_->restoreClip(state.channel, slot, std::move(loops));
+            runtime_->restoreClip(channel, slot, std::move(loops));
         }
         break;
     }
@@ -2134,6 +2135,72 @@ void GuiApp::undoRedo(bool redo) {
     toast_ = (redo ? "Redone: " : "Undone: ") + step.what;
     toastUndone_ = !redo;
     toastUntil_ = ImGui::GetTime() + 4.0;
+}
+
+void GuiApp::sessionDrop(const PerformanceView::SessionAction& a, const LiveState& live) {
+    using Kind = PerformanceView::SessionAction::Kind;
+    const int ch = std::clamp(a.channel, 0, kChannelCount - 1);
+    if (a.kind == Kind::ClipDrop) {  // moved there (what was there comes here), or copied
+        if (a.fromChannel < 0 || a.fromSlot < 0 || (a.fromChannel == ch && a.fromSlot == a.slot))
+            return;
+        const auto loops = runtime_->sessionLoops();
+        if (!loops)
+            return;
+        std::vector<midipad::SessionLoop> from, to;
+        for (const midipad::SessionLoop& l : *loops) {
+            if (l.channel == a.fromChannel && l.clip == a.fromSlot)
+                from.push_back(l);
+            else if (l.channel == ch && l.clip == a.slot)
+                to.push_back(l);
+        }
+        auto name = [&](int channel, int slot) {
+            return "clip " + std::to_string(slot + 1) + (channel != a.fromChannel || channel != ch ? " of channel " + std::to_string(channel + 1) : "");
+        };
+        undoWhat_ = std::string(a.copy ? "Copy" : to.empty() ? "Move" : "Swap") + " (" + name(a.fromChannel, a.fromSlot) + " to " + name(ch, a.slot) + ")";
+        rememberClips({{a.fromChannel, a.fromSlot}, {ch, a.slot}}, "Clip moved");
+        undoWhat_.clear();
+        runtime_->restoreClip(ch, a.slot, from);
+        if (!a.copy)
+            runtime_->restoreClip(a.fromChannel, a.fromSlot, to);
+        moveSessionCursor(ch, a.slot, live);
+        return;
+    }
+    // A chain's steps: one moved, two swapped, or a clip put in between.
+    const int shown = shownChain(ch);
+    const LiveState::Chain& chain = liveChains_[static_cast<std::size_t>(ch)].list[static_cast<std::size_t>(shown)];
+    std::vector<std::pair<int, int>> steps;
+    for (int k = 0; k < Engine::kChainSteps; ++k)
+        steps.push_back({chain.clip[static_cast<std::size_t>(k)], chain.repeats[static_cast<std::size_t>(k)]});
+    int cursor = a.slot;
+    if (a.kind == Kind::ClipInsert) {
+        if (steps.back().first >= 0 || a.clip < 0) {  // no room left: the last step would be lost
+            toast_ = "The chain is full";
+            toastUndone_ = false;
+            toastUntil_ = ImGui::GetTime() + 2.0;
+            return;
+        }
+        steps.insert(steps.begin() + std::clamp(a.slot, 0, Engine::kChainSteps), {a.clip, 1});
+        steps.pop_back();
+        undoWhat_ = "Insert (clip " + std::to_string(a.clip + 1) + ")";
+    } else if (a.fromSlot >= 0 && a.fromSlot < Engine::kChainSteps) {
+        if (a.onStep) {
+            std::swap(steps[static_cast<std::size_t>(a.fromSlot)], steps[static_cast<std::size_t>(std::clamp(a.slot, 0, Engine::kChainSteps - 1))]);
+        } else {
+            const auto moved = steps[static_cast<std::size_t>(a.fromSlot)];
+            steps.erase(steps.begin() + a.fromSlot);
+            cursor = std::clamp(a.slot > a.fromSlot ? a.slot - 1 : a.slot, 0, Engine::kChainSteps - 1);
+            steps.insert(steps.begin() + cursor, moved);
+        }
+        undoWhat_ = "Move (step " + std::to_string(a.fromSlot + 1) + ")";
+    } else {
+        return;
+    }
+    rememberChains(ch, "Chain changed");
+    undoWhat_.clear();
+    for (int k = 0; k < Engine::kChainSteps; ++k)
+        runtime_->setChainStep(ch, shown, k, steps[static_cast<std::size_t>(k)].first, steps[static_cast<std::size_t>(k)].second);
+    sessionSlot_ = Engine::kClipSlots;
+    chainCursor_ = std::clamp(cursor, 0, Engine::kChainSteps - 1);
 }
 
 // A session opened or a new song: nothing to undo.
@@ -2259,6 +2326,65 @@ void GuiApp::songAction(const PerformanceView::SongAction& a, const LiveState& l
             openValueAsk_ = true;
         }
         break;
+    case K::DropNew:  // a clip or a chain of the channel, on a bar of the cell
+        if (items) {
+            midipad::SongItem it;
+            it.kind = a.item < 8 ? midipad::SongItem::Kind::Clip : midipad::SongItem::Kind::Chain;
+            it.index = a.item % 8;
+            it.after = false;
+            it.bar = std::max(a.value - 1, 0);
+            undoWhat_ = std::string(a.item < 8 ? "Add (clip " + std::to_string(it.index + 1) : "Add (chain " + PerformanceView::chainLetter(it.index)) + ")";
+            c = {a.row, a.col, placeSongItem(a.row, a.col, it, live), true};
+            songEdited();
+            undoWhat_.clear();
+        }
+        break;
+    case K::DropItem:  // an item of the channel, moved (copied) onto a bar of this cell
+        if (auto* from = songCell(a.fromRow, a.col); items && from && a.item >= 0 && a.item < static_cast<int>(from->size())) {
+            midipad::SongItem it = (*from)[static_cast<std::size_t>(a.item)];
+            if (!a.copy)
+                from->erase(from->begin() + a.item);
+            it.after = false;
+            it.bar = std::max(a.value - 1, 0);
+            undoWhat_ = a.copy ? "Copy (item)" : "Move (item)";
+            c = {a.row, a.col, placeSongItem(a.row, a.col, it, live), true};
+            songEdited();
+            undoWhat_.clear();
+        }
+        break;
+    case K::RepeatsTo:
+        if (hasItem) {
+            (*items)[static_cast<std::size_t>(a.item)].repeats = std::clamp(a.value, 1, midipad::kMaxSongRepeats);
+            undoWhat_ = "Repeats (item)";
+            c = {a.row, a.col, a.item, true};
+            songEdited();
+            undoWhat_.clear();
+        }
+        break;
+    case K::SectionMove: {  // moved (or copied) before the section `row`
+        const int count = static_cast<int>(song_.sections.size());
+        if (a.item < 0 || a.item >= count)
+            break;
+        int to = std::clamp(a.row, 0, count);
+        const midipad::SongSection moved = song_.sections[static_cast<std::size_t>(a.item)];
+        if (!a.copy) {
+            if (to == a.item || to == a.item + 1)
+                break;  // where it is
+            if (live.song.playing)
+                runtime_->stopSong();
+            song_.sections.erase(song_.sections.begin() + a.item);
+            if (to > a.item)
+                --to;
+        }
+        song_.sections.insert(song_.sections.begin() + to, moved);
+        undoWhat_ = std::string(a.copy ? "Copy" : "Move") + " (section " + std::to_string(a.item + 1) + ")";
+        c.row = to;
+        c.col = -1;
+        c.editing = false;
+        songEdited();
+        undoWhat_.clear();
+        break;
+    }
     case K::Rename:
         if (a.row >= 0 && a.row < static_cast<int>(song_.sections.size())) {
             c.row = a.row;
@@ -2374,6 +2500,7 @@ enum MenuId : int {
     kStartHere, kRandom, kSilence, kInsertStep, kDeleteStep, kEmptyStep,
     kChannelStop, kChannelMute, kChannelSolo, kChainOn, kChainOff, kThenLoop, kThenStop, kThenNext, kPrevChain, kNextChain, kDuplicateChain, kRenameChain, kClearChain,
     kLock, kUnlock, kClearLoop, kResetShape, kSettings, kEditNotes, kPrevChannel, kNextChannel, kRename, kColour, kUndo,
+    kClipUp, kClipDown, kStepLeft, kStepRight,
     kSongPlay, kSongStop, kSongLoop, kLoopSong, kSectionRename, kSectionFit, kSectionDuplicate, kSectionInsert, kSectionUp, kSectionDown, kSectionDelete,
     kCellEdit, kCellClear, kCellCopy, kCellPaste,
     kRestBarMore, kRestBarLess, kRestBeatMore, kRestBeatLess,
@@ -2447,7 +2574,7 @@ void GuiApp::screenKeys(const LiveState& live) {
                 }
             if (paste && !clipClipboard_.empty()) {
                 undoWhat_ = "Paste (" + name + ")";
-                rememberClips(ch, {slot}, "Paste");
+                rememberClips({{ch, slot}}, "Paste");
                 undoWhat_.clear();
                 runtime_->restoreClip(ch, slot, clipClipboard_);
             }
@@ -2518,6 +2645,8 @@ void GuiApp::openMenu(const PerformanceView::MenuTarget& t, const LiveState& liv
             add("Launch", kLaunch, has);
         add("Record here", kRecordHere);
         add("Duplicate", kDuplicate, has && freeSlot);
+        add("Move up", kClipUp, has && t.slot > 0);
+        add("Move down", kClipDown, has && t.slot < Engine::kClipSlots - 1);
         add("Add to the chain", kAddToChain, has && freeStep);
         add("Add to the song (" + songTargetName() + ")", kAddToSong, has);
         add("Clear", kClearClip, has);
@@ -2529,6 +2658,8 @@ void GuiApp::openMenu(const PerformanceView::MenuTarget& t, const LiveState& liv
         add("Start from here", kStartHere, has);
         add("Random (R)", kRandom);
         add("Silence (S)", kSilence);
+        add("Move left", kStepLeft, has && t.slot > 0);
+        add("Move right", kStepRight, has && t.slot < Engine::kChainSteps - 1);
         add("Insert a step", kInsertStep);
         add("Delete the step", kDeleteStep);
         add("Empty it", kEmptyStep, has);
@@ -2837,15 +2968,31 @@ void GuiApp::runMenu(const PerformanceView::MenuTarget& t, int id, const LiveSta
     case kAddToChain: case kInsertStep: case kDeleteStep: case kThenLoop: case kThenStop: case kThenNext: case kDuplicateChain: case kClearChain:
         rememberChains(ch, "Chain changed");
         break;
-    case kClearClip: rememberClips(ch, {t.slot}, "Clip cleared"); break;
+    case kClearClip: rememberClips({{ch, t.slot}}, "Clip cleared"); break;
     case kDuplicate:
         for (int k = 0; k < Engine::kClipSlots; ++k)
             if (live.clips[c * Engine::kClipSlots + static_cast<std::size_t>(k)].sources == 0) {
-                rememberClips(ch, {k}, "Clip duplicated");
+                rememberClips({{ch, k}}, "Clip duplicated");
                 break;
             }
         break;
     case kUndo: undoRedo(false); return;
+    case kClipUp:
+    case kClipDown: {  // swapped with the one above or below
+        PerformanceView::SessionAction a{PerformanceView::SessionAction::Kind::ClipDrop, ch, t.slot + (id == kClipUp ? -1 : 1)};
+        a.fromChannel = ch;
+        a.fromSlot = t.slot;
+        sessionDrop(a, live);
+        return;
+    }
+    case kStepLeft:
+    case kStepRight: {
+        PerformanceView::SessionAction a{PerformanceView::SessionAction::Kind::StepDrop, ch, t.slot + (id == kStepLeft ? -1 : 1)};
+        a.fromSlot = t.slot;
+        a.onStep = true;
+        sessionDrop(a, live);
+        return;
+    }
     default: break;
     }
     auto openWindow = [&](const std::string& spec) {
@@ -3844,6 +3991,8 @@ void GuiApp::drawPerformance(const LiveState& live) {
                 pressClip(act->channel, act->slot, live);
             } else if (act->kind == Kind::Select) {
                 moveSessionCursor(act->channel, act->slot, live);
+            } else if (act->kind == Kind::ClipDrop || act->kind == Kind::StepDrop || act->kind == Kind::ClipInsert) {
+                sessionDrop(*act, live);
             } else if (act->kind == Kind::RepeatsAsk) {
                 sessionSlot_ = Engine::kClipSlots;
                 chainCursor_ = act->slot;

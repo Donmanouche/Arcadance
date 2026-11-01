@@ -296,6 +296,19 @@ void emptyCard(ImDrawList* dl, ImVec2 a, ImVec2 b) {
     }
 }
 
+// A dashed outline: where something dragged would land.
+void dashedRect(ImDrawList* dl, ImVec2 a, ImVec2 b, ImU32 col, float thickness) {
+    const float dash = px(4), step = px(8);
+    for (float x = a.x; x < b.x; x += step) {
+        dl->AddLine(ImVec2(x, a.y), ImVec2(std::min(x + dash, b.x), a.y), col, thickness);
+        dl->AddLine(ImVec2(x, b.y), ImVec2(std::min(x + dash, b.x), b.y), col, thickness);
+    }
+    for (float y = a.y; y < b.y; y += step) {
+        dl->AddLine(ImVec2(a.x, y), ImVec2(a.x, std::min(y + dash, b.y)), col, thickness);
+        dl->AddLine(ImVec2(b.x, y), ImVec2(b.x, std::min(y + dash, b.y)), col, thickness);
+    }
+}
+
 // A screen off (an empty clip slot): dark grey glass.
 constexpr ImU32 kScreenOff = IM_COL32(0x60, 0x66, 0x6E, 255);
 constexpr ImU32 kSongScreen = IM_COL32(0x6E, 0x96, 0xC8, 255);  // the song's screens: a steel blue
@@ -1913,11 +1926,31 @@ std::optional<PerformanceView::SessionAction> PerformanceView::drawSession(const
                     ImGui::SetItemTooltip("%s", held.c_str());
                 }
             }
-            if (clip.sources && ImGui::BeginDragDropSource()) {  // onto a step of the chain
+            if (clip.sources && ImGui::BeginDragDropSource()) {  // onto another slot, or a step of the chain
                 const int payload[2] = {ch, slot};
                 ImGui::SetDragDropPayload("MIDIPAD_CLIP", payload, sizeof payload);
                 ImGui::Text("Clip %d", slot + 1);
                 ImGui::EndDragDropSource();
+            }
+            // A clip dropped here: moved (swapped with this one), or copied with Ctrl.
+            const char* dropHint = nullptr;
+            if (ImGui::BeginDragDropTarget()) {
+                if (const ImGuiPayload* p = ImGui::AcceptDragDropPayload(
+                        "MIDIPAD_CLIP", ImGuiDragDropFlags_AcceptBeforeDelivery | ImGuiDragDropFlags_AcceptNoDrawDefaultRect)) {
+                    const int* v = static_cast<const int*>(p->Data);
+                    const bool copy = ImGui::GetIO().KeyCtrl;
+                    if (v[0] != ch || v[1] != slot) {
+                        dropHint = copy ? "Copy here" : clip.sources ? "Swap" : "Move here";
+                        if (p->IsDelivery()) {
+                            SessionAction drop{SessionAction::Kind::ClipDrop, ch, slot};
+                            drop.fromChannel = v[0];
+                            drop.fromSlot = v[1];
+                            drop.copy = copy;
+                            action = drop;
+                        }
+                    }
+                }
+                ImGui::EndDragDropTarget();
             }
             ImGui::PopID();
             if (clicked && clip.sources && overPlay)
@@ -2005,6 +2038,13 @@ std::optional<PerformanceView::SessionAction> PerformanceView::drawSession(const
                 }, clipPlays ? 0.40f : 0.20f);
                 if (outline)
                     dl->AddRect(a, b, outline, px(gLook == 0 ? 6 : 4), px(clip.recording || clipPlays || queued ? 2.0f : 1.0f));
+            }
+            if (dropHint) {
+                dl->AddRectFilled(a, b, IM_COL32(0x12, 0x13, 0x15, 170), px(6));
+                dashedRect(dl, a, b, T::kCyan, px(2));
+                text(dl, gBold, px(12.5f), (a.x + b.x) * 0.5f, (a.y + b.y) * 0.5f - px(7), T::kCyan, dropHint, H::Center, V::Middle);
+                text(dl, gMedium, px(10.5f), (a.x + b.x) * 0.5f, (a.y + b.y) * 0.5f + px(9), T::kLabel, ImGui::GetIO().KeyCtrl ? "" : "Ctrl: copy", H::Center,
+                     V::Middle);
             }
             if (active && slot == cursorSlot) {  // the cursor
                 sessionCursorBox_ = {a, b};
@@ -2240,11 +2280,26 @@ std::optional<PerformanceView::SessionAction> PerformanceView::drawChainStrip(Im
         if (ImGui::InvisibleButton("##step", ImVec2(stepW, y1 - y0)))
             action = SessionAction{SessionAction::Kind::ChainCursor, ch, k};
         const bool hovered = ImGui::IsItemHovered();
-        if (ImGui::BeginDragDropTarget()) {  // a clip dragged from the grid
+        if (clipSlot >= 0 && chipDrag_ != k && ImGui::BeginDragDropSource()) {  // to another place in the chain
+            const int payload[2] = {ch, k};
+            ImGui::SetDragDropPayload("MIDIPAD_STEP", payload, sizeof payload);
+            ImGui::Text("Step %d", k + 1);
+            ImGui::EndDragDropSource();
+        }
+        if (ImGui::BeginDragDropTarget()) {  // a clip dragged from the grid: this step's; a step: swapped with it
             if (const ImGuiPayload* p = ImGui::AcceptDragDropPayload("MIDIPAD_CLIP")) {
                 const int* v = static_cast<const int*>(p->Data);
                 if (v[0] == ch)
                     action = SessionAction{SessionAction::Kind::ChainSet, ch, k, v[1], clipSlot >= 0 ? repeats : 1};
+            }
+            if (const ImGuiPayload* p = ImGui::AcceptDragDropPayload("MIDIPAD_STEP")) {
+                const int* v = static_cast<const int*>(p->Data);
+                if (v[0] == ch && v[1] != k) {
+                    SessionAction drop{SessionAction::Kind::StepDrop, ch, k};
+                    drop.fromSlot = v[1];
+                    drop.onStep = true;
+                    action = drop;
+                }
             }
             ImGui::EndDragDropTarget();
         }
@@ -2440,6 +2495,33 @@ std::optional<PerformanceView::SessionAction> PerformanceView::drawChainStrip(Im
         const float ax0 = x1 + px(4), ax1 = x1 + gap - px(4), ay = (y0 + y1) * 0.5f;
         dl->AddLine(ImVec2(ax0, ay), ImVec2(ax1 - px(3), ay), T::kLabel, px(1.6f));
         dl->AddTriangleFilled(ImVec2(ax1, ay), ImVec2(ax1 - px(6), ay - px(4)), ImVec2(ax1 - px(6), ay + px(4)), T::kLabel);
+    }
+    // Between two steps (or before the first, after the last): a step dragged
+    // there moves there, a clip dragged from the grid goes in there; a cyan bar shows where.
+    for (int g = 0; g <= Engine::kChainSteps; ++g) {
+        const float gx0 = g == 0 ? at.x + px(2) : at.x + px(12) + static_cast<float>(g - 1) * (stepW + gap) + stepW;
+        const float gx1 = g == 0 ? at.x + px(12) : gx0 + gap;
+        ImGui::PushID(100 + g);
+        ImGui::SetCursorScreenPos(ImVec2(gx0, y0));
+        ImGui::InvisibleButton("##gap", ImVec2(std::max(gx1 - gx0, 1.0f), y1 - y0));
+        if (ImGui::BeginDragDropTarget()) {
+            const ImGuiDragDropFlags flags = ImGuiDragDropFlags_AcceptBeforeDelivery | ImGuiDragDropFlags_AcceptNoDrawDefaultRect;
+            const ImGuiPayload* p = ImGui::AcceptDragDropPayload("MIDIPAD_STEP", flags);
+            const bool step = p != nullptr;
+            if (!p)
+                p = ImGui::AcceptDragDropPayload("MIDIPAD_CLIP", flags);
+            if (p && static_cast<const int*>(p->Data)[0] == ch) {
+                const float mid = (gx0 + gx1) * 0.5f;
+                dl->AddRectFilled(ImVec2(mid - px(2), y0), ImVec2(mid + px(2), y1), T::kCyan, px(2));
+                if (p->IsDelivery()) {
+                    SessionAction drop{step ? SessionAction::Kind::StepDrop : SessionAction::Kind::ClipInsert, ch, g};
+                    (step ? drop.fromSlot : drop.clip) = static_cast<const int*>(p->Data)[1];
+                    action = drop;
+                }
+            }
+            ImGui::EndDragDropTarget();
+        }
+        ImGui::PopID();
     }
     // The CHAIN cell: the chain shown, its letter between two arrows (or the
     // wheel) that show another; a dot per chain (green: playing, cyan: shown,
@@ -2671,6 +2753,23 @@ std::optional<PerformanceView::SongAction> PerformanceView::drawSong(const LiveS
             action = SongAction{SongAction::Kind::Cursor, s, -1};
         if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
             action = SongAction{SongAction::Kind::Play, s};
+        // Its right edge dragged: its length, on the scale it had when grabbed.
+        const bool onEdge = io.MousePos.x >= b.x - px(5);
+        if (ImGui::IsItemHovered() && onEdge && !ImGui::IsMouseDown(ImGuiMouseButton_Left))
+            ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+        if (ImGui::IsItemActivated()) {
+            secEdge_ = onEdge ? s : -1;
+            secEdgeBars_ = barsOf[static_cast<std::size_t>(s)];
+            secEdgeX_ = io.MousePos.x;
+            secEdgePerBar_ = std::max((sx1 - sx0) / static_cast<float>(totalBars), 1.0f);
+        }
+        if (ImGui::IsItemActive() && secEdge_ == s) {
+            ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+            const int target = std::clamp(secEdgeBars_ + static_cast<int>(std::lround((io.MousePos.x - secEdgeX_) / secEdgePerBar_)), 1, midipad::kMaxSectionBars);
+            ImGui::SetTooltip("%s: %d %s", sec.name.empty() ? ("SECTION " + std::to_string(s + 1)).c_str() : sec.name.c_str(), target, target == 1 ? "bar" : "bars");
+            if (target != barsOf[static_cast<std::size_t>(s)])
+                action = SongAction{SongAction::Kind::Bars, s, -1, 0, target - barsOf[static_cast<std::size_t>(s)]};
+        }
         ImGui::PopID();
     }
     const float laneH = px(11.5f), ly0 = sy1 + px(7);
@@ -2708,7 +2807,7 @@ std::optional<PerformanceView::SongAction> PerformanceView::drawSong(const LiveS
 
     // --- The sections, a row each; a column per channel ---
     const float editorH = px(172), gy0 = origin.y + topH + px(6), gy1 = origin.y + height - editorH - px(6);
-    const float nameW = px(132), headH = px(32), rowH = px(48), gap = px(5);
+    const float nameW = px(132), headH = px(32), chipH = px(22), rowH = px(48), gap = px(5);
     if (gLook) {
         frame(dl, ImVec2(origin.x, gy0), ImVec2(origin.x + width, gy1), headH, gLook == 1 ? kNeon : kSongScreen);
     } else {
@@ -2729,6 +2828,46 @@ std::optional<PerformanceView::SongAction> PerformanceView::drawSong(const LiveS
             renameRequest_ = ch;
         if (ImGui::IsItemHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Right))
             menuRequest_ = MenuRequest{MenuTarget{MenuTarget::Kind::Channel, ch, 1}, ImGui::GetIO().MousePos};
+        // Under it, its clips (1-8) and chains (A-H, outlined), to drag into a cell.
+        const auto c = static_cast<std::size_t>(ch);
+        float cx = x + px(2);
+        const float cy0 = gy0 + headH + px(2), cy1 = cy0 + px(17);
+        for (int n = 0; n < 16; ++n) {
+            const bool chain = n >= 8;
+            const bool has = chain ? !live.chains[c].list[static_cast<std::size_t>(n - 8)].empty()
+                                   : live.clips[c * Engine::kClipSlots + static_cast<std::size_t>(n)].sources != 0;
+            if (!has)
+                continue;
+            const float cw = px(15);
+            if (cx + cw > x + colW)
+                break;
+            const ImVec2 a(cx, cy0), b(cx + cw, cy1);
+            ImGui::PushID(n);
+            ImGui::SetCursorScreenPos(a);
+            ImGui::InvisibleButton("##chip", ImVec2(cw, cy1 - cy0));
+            const bool hovered = ImGui::IsItemHovered();
+            const ImU32 col = channelColor(ch);
+            if (chain)
+                dl->AddRectFilled(a, b, alpha(col, hovered ? 0.3f : 0.12f), px(4));
+            else
+                dl->AddRectFilled(a, b, alpha(col, hovered ? 0.7f : 0.45f), px(4));
+            if (chain)
+                dl->AddRect(a, b, col, px(4), px(1));
+            const std::string label = chain ? chainLetter(n - 8) : std::to_string(n + 1);
+            text(dl, gBold, px(11), (a.x + b.x) * 0.5f, (a.y + b.y) * 0.5f, T::kText, label, H::Center, V::Middle);
+            if (hovered && !ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+                const std::string& name = chain ? chainNames_[c][static_cast<std::size_t>(n - 8)] : std::string();
+                ImGui::SetTooltip("%s %s%s%s", chain ? "Chain" : "Clip", label.c_str(), name.empty() ? "" : "  ", name.c_str());
+            }
+            if (ImGui::BeginDragDropSource()) {
+                const int payload[3] = {ch, chain ? 1 : 0, chain ? n - 8 : n};
+                ImGui::SetDragDropPayload("MIDIPAD_SONGNEW", payload, sizeof payload);
+                ImGui::Text("%s %s", chain ? "Chain" : "Clip", label.c_str());
+                ImGui::EndDragDropSource();
+            }
+            ImGui::PopID();
+            cx += cw + px(2);
+        }
         ImGui::PopID();
     }
     if (shownCount > kColumns) {  // more than eight: the other page's channels
@@ -2746,13 +2885,13 @@ std::optional<PerformanceView::SongAction> PerformanceView::drawSong(const LiveS
         text(dl, gMedium, px(14.25f), origin.x + px(10), gy0 + px(18), T::kDim, std::to_string(shownCount) + (shownCount == 1 ? " channel" : " channels"),
              H::Left, V::Middle);
     }
-    const int visible = std::max(static_cast<int>((gy1 - gy0 - headH - px(11)) / (rowH + px(4))), 1);
+    const int visible = std::max(static_cast<int>((gy1 - gy0 - headH - chipH - px(11)) / (rowH + px(4))), 1);
     if (cursor.row < songScroll_)
         songScroll_ = cursor.row;
     if (cursor.row >= songScroll_ + visible)
         songScroll_ = cursor.row - visible + 1;
     songScroll_ = std::clamp(songScroll_, 0, std::max(sections + 1 - visible, 0));
-    const ImVec2 clipA(origin.x, gy0 + headH), clipB(origin.x + width, gy1 - px(4));
+    const ImVec2 clipA(origin.x, gy0 + headH + chipH), clipB(origin.x + width, gy1 - px(4));
     if (ImGui::IsMouseHoveringRect(clipA, clipB) && io.MouseWheel != 0.0f && !io.KeyCtrl)
         songScroll_ = std::clamp(songScroll_ - (io.MouseWheel > 0 ? 1 : -1), 0, std::max(sections + 1 - visible, 0));
     dl->PushClipRect(clipA, clipB, true);
@@ -2762,7 +2901,7 @@ std::optional<PerformanceView::SongAction> PerformanceView::drawSong(const LiveS
     };
     std::optional<Frame> cursorFrame;  // drawn over every row: the next one would cover its bottom
     for (int r = songScroll_; r <= sections && r < songScroll_ + visible; ++r) {
-        const float y = gy0 + headH + px(5) + static_cast<float>(r - songScroll_) * (rowH + px(4));  // room for the cursor's frame
+        const float y = gy0 + headH + chipH + px(5) + static_cast<float>(r - songScroll_) * (rowH + px(4));  // room for the cursor's frame
         const ImVec2 na(origin.x + px(8), y), nb(origin.x + px(8) + nameW, y + rowH);
         ImGui::PushID(r);
         if (r == sections) {  // + section
@@ -2775,6 +2914,14 @@ std::optional<PerformanceView::SongAction> PerformanceView::drawSong(const LiveS
             ImGui::SetCursorScreenPos(na);
             if (ImGui::InvisibleButton("##add", ImVec2(nameW, px(36))))
                 action = SongAction{SongAction::Kind::AddSection, r};
+            if (ImGui::BeginDragDropTarget()) {  // a section dropped here: last
+                if (const ImGuiPayload* p = ImGui::AcceptDragDropPayload("MIDIPAD_SECTION")) {
+                    SongAction drop{SongAction::Kind::SectionMove, sections, -1, *static_cast<const int*>(p->Data)};
+                    drop.copy = io.KeyCtrl;
+                    action = drop;
+                }
+                ImGui::EndDragDropTarget();
+            }
             if (cursor.row == r) {
                 cursorFrame = {ImVec2(na.x - px(3), na.y - px(3)), ImVec2(nb.x + px(3), na.y + px(39)), T::kCyan};
                 sessionCursorBox_ = {na, ImVec2(nb.x, na.y + px(36))};
@@ -2791,6 +2938,10 @@ std::optional<PerformanceView::SongAction> PerformanceView::drawSong(const LiveS
             dl->AddRect(na, nb, T::kGreen, px(gLook == 0 ? 6 : 4), px(2));
         text(dl, gBold, px(15), na.x + px(12), na.y + px(15), T::kText, fit(gBold, px(15), sec.name.empty() ? "SECTION " + std::to_string(r + 1) : sec.name, nameW - px(36)),
              H::Left, V::Middle);
+        for (int gx = 0; gx < 2; ++gx)  // the grip
+            for (int gy = -1; gy <= 1; ++gy)
+                dl->AddCircleFilled(ImVec2(na.x + px(4.5f) + static_cast<float>(gx) * px(3.5f), (na.y + nb.y) * 0.5f + static_cast<float>(gy) * px(4.5f)), px(1.1f),
+                                    IM_COL32(0x6A, 0x70, 0x78, 255));
         text(dl, gMedium, px(13.5f), na.x + px(12), na.y + px(34), T::kLabel,
              std::to_string(bars) + (bars == 1 ? " bar" : " bars") + (sec.fit ? "  \xC2\xB7  = longest" : ""), H::Left, V::Middle);
         const ImVec2 pc(nb.x - px(16), na.y + px(15));
@@ -2798,11 +2949,37 @@ std::optional<PerformanceView::SongAction> PerformanceView::drawSong(const LiveS
         const bool nameClicked = ImGui::InvisibleButton("##name", ImVec2(nameW, rowH));
         const bool nameHovered = ImGui::IsItemHovered();
         // Dragged up or down: its length (a bar each 12 pixels); double-clicked: its name, or (on its bars) its length typed.
+        // Its grip, left of its name: dragged, the section goes elsewhere (copied with Ctrl).
+        const bool onGrip = io.MousePos.x < na.x + px(11);
         if (ImGui::IsItemActivated()) {
             songDragAxis_ = 0;
             dragNotches_ = 0;
+            sectionGrip_ = onGrip;
         }
-        if (ImGui::IsItemActive() && ImGui::IsMouseDragging(ImGuiMouseButton_Left, px(5))) {
+        if (nameHovered && onGrip && !ImGui::IsMouseDown(ImGuiMouseButton_Left))
+            ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+        if (sectionGrip_ && ImGui::BeginDragDropSource()) {
+            songDragAxis_ = 3;
+            const int payload = r;
+            ImGui::SetDragDropPayload("MIDIPAD_SECTION", &payload, sizeof payload);
+            ImGui::TextUnformatted(sec.name.empty() ? ("SECTION " + std::to_string(r + 1)).c_str() : sec.name.c_str());
+            ImGui::EndDragDropSource();
+        }
+        if (ImGui::BeginDragDropTarget()) {  // a section dropped here: before this one (upper half) or after it
+            if (const ImGuiPayload* p = ImGui::AcceptDragDropPayload("MIDIPAD_SECTION",
+                                                                      ImGuiDragDropFlags_AcceptBeforeDelivery | ImGuiDragDropFlags_AcceptNoDrawDefaultRect)) {
+                const bool before = io.MousePos.y < (na.y + nb.y) * 0.5f;
+                const float ly = before ? na.y - px(2.5f) : nb.y + px(2.5f);
+                dl->AddRectFilled(ImVec2(na.x, ly - px(1.5f)), ImVec2(origin.x + width - px(8), ly + px(1.5f)), T::kCyan, px(1));
+                if (p->IsDelivery()) {
+                    SongAction drop{SongAction::Kind::SectionMove, before ? r : r + 1, -1, *static_cast<const int*>(p->Data)};
+                    drop.copy = io.KeyCtrl;
+                    action = drop;
+                }
+            }
+            ImGui::EndDragDropTarget();
+        }
+        if (ImGui::IsItemActive() && !sectionGrip_ && ImGui::IsMouseDragging(ImGuiMouseButton_Left, px(5))) {
             const ImVec2 d = ImGui::GetMouseDragDelta(ImGuiMouseButton_Left, 0.0f);
             if (songDragAxis_ == 0)
                 songDragAxis_ = std::abs(d.y) > std::abs(d.x) ? 2 : 1;
@@ -2817,7 +2994,7 @@ std::optional<PerformanceView::SongAction> PerformanceView::drawSong(const LiveS
         }
         if (nameHovered && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) && io.MousePos.x < nb.x - px(30))
             action = SongAction{io.MousePos.y > na.y + rowH * 0.5f ? SongAction::Kind::BarsAsk : SongAction::Kind::Rename, r, -1};
-        if (nameClicked && songDragAxis_ != 2)
+        if (nameClicked && songDragAxis_ != 2 && songDragAxis_ != 3)
             action = io.MousePos.x > pc.x - px(12) && io.MousePos.y < pc.y + px(12)
                          ? (now ? SongAction{SongAction::Kind::Stop} : SongAction{SongAction::Kind::Play, r})
                          : SongAction{SongAction::Kind::Cursor, r, -1};
@@ -2855,6 +3032,12 @@ std::optional<PerformanceView::SongAction> PerformanceView::drawSong(const LiveS
             const float ix0 = a.x + px(6), ix1 = b.x - px(6), barW = (ix1 - ix0) / static_cast<float>(bars);
             const ImU32 chColor = channelColor(ch);
             const auto st = songItemBars(live, ch, items);
+            struct Box {
+                int item;
+                float x0, x1;
+                bool rest;
+            };
+            std::vector<Box> boxes;  // where each item is, for the mouse
             for (std::size_t i = 0; i < items.size(); ++i) {
                 const SongItem& it = items[i];
                 bool open = false;
@@ -2865,6 +3048,7 @@ std::optional<PerformanceView::SongAction> PerformanceView::drawSong(const LiveS
                 const float x0 = ix0 + static_cast<float>(st[i]) * barW, x1 = std::max(ix0 + static_cast<float>(end) * barW, x0 + px(3));
                 if (st[i] >= bars)
                     continue;
+                boxes.push_back({static_cast<int>(i), x0, x1, it.kind == SongItem::Kind::Rest});
                 if (it.kind == SongItem::Kind::Rest) {  // a silence: a faint outline
                     dl->AddRect(ImVec2(x0 + px(0.5f), a.y + px(7)), ImVec2(x1 - px(0.5f), b.y - px(7)), IM_COL32(0x5A, 0x5F, 0x67, 255), px(3), px(1));
                     continue;
@@ -2889,7 +3073,68 @@ std::optional<PerformanceView::SongAction> PerformanceView::drawSong(const LiveS
             ImGui::SetCursorScreenPos(a);
             if (ImGui::InvisibleButton("##cell", ImVec2(colW, rowH)))
                 action = SongAction{SongAction::Kind::EditCell, r, ch};
-            if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))  // a new item, after the last
+            // The item under the mouse, and whether on its right edge (its repeats, dragged sideways).
+            const bool cellHovered = ImGui::IsItemHovered();
+            int under = -1;
+            bool edge = false;
+            for (const Box& box : boxes)
+                if (io.MousePos.x >= box.x0 && io.MousePos.x <= box.x1 + px(2)) {
+                    under = box.item;
+                    edge = !box.rest && io.MousePos.x >= box.x1 - px(5);
+                }
+            if (cellHovered && edge && !ImGui::IsMouseDown(ImGuiMouseButton_Left))
+                ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+            if (ImGui::IsItemActivated()) {
+                edgeRow_ = r;
+                edgeCol_ = ch;
+                edgeItem_ = edge ? under : -1;
+                grabItem_ = edge ? -1 : under;
+            }
+            const bool mine = edgeRow_ == r && edgeCol_ == ch;
+            if (ImGui::IsItemActive() && mine && edgeItem_ >= 0 && edgeItem_ < static_cast<int>(items.size())) {
+                ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+                SongItem one = items[static_cast<std::size_t>(edgeItem_)];
+                one.repeats = 1;
+                const double once = songItemBeats(live, ch, one) / bar;
+                if (once > 0) {
+                    const double endBars = (io.MousePos.x - ix0) / barW;
+                    const int repeats = std::clamp(static_cast<int>(std::lround((endBars - st[static_cast<std::size_t>(edgeItem_)]) / once)), 1, midipad::kMaxSongRepeats);
+                    if (repeats != items[static_cast<std::size_t>(edgeItem_)].repeats)
+                        action = SongAction{SongAction::Kind::RepeatsTo, r, ch, edgeItem_, repeats};
+                }
+            }
+            if (mine && grabItem_ >= 0 && grabItem_ < static_cast<int>(items.size()) && ImGui::BeginDragDropSource()) {
+                const int payload[3] = {r, ch, grabItem_};
+                ImGui::SetDragDropPayload("MIDIPAD_SONGITEM", payload, sizeof payload);
+                const SongItem& it = items[static_cast<std::size_t>(grabItem_)];
+                ImGui::TextUnformatted(it.kind == SongItem::Kind::Rest ? "Silence" : it.kind == SongItem::Kind::Clip ? ("Clip " + std::to_string(it.index + 1)).c_str()
+                                                                                                                     : ("Chain " + chainLetter(it.index)).c_str());
+                ImGui::EndDragDropSource();
+            }
+            // Dropped here: a clip or chain of the channel (from the chips), or an item of the channel, on the bar under the mouse.
+            if (ImGui::BeginDragDropTarget()) {
+                const ImGuiDragDropFlags flags = ImGuiDragDropFlags_AcceptBeforeDelivery | ImGuiDragDropFlags_AcceptNoDrawDefaultRect;
+                const ImGuiPayload* p = ImGui::AcceptDragDropPayload("MIDIPAD_SONGNEW", flags);
+                const bool fresh = p != nullptr;
+                if (!p)
+                    p = ImGui::AcceptDragDropPayload("MIDIPAD_SONGITEM", flags);
+                const int* v = p ? static_cast<const int*>(p->Data) : nullptr;
+                if (v && (fresh ? v[0] : v[1]) == ch) {
+                    const int at = std::clamp(static_cast<int>(std::floor((io.MousePos.x - ix0) / barW)), 0, bars - 1);
+                    dashedRect(dl, a, b, T::kCyan, px(2));
+                    const float bx = ix0 + static_cast<float>(at) * barW;
+                    dl->AddRectFilled(ImVec2(bx - px(1), a.y + px(4)), ImVec2(bx + px(1), b.y - px(4)), T::kCyan);
+                    text(dl, gMedium, px(10.5f), b.x - px(6), a.y + px(9), T::kCyan, "bar " + std::to_string(at + 1), H::Right, V::Middle);
+                    if (p->IsDelivery()) {
+                        SongAction drop{fresh ? SongAction::Kind::DropNew : SongAction::Kind::DropItem, r, ch, fresh ? v[1] * 8 + v[2] : v[2], at + 1};
+                        drop.fromRow = fresh ? -1 : v[0];
+                        drop.copy = io.KeyCtrl;
+                        action = drop;
+                    }
+                }
+                ImGui::EndDragDropTarget();
+            }
+            if (cellHovered && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))  // a new item, after the last
                 action = SongAction{SongAction::Kind::AddItem, r, ch};
             if (ImGui::IsItemHovered() && items.empty())
                 text(dl, gBold, px(18), (a.x + b.x) * 0.5f, (a.y + b.y) * 0.5f, T::kDim, "+", H::Center, V::Middle);
@@ -3062,10 +3307,35 @@ std::optional<PerformanceView::SongAction> PerformanceView::drawSong(const LiveS
             action = SongAction{SongAction::Kind::AddItem, r, ch};
         ImGui::SetItemTooltip("Add a clip, a chain of the channel or a silence after the last item");
     }
-    // A double-click on the timeline, off its items: a new item on that bar.
-    if (ImGui::IsMouseHoveringRect(ImVec2(ex0, iy0), ImVec2(ex1, iy1)) && !ImGui::IsAnyItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
-        action = SongAction{SongAction::Kind::AddItem, r, ch, 0,
-                            std::clamp(static_cast<int>(std::floor((io.MousePos.x - ex0) / barW)), 0, bars - 1) + 1};
+    // The timeline off its items (submitted after them, so they keep the mouse): a double-click
+    // adds an item on that bar; a clip or chain of the channel, or an item of it, dropped there goes on that bar.
+    {
+        const int at = std::clamp(static_cast<int>(std::floor((io.MousePos.x - ex0) / barW)), 0, bars - 1);
+        ImGui::SetCursorScreenPos(ImVec2(ex0, iy0));
+        ImGui::InvisibleButton("##timeline", ImVec2(std::max(ex1 - ex0, 1.0f), iy1 - iy0));
+        if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
+            action = SongAction{SongAction::Kind::AddItem, r, ch, 0, at + 1};
+        if (ImGui::BeginDragDropTarget()) {
+            const ImGuiDragDropFlags flags = ImGuiDragDropFlags_AcceptBeforeDelivery | ImGuiDragDropFlags_AcceptNoDrawDefaultRect;
+            const ImGuiPayload* p = ImGui::AcceptDragDropPayload("MIDIPAD_SONGNEW", flags);
+            const bool fresh = p != nullptr;
+            if (!p)
+                p = ImGui::AcceptDragDropPayload("MIDIPAD_SONGITEM", flags);
+            const int* v = p ? static_cast<const int*>(p->Data) : nullptr;
+            if (v && (fresh ? v[0] : v[1]) == ch) {
+                const float bx = ex0 + static_cast<float>(at) * barW;
+                dl->AddRectFilled(ImVec2(bx - px(1.5f), iy0), ImVec2(bx + px(1.5f), iy1), T::kCyan);
+                text(dl, gMedium, px(12), bx + px(6), iy0 + px(10), T::kCyan, "bar " + std::to_string(at + 1), H::Left, V::Middle);
+                if (p->IsDelivery()) {
+                    SongAction drop{fresh ? SongAction::Kind::DropNew : SongAction::Kind::DropItem, r, ch, fresh ? v[1] * 8 + v[2] : v[2], at + 1};
+                    drop.fromRow = fresh ? -1 : v[0];
+                    drop.copy = io.KeyCtrl;
+                    action = drop;
+                }
+            }
+            ImGui::EndDragDropTarget();
+        }
+    }
     if (playing && live.song.section == r && live.song.beat >= 0) {
         const float x = ex0 + static_cast<float>(std::min(live.song.beat / bar, static_cast<double>(bars))) * barW;
         dl->AddLine(ImVec2(x, ry), ImVec2(x, iy1 + px(2)), T::kGreen, px(1.6f));
