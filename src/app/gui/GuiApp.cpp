@@ -598,12 +598,24 @@ private:
     void screenKeys(const LiveState& live);
     // A clip or a chain step dropped in the session screen (or moved from a menu): see SessionAction.
     void sessionDrop(const PerformanceView::SessionAction& a, const LiveState& live);
-    std::vector<midipad::SessionLoop> clipClipboard_;  // a clip copied (Ctrl+C), for Ctrl+V
+    // A row of the session screen: its clips launched on every channel with one there (the others play on).
+    void launchRow(int slot, const LiveState& live);
+    // Clips copied (Ctrl+C), for Ctrl+V: each where it was from the first (channels, slots) and its loops.
+    struct ClipCopy {
+        int channels = 0, slots = 0;
+        std::vector<midipad::SessionLoop> loops;
+    };
+    std::vector<ClipCopy> clipClipboard_;
+    // The clips selected in the session screen (Shift+click, a rectangle), and the items of a song cell.
+    std::vector<std::pair<int, int>> sessionSel_;
+    std::vector<int> songSel_;
+    int songSelRow_ = -1, songSelCol_ = -1;
+    bool songClipboardPart_ = false;  // the song clipboard holds items picked out of a cell: pasted among the others
     std::vector<midipad::SongItem>* songCell(int row, int col);
     int placeSongItem(int row, int col, midipad::SongItem item, const LiveState& live);  // on its bar, in playing order: its index there
     // A new item after the cell's last (the menu picks what it plays).
     void addSongItem(int row, int col, const LiveState& live, midipad::SongItem::Kind kind, int index);
-    // `bar`: a new item on that bar + 1 (0: after the last).
+    // `bar`: a new item on that beat of the section + 1 (0: after the last).
     void openSongPick(int row, int col, int item, const LiveState& live, bool fromController, ImVec2 at, int bar = 0);
     void addToSong(int channel, midipad::SongItem::Kind kind, int index, const LiveState& live);  // from the session screen
     std::string songTargetName() const;  // the section addToSong puts it in
@@ -1954,11 +1966,14 @@ int GuiApp::placeSongItem(int row, int col, midipad::SongItem item, const LiveSt
     auto* items = songCell(row, col);
     if (!items)
         return 0;
+    const int bpb = std::max(live.beatsPerBar, 1);
     item.bar = std::clamp(item.bar, 0, midipad::kMaxSectionBars - 1);
+    item.beat = std::clamp(item.beat, 0, bpb - 1);
     item.after = false;
     const auto starts = PerformanceView::songItemBars(live, col, *items);
+    const double start = item.bar + static_cast<double>(item.beat) / bpb;
     std::size_t at = 0;
-    while (at < starts.size() && starts[at] <= item.bar + 1e-6)
+    while (at < starts.size() && starts[at] <= start + 1e-6)
         ++at;
     items->insert(items->begin() + static_cast<std::ptrdiff_t>(at), item);
     return static_cast<int>(at);
@@ -2137,6 +2152,17 @@ void GuiApp::undoRedo(bool redo) {
     toastUntil_ = ImGui::GetTime() + 4.0;
 }
 
+void GuiApp::launchRow(int slot, const LiveState& live) {
+    if (slot < 0 || slot >= Engine::kClipSlots)
+        return;
+    for (int ch = 0; ch < kChannelCount; ++ch) {
+        const auto c = static_cast<std::size_t>(ch);
+        const bool plays = ((live.clipsPlaying >> ch) & 1u) && live.currentClip[c] == slot;
+        if (live.clips[c * Engine::kClipSlots + static_cast<std::size_t>(slot)].sources && !plays && live.queuedClip[c] != slot)
+            runtime_->launchClip(ch, slot);
+    }
+}
+
 void GuiApp::sessionDrop(const PerformanceView::SessionAction& a, const LiveState& live) {
     using Kind = PerformanceView::SessionAction::Kind;
     const int ch = std::clamp(a.channel, 0, kChannelCount - 1);
@@ -2146,6 +2172,45 @@ void GuiApp::sessionDrop(const PerformanceView::SessionAction& a, const LiveStat
         const auto loops = runtime_->sessionLoops();
         if (!loops)
             return;
+        const std::pair<int, int> grabbed{a.fromChannel, a.fromSlot};
+        if (sessionSel_.size() > 1 && std::find(sessionSel_.begin(), sessionSel_.end(), grabbed) != sessionSel_.end()) {
+            // The selection, all moved (or copied) as the clip dragged: onto free slots only.
+            const int dc = ch - a.fromChannel, ds = a.slot - a.fromSlot;
+            std::vector<std::pair<int, int>> to;
+            for (const auto& [c2, s2] : sessionSel_) {
+                const std::pair<int, int> t{c2 + dc, s2 + ds};
+                const bool free = std::none_of(loops->begin(), loops->end(), [&](const midipad::SessionLoop& l) { return l.channel == t.first && l.clip == t.second; });
+                const bool moving = !a.copy && std::find(sessionSel_.begin(), sessionSel_.end(), t) != sessionSel_.end();
+                if (t.first < 0 || t.first >= kChannelCount || t.second < 0 || t.second >= Engine::kClipSlots || !(free || moving)) {
+                    toast_ = "Not there: some clips would be overwritten";
+                    toastUndone_ = false;
+                    toastUntil_ = ImGui::GetTime() + 2.5;
+                    return;
+                }
+                to.push_back(t);
+            }
+            std::vector<std::pair<int, int>> touched = sessionSel_;
+            touched.insert(touched.end(), to.begin(), to.end());
+            undoWhat_ = std::string(a.copy ? "Copy" : "Move") + " (" + std::to_string(to.size()) + " clips)";
+            rememberClips(touched, "Clips moved");
+            undoWhat_.clear();
+            auto loopsOf = [&](const std::pair<int, int>& clip) {
+                std::vector<midipad::SessionLoop> out;
+                for (const midipad::SessionLoop& l : *loops)
+                    if (l.channel == clip.first && l.clip == clip.second)
+                        out.push_back(l);
+                return out;
+            };
+            if (!a.copy)
+                for (const auto& from : sessionSel_)
+                    if (std::find(to.begin(), to.end(), from) == to.end())
+                        runtime_->restoreClip(from.first, from.second, {});
+            for (std::size_t k = 0; k < to.size(); ++k)
+                runtime_->restoreClip(to[k].first, to[k].second, loopsOf(sessionSel_[k]));
+            sessionSel_ = to;
+            moveSessionCursor(ch, a.slot, live);
+            return;
+        }
         std::vector<midipad::SessionLoop> from, to;
         for (const midipad::SessionLoop& l : *loops) {
             if (l.channel == a.fromChannel && l.clip == a.fromSlot)
@@ -2249,6 +2314,7 @@ void GuiApp::songAction(const PerformanceView::SongAction& a, const LiveState& l
         c.col = a.col;
         c.editing = true;
         c.item = 0;
+        songSel_.clear();
         break;
     case K::Bars:
         if (a.row >= 0 && a.row < static_cast<int>(song_.sections.size())) {
@@ -2263,12 +2329,67 @@ void GuiApp::songAction(const PerformanceView::SongAction& a, const LiveState& l
         c.col = a.col;
         c.item = a.item;
         c.editing = true;
+        songSel_ = {a.item};
+        songSelRow_ = a.row;
+        songSelCol_ = a.col;
+        break;
+    case K::ItemToggle:
+        if (songSelRow_ != a.row || songSelCol_ != a.col) {  // another cell: from the item under the cursor there
+            songSel_.clear();
+            if (c.row == a.row && c.col == a.col && c.editing)
+                songSel_.push_back(c.item);
+            songSelRow_ = a.row;
+            songSelCol_ = a.col;
+        }
+        if (const auto it = std::find(songSel_.begin(), songSel_.end(), a.item); it != songSel_.end())
+            songSel_.erase(it);
+        else
+            songSel_.push_back(a.item);
+        c = {a.row, a.col, a.item, true};
         break;
     case K::ItemMove:
-        if (hasItem) {
+        if (hasItem && songSel_.size() > 1 && songSelRow_ == a.row && songSelCol_ == a.col &&
+            std::find(songSel_.begin(), songSel_.end(), a.item) != songSel_.end()) {  // the selection, all moved alike
+            const int bpb = std::max(live.beatsPerBar, 1);
+            const auto starts = PerformanceView::songItemBars(live, a.col, *items);
+            const int delta = a.value - static_cast<int>(std::lround(starts[static_cast<std::size_t>(a.item)] * bpb));
+            std::vector<int> picked = songSel_;
+            std::sort(picked.begin(), picked.end());
+            picked.erase(std::unique(picked.begin(), picked.end()), picked.end());
+            std::vector<midipad::SongItem> moved;
+            for (int k : picked)
+                if (k >= 0 && k < static_cast<int>(items->size())) {
+                    midipad::SongItem it = (*items)[static_cast<std::size_t>(k)];
+                    const int to = std::max(static_cast<int>(std::lround(starts[static_cast<std::size_t>(k)] * bpb)) + delta, 0);
+                    it.after = false;
+                    it.bar = to / bpb;
+                    it.beat = to % bpb;
+                    moved.push_back(it);
+                }
+            for (auto k = picked.rbegin(); k != picked.rend(); ++k)
+                if (*k >= 0 && *k < static_cast<int>(items->size()))
+                    items->erase(items->begin() + *k);
+            for (const midipad::SongItem& it : moved)
+                placeSongItem(a.row, a.col, it, live);
+            songSel_.clear();  // where they are now
+            std::vector<bool> taken(items->size(), false);
+            for (const midipad::SongItem& it : moved)
+                for (std::size_t k = 0; k < items->size(); ++k)
+                    if (!taken[k] && (*items)[k] == it) {
+                        taken[k] = true;
+                        songSel_.push_back(static_cast<int>(k));
+                        break;
+                    }
+            c.item = songSel_.empty() ? 0 : songSel_.front();
+            c.editing = true;
+            undoWhat_ = "Move (" + std::to_string(moved.size()) + " items)";
+            songEdited();
+            undoWhat_.clear();
+        } else if (hasItem) {
             midipad::SongItem it = (*items)[static_cast<std::size_t>(a.item)];
             items->erase(items->begin() + a.item);
-            it.bar = a.value;
+            it.bar = a.value / std::max(live.beatsPerBar, 1);
+            it.beat = a.value % std::max(live.beatsPerBar, 1);
             c.item = placeSongItem(a.row, a.col, it, live);
             c.editing = true;
             songEdited();
@@ -2332,7 +2453,8 @@ void GuiApp::songAction(const PerformanceView::SongAction& a, const LiveState& l
             it.kind = a.item < 8 ? midipad::SongItem::Kind::Clip : midipad::SongItem::Kind::Chain;
             it.index = a.item % 8;
             it.after = false;
-            it.bar = std::max(a.value - 1, 0);
+            it.bar = std::max(a.value - 1, 0) / std::max(live.beatsPerBar, 1);
+            it.beat = std::max(a.value - 1, 0) % std::max(live.beatsPerBar, 1);
             undoWhat_ = std::string(a.item < 8 ? "Add (clip " + std::to_string(it.index + 1) : "Add (chain " + PerformanceView::chainLetter(it.index)) + ")";
             c = {a.row, a.col, placeSongItem(a.row, a.col, it, live), true};
             songEdited();
@@ -2345,7 +2467,8 @@ void GuiApp::songAction(const PerformanceView::SongAction& a, const LiveState& l
             if (!a.copy)
                 from->erase(from->begin() + a.item);
             it.after = false;
-            it.bar = std::max(a.value - 1, 0);
+            it.bar = std::max(a.value - 1, 0) / std::max(live.beatsPerBar, 1);
+            it.beat = std::max(a.value - 1, 0) % std::max(live.beatsPerBar, 1);
             undoWhat_ = a.copy ? "Copy (item)" : "Move (item)";
             c = {a.row, a.col, placeSongItem(a.row, a.col, it, live), true};
             songEdited();
@@ -2500,7 +2623,7 @@ enum MenuId : int {
     kStartHere, kRandom, kSilence, kInsertStep, kDeleteStep, kEmptyStep,
     kChannelStop, kChannelMute, kChannelSolo, kChainOn, kChainOff, kThenLoop, kThenStop, kThenNext, kPrevChain, kNextChain, kDuplicateChain, kRenameChain, kClearChain,
     kLock, kUnlock, kClearLoop, kResetShape, kSettings, kEditNotes, kPrevChannel, kNextChannel, kRename, kColour, kUndo,
-    kClipUp, kClipDown, kStepLeft, kStepRight,
+    kClipUp, kClipDown, kStepLeft, kStepRight, kLaunchRow,
     kSongPlay, kSongStop, kSongLoop, kLoopSong, kSectionRename, kSectionFit, kSectionDuplicate, kSectionInsert, kSectionUp, kSectionDown, kSectionDelete,
     kCellEdit, kCellClear, kCellCopy, kCellPaste,
     kRestBarMore, kRestBarLess, kRestBeatMore, kRestBeatLess,
@@ -2529,6 +2652,10 @@ void GuiApp::screenKeys(const LiveState& live) {
     using K = PerformanceView::MenuTarget::Kind;
     const bool ctrl = io.KeyCtrl;
     auto pressed = [&](ImGuiKey key, bool withCtrl = false) { return ctrl == withCtrl && ImGui::IsKeyPressed(key, !withCtrl); };
+    if (pressed(ImGuiKey_UpArrow) || pressed(ImGuiKey_DownArrow) || pressed(ImGuiKey_LeftArrow) || pressed(ImGuiKey_RightArrow)) {
+        sessionSel_.clear();  // the cursor alone again
+        songSel_.clear();
+    }
     if (pressed(ImGuiKey_UpArrow))
         sessionEvent(E::Up, live);
     if (pressed(ImGuiKey_DownArrow))
@@ -2537,8 +2664,12 @@ void GuiApp::screenKeys(const LiveState& live) {
         sessionEvent(E::Left, live);
     if (pressed(ImGuiKey_RightArrow))
         sessionEvent(E::Right, live);
-    if (!ctrl && (ImGui::IsKeyPressed(ImGuiKey_Enter, false) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false)))
-        sessionEvent(E::Press, live);
+    if (!ctrl && (ImGui::IsKeyPressed(ImGuiKey_Enter, false) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false))) {
+        if (io.KeyShift && sessionView_ && sessionSlot_ < Engine::kClipSlots)  // Shift+Enter: the cursor's row
+            launchRow(sessionSlot_, live);
+        else
+            sessionEvent(E::Press, live);
+    }
     if (!ctrl && ImGui::IsKeyPressed(ImGuiKey_Space, false)) {  // as Play / Stop in the top bar
         if ((live.loopChannels != 0 && !live.loopsPaused) || live.song.playing)
             runtime_->transportStop();
@@ -2558,25 +2689,51 @@ void GuiApp::screenKeys(const LiveState& live) {
             const int slot = sessionSlot_;
             const std::string name = "clip " + std::to_string(slot + 1);
             const bool has = live.clips[static_cast<std::size_t>(ch * Engine::kClipSlots + slot)].sources != 0;
-            if (has && erase)
-                run({K::Clip, ch, slot}, kClearClip, "Clear (" + name + ")");
-            if (has && duplicate)
+            // Several clips selected: Delete and Ctrl+C take them all.
+            std::vector<std::pair<int, int>> picked = sessionSel_.size() > 1 ? sessionSel_ : std::vector<std::pair<int, int>>{};
+            if (picked.empty() && has)
+                picked = {{ch, slot}};
+            if (erase && !picked.empty()) {
+                undoWhat_ = picked.size() > 1 ? "Clear (" + std::to_string(picked.size()) + " clips)" : "Clear (" + name + ")";
+                rememberClips(picked, "Clips cleared");
+                undoWhat_.clear();
+                for (const auto& [c2, s2] : picked)
+                    runtime_->clearClip(c2, s2);
+                sessionSel_.clear();
+            }
+            if (has && duplicate && sessionSel_.size() <= 1)
                 run({K::Clip, ch, slot}, kDuplicate, "Duplicate (" + name + ")");
-            if (has && copy)
+            if (copy && !picked.empty())
                 if (const auto loops = runtime_->sessionLoops()) {
+                    int c0 = kChannelCount, s0 = Engine::kClipSlots;
+                    for (const auto& [c2, s2] : picked) {
+                        c0 = std::min(c0, c2);
+                        s0 = std::min(s0, s2);
+                    }
                     clipClipboard_.clear();
-                    for (const midipad::SessionLoop& l : *loops)
-                        if (l.channel == ch && l.clip == slot)
-                            clipClipboard_.push_back(l);
-                    toast_ = "Copied (" + name + ")";
+                    for (const auto& [c2, s2] : picked) {
+                        ClipCopy copied{c2 - c0, s2 - s0, {}};
+                        for (const midipad::SessionLoop& l : *loops)
+                            if (l.channel == c2 && l.clip == s2)
+                                copied.loops.push_back(l);
+                        clipClipboard_.push_back(std::move(copied));
+                    }
+                    toast_ = picked.size() > 1 ? "Copied (" + std::to_string(picked.size()) + " clips)" : "Copied (" + name + ")";
                     toastUndone_ = false;
                     toastUntil_ = ImGui::GetTime() + 2.0;
                 }
-            if (paste && !clipClipboard_.empty()) {
-                undoWhat_ = "Paste (" + name + ")";
-                rememberClips({{ch, slot}}, "Paste");
+            if (paste && !clipClipboard_.empty()) {  // from the cursor, as they were placed
+                std::vector<std::pair<int, int>> to;
+                for (const ClipCopy& copied : clipClipboard_)
+                    if (ch + copied.channels < kChannelCount && slot + copied.slots < Engine::kClipSlots)
+                        to.push_back({ch + copied.channels, slot + copied.slots});
+                undoWhat_ = to.size() > 1 ? "Paste (" + std::to_string(to.size()) + " clips)" : "Paste (" + name + ")";
+                rememberClips(to, "Paste");
                 undoWhat_.clear();
-                runtime_->restoreClip(ch, slot, clipClipboard_);
+                for (const ClipCopy& copied : clipClipboard_)
+                    if (ch + copied.channels < kChannelCount && slot + copied.slots < Engine::kClipSlots)
+                        runtime_->restoreClip(ch + copied.channels, slot + copied.slots, copied.loops);
+                sessionSel_ = to.size() > 1 ? to : std::vector<std::pair<int, int>>{};
             }
         } else if (sessionSlot_ == Engine::kClipSlots && chainCursor_ < Engine::kChainSteps && erase) {
             run({K::Step, ch, chainCursor_}, kEmptyStep, "Empty it (step " + std::to_string(chainCursor_ + 1) + ")");
@@ -2599,6 +2756,43 @@ void GuiApp::screenKeys(const LiveState& live) {
     const auto* items = songCell(cur.row, cur.col);
     if (!items)
         return;
+    const bool several = songSel_.size() > 1 && songSelRow_ == cur.row && songSelCol_ == cur.col;
+    if (several && (erase || copy)) {  // the items selected: deleted, or copied where they are
+        std::vector<int> picked = songSel_;
+        std::sort(picked.begin(), picked.end());
+        picked.erase(std::unique(picked.begin(), picked.end()), picked.end());
+        auto* cell = songCell(cur.row, cur.col);
+        const int bpb = std::max(live.beatsPerBar, 1);
+        const auto starts = PerformanceView::songItemBars(live, cur.col, *cell);
+        if (copy) {
+            songClipboard_.clear();
+            for (int k : picked)
+                if (k >= 0 && k < static_cast<int>(cell->size())) {
+                    midipad::SongItem it = (*cell)[static_cast<std::size_t>(k)];
+                    const int at = static_cast<int>(std::lround(starts[static_cast<std::size_t>(k)] * bpb));
+                    it.after = false;
+                    it.bar = at / bpb;
+                    it.beat = at % bpb;
+                    songClipboard_.push_back(it);
+                }
+            songClipboardPart_ = true;
+            toast_ = "Copied (" + std::to_string(songClipboard_.size()) + " items)";
+            toastUndone_ = false;
+            toastUntil_ = ImGui::GetTime() + 2.0;
+        } else {
+            undoWhat_ = "Delete (" + std::to_string(picked.size()) + " items)";
+            for (auto k = picked.rbegin(); k != picked.rend(); ++k)
+                if (*k >= 0 && *k < static_cast<int>(cell->size()))
+                    cell->erase(cell->begin() + *k);
+            songSel_.clear();
+            songCursor_.item = 0;
+            songEdited();
+            undoWhat_.clear();
+        }
+        if (paste && !songClipboard_.empty())
+            run({K::SongCell, cur.col, cur.row}, kCellPaste, "Paste (cell)");
+        return;
+    }
     if (cur.editing && cur.item >= 0 && cur.item < static_cast<int>(items->size())) {  // an item of the cell
         if (erase)
             run({K::SongItem, cur.col, cur.row, 0, cur.item}, kItemDelete, "Delete (item)");
@@ -2607,8 +2801,10 @@ void GuiApp::screenKeys(const LiveState& live) {
     } else if (erase && !items->empty()) {
         run({K::SongCell, cur.col, cur.row}, kCellClear, "Clear (cell)");
     }
-    if (copy)
+    if (copy) {
         run({K::SongCell, cur.col, cur.row}, kCellCopy, "Copy (cell)");
+        songClipboardPart_ = false;
+    }
     if (paste && !songClipboard_.empty())
         run({K::SongCell, cur.col, cur.row}, kCellPaste, "Paste (cell)");
 }
@@ -2643,6 +2839,7 @@ void GuiApp::openMenu(const PerformanceView::MenuTarget& t, const LiveState& liv
             add("Stop", kStop);
         else
             add("Launch", kLaunch, has);
+        add("Launch the row", kLaunchRow);
         add("Record here", kRecordHere);
         add("Duplicate", kDuplicate, has && freeSlot);
         add("Move up", kClipUp, has && t.slot > 0);
@@ -2945,7 +3142,8 @@ void GuiApp::runMenu(const PerformanceView::MenuTarget& t, int id, const LiveSta
                 midipad::SongItem item = items->back();
                 items->pop_back();
                 item.after = false;
-                item.bar = t.source - 1;
+                item.bar = (t.source - 1) / std::max(live.beatsPerBar, 1);
+                item.beat = (t.source - 1) % std::max(live.beatsPerBar, 1);
                 songCursor_.item = placeSongItem(t.slot, t.channel, item, live);
             }
             songEdited();
@@ -2977,6 +3175,7 @@ void GuiApp::runMenu(const PerformanceView::MenuTarget& t, int id, const LiveSta
             }
         break;
     case kUndo: undoRedo(false); return;
+    case kLaunchRow: launchRow(t.slot, live); return;
     case kClipUp:
     case kClipDown: {  // swapped with the one above or below
         PerformanceView::SessionAction a{PerformanceView::SessionAction::Kind::ClipDrop, ch, t.slot + (id == kClipUp ? -1 : 1)};
@@ -3214,6 +3413,12 @@ void GuiApp::runMenu(const PerformanceView::MenuTarget& t, int id, const LiveSta
         if (auto* items = songCell(t.slot, t.channel)) {
             if (id == kCellCopy) {
                 songClipboard_ = *items;
+                songClipboardPart_ = false;
+            } else if (id == kCellPaste && songClipboardPart_) {  // items picked out of a cell: among those there
+                for (const midipad::SongItem& it : songClipboard_)
+                    if (static_cast<int>(items->size()) < midipad::kMaxSongItems)
+                        placeSongItem(t.slot, t.channel, it, live);
+                songEdited();
             } else {
                 *items = id == kCellPaste ? songClipboard_ : std::vector<midipad::SongItem>{};
                 songEdited();
@@ -3240,9 +3445,12 @@ void GuiApp::runMenu(const PerformanceView::MenuTarget& t, int id, const LiveSta
             midipad::SongItem it = (*items)[static_cast<std::size_t>(t.axis)];
             songCursor_ = {t.slot, t.channel, t.axis, true};
             const double start = PerformanceView::songItemBars(live, t.channel, *items)[static_cast<std::size_t>(t.axis)];
+            const int bpb = std::max(live.beatsPerBar, 1);
+            const int startBeat = static_cast<int>(std::lround(start * bpb));  // in the section
             if (id == kItemGlue) {
                 auto& at = (*items)[static_cast<std::size_t>(t.axis)];
-                at.bar = static_cast<int>(std::floor(start + 1e-6));  // a bar of its own: where it starts now
+                at.bar = startBeat / bpb;  // a place of its own: where it starts now
+                at.beat = startBeat % bpb;
                 at.after = !at.after;
             } else if (id == kItemLoop || id == kItemKind) {
                 auto& at = (*items)[static_cast<std::size_t>(t.axis)];
@@ -3259,7 +3467,9 @@ void GuiApp::runMenu(const PerformanceView::MenuTarget& t, int id, const LiveSta
                 songCursor_.item = t.axis + 1;
             } else {
                 items->erase(items->begin() + t.axis);
-                it.bar = id == kItemLeft ? static_cast<int>(std::ceil(start - 1e-6)) - 1 : static_cast<int>(std::floor(start + 1e-6)) + 1;
+                const int to = std::max(startBeat + (id == kItemLeft ? -bpb : bpb), 0);  // a bar earlier or later, on the same beat
+                it.bar = to / bpb;
+                it.beat = to % bpb;
                 songCursor_.item = placeSongItem(t.slot, t.channel, it, live);
             }
             songEdited();
@@ -3965,7 +4175,14 @@ void GuiApp::drawPerformance(const LiveState& live) {
         // A clip clicked: the cursor goes there, its channel becomes the active
         // one, and Record records there; a clip is launched, an empty slot only chosen.
         const bool onButtons = sessionButton_ >= 0 && sessionSlot_ < Engine::kClipSlots;
-        if (const auto act = performance_.drawSession(live, onButtons ? -1 : sessionSlot_, chainCursor_, onButtons ? sessionButton_ : -1)) {
+        performance_.setSelections(sessionSel_, {});
+        const auto act = performance_.drawSession(live, onButtons ? -1 : sessionSlot_, chainCursor_, onButtons ? sessionButton_ : -1);
+        if (auto band = performance_.takeClipBand()) {
+            sessionSel_ = std::move(*band);
+            if (!sessionSel_.empty())
+                moveSessionCursor(sessionSel_.front().first, sessionSel_.front().second, live);
+        }
+        if (act) {
             using Kind = PerformanceView::SessionAction::Kind;
             if (act->kind != Kind::Mute && act->kind != Kind::Solo && act->kind != Kind::Stop)
                 sessionButton_ = -1;
@@ -3991,6 +4208,19 @@ void GuiApp::drawPerformance(const LiveState& live) {
                 pressClip(act->channel, act->slot, live);
             } else if (act->kind == Kind::Select) {
                 moveSessionCursor(act->channel, act->slot, live);
+                sessionSel_ = {{act->channel, act->slot}};
+            } else if (act->kind == Kind::SelectToggle) {
+                if (sessionSel_.empty() && sessionSlot_ < Engine::kClipSlots &&
+                    live.clips[static_cast<std::size_t>(sessionChannel_ * Engine::kClipSlots + sessionSlot_)].sources)
+                    sessionSel_ = {{sessionChannel_, sessionSlot_}};  // the clip under the cursor, first
+                const std::pair<int, int> clip{act->channel, act->slot};
+                if (const auto it = std::find(sessionSel_.begin(), sessionSel_.end(), clip); it != sessionSel_.end())
+                    sessionSel_.erase(it);
+                else
+                    sessionSel_.push_back(clip);
+                moveSessionCursor(act->channel, act->slot, live);
+            } else if (act->kind == Kind::LaunchRow) {
+                launchRow(act->slot, live);
             } else if (act->kind == Kind::ClipDrop || act->kind == Kind::StepDrop || act->kind == Kind::ClipInsert) {
                 sessionDrop(*act, live);
             } else if (act->kind == Kind::RepeatsAsk) {
@@ -4003,7 +4233,19 @@ void GuiApp::drawPerformance(const LiveState& live) {
             }
         }
     } else if (songView_) {
-        if (const auto act = performance_.drawSong(live, song_, songCursor_))
+        const bool selHere = songSelRow_ == songCursor_.row && songSelCol_ == songCursor_.col;
+        performance_.setSelections({}, selHere ? songSel_ : std::vector<int>{});
+        const auto act = performance_.drawSong(live, song_, songCursor_);
+        if (auto band = performance_.takeItemBand()) {
+            songSel_ = std::move(*band);
+            songSelRow_ = songCursor_.row;
+            songSelCol_ = songCursor_.col;
+            if (!songSel_.empty()) {
+                songCursor_.item = songSel_.front();
+                songCursor_.editing = true;
+            }
+        }
+        if (act)
             songAction(*act, live);
     } else {
         clicked = performance_.draw(withChannelOneControls(preset_.forChannel(live.channel), preset_.base), live, settings_.key);

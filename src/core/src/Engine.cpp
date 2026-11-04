@@ -3445,7 +3445,7 @@ void Engine::runSong() {
             if (sec.cells[static_cast<std::size_t>(ch)].empty())
                 continue;
             const auto* following = more ? &song_.sections[static_cast<std::size_t>(next)].cells[static_cast<std::size_t>(ch)] : nullptr;
-            if (!following || following->empty() || following->front().bar != 0)
+            if (!following || following->empty() || following->front().bar != 0 || following->front().beat != 0)
                 songStopChannel(ch);
         }
         if (!more) {

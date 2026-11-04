@@ -176,8 +176,11 @@ Json sessionToJson(const Session& session) {
                         i["rest"] = it.beats;  // in beats
                     if (it.after)
                         i["after"] = true;
-                    if (!it.after || &it == &items.front())  // glued first, it still starts on its bar
+                    if (!it.after || &it == &items.front()) {  // glued first, it still starts on its bar
                         i["bar"] = it.bar + 1;
+                        if (it.beat > 0)
+                            i["beat"] = it.beat + 1;
+                    }
                     if (it.repeats != 1)
                         i["repeats"] = it.repeats;
                     if (it.loop)
@@ -440,6 +443,7 @@ Session sessionFromJson(const Json& j) {
                             fail(w, "expected \"clip\" (1 to 8), \"chain\" (\"A\" to \"H\") or \"rest\" (beats)");
                         }
                         it.bar = readInt(v, "bar", 1, kMaxSectionBars, 1, w) - 1;
+                        it.beat = readInt(v, "beat", 1, 64, 1, w) - 1;
                         it.repeats = readInt(v, "repeats", 1, kMaxSongRepeats, 1, w);
                         if (v.contains("loop")) {
                             if (!v["loop"].is_boolean())

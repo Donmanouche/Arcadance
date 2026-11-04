@@ -114,7 +114,9 @@ public:
         // before the step `slot` (kChainSteps: after the last), or on it (onStep: swapped).
         // ClipInsert: a clip (clip) dropped before the step `slot`.
         enum class Kind : std::uint8_t {
-            Launch, Stop, Mute, Solo, Channel, ChainSet, ChainCursor, ChainGo, ChainStop, ChainShow, Select, RepeatsAsk, ClipDrop, StepDrop, ClipInsert
+            Launch, Stop, Mute, Solo, Channel, ChainSet, ChainCursor, ChainGo, ChainStop, ChainShow, Select, RepeatsAsk, ClipDrop, StepDrop, ClipInsert,
+            LaunchRow,  // slot: the row, launched on every channel with a clip there
+            SelectToggle  // a Shift+click: the clip added to the selection, or taken out
         } kind = Kind::Launch;
         int channel = 0, slot = 0;  // ChainSet / ChainCursor / ChainGo: slot is the step; ChainShow: the chain
         int clip = -1, repeats = 1;  // ChainSet
@@ -138,13 +140,15 @@ public:
     struct SongAction {
         // RepeatsAsk / BarsAsk: a double-click to type an item's repeats (a silence's beats) or a
         // section's bars; Rename: a double-click on a section's name; AddItem: value, the bar it goes on + 1 (0: after the last).
-        // DropNew: a clip (item 0-7) or a chain (8 + it) of the channel `col`, dropped on a bar (value: + 1)
-        // of the cell; DropItem: an item (item) of the cell (fromRow, col) dropped on a bar (value: + 1)
-        // of the cell (row, col), moved or (copy) copied; RepeatsTo: an item's repeats set to `value`;
+        // DropNew: a clip (item 0-7) or a chain (8 + it) of the channel `col`, dropped on a beat of the
+        // section (value: + 1) in the cell; DropItem: an item (item) of the cell (fromRow, col) dropped on a
+        // beat (value: + 1) of the cell (row, col), moved or (copy) copied; RepeatsTo: an item's repeats set to `value`;
+        // ItemMove and AddItem: value, a beat of the section (+ 1 for AddItem; 0: after the last);
         // SectionMove: a section (item) moved, or copied, before the section `row` (the count: last).
         enum class Kind : std::uint8_t {
             Cursor, Play, Stop, Loop, LoopSong, AddSection, EditCell, Bars, ItemSelect, ItemMove, ItemContent, ItemRepeats, AddItem, RepeatsAsk, BarsAsk, Rename,
-            DropNew, DropItem, RepeatsTo, SectionMove
+            DropNew, DropItem, RepeatsTo, SectionMove,
+            ItemToggle  // a Shift+click on an item of the editor: added to the selection, or taken out
         } kind = Kind::Cursor;
         int row = 0, col = -1, item = 0, value = 0;
         int fromRow = -1;
@@ -198,6 +202,15 @@ public:
     // The channels' colours (Preset::channelColors, 0xRRGGBB); a channel
     // without one has its default.
     void setChannelColors(const std::array<std::optional<std::uint32_t>, midipad::kChannelCount>& colors) { channelColors_ = colors; }
+    // The clips selected in the session screen (channel, slot), and the items of the song's cell under
+    // the cursor; drawn outlined. A rectangle drawn with the mouse (from an empty slot, or off the
+    // items of the song's editor) selects what it touches: taken once.
+    void setSelections(std::vector<std::pair<int, int>> clips, std::vector<int> items) {
+        selectedClips_ = std::move(clips);
+        selectedItems_ = std::move(items);
+    }
+    std::optional<std::vector<std::pair<int, int>>> takeClipBand() { return std::exchange(clipBand_, std::nullopt); }
+    std::optional<std::vector<int>> takeItemBand() { return std::exchange(itemBand_, std::nullopt); }
     ImU32 channelColor(int channel) const;
     static ImU32 defaultChannelColor(int channel);
     // The chain the session screen shows for each channel, and the chains' names.
@@ -325,7 +338,7 @@ private:
     std::array<std::optional<std::uint32_t>, midipad::kChannelCount> channelColors_;
     std::array<int, midipad::kChannelCount> shownChains_{};
     int songScroll_ = 0, songFirst_ = 0;  // the first section row shown; the first channel shown, in songChannels
-    int songDragBars_ = 0;                // an item being dragged: by how many bars
+    int songDragBars_ = 0;                // an item being dragged: by how many beats
     int songDragAxis_ = 0;                // a drag from an item or a section: 0 not yet chosen, 1 sideways (bars), 2 up or down (repeats, bars)
     int dragNotches_ = 0;                 // a value dragged up or down: notches already sent
     int chipDrag_ = -1, chipStart_ = 0;   // a chain step's repeats dragged: the step, its repeats then
@@ -336,6 +349,14 @@ private:
     int secEdge_ = -1, secEdgeBars_ = 0;
     float secEdgeX_ = 0, secEdgePerBar_ = 1;
     bool sectionGrip_ = false;  // a section card grabbed by its grip: dragged to another place
+    int paletteChannel_ = -1;  // the song screen's palette of a channel's clips and chains, open under its name; -1: none
+    std::vector<std::pair<int, int>> selectedClips_;
+    std::vector<int> selectedItems_;
+    std::optional<std::vector<std::pair<int, int>>> clipBand_;
+    std::optional<std::vector<int>> itemBand_;
+    int band_ = 0;          // a rectangle being drawn: 0 none, 1 in the session's grid, 2 in the song's editor
+    ImVec2 selBandFrom_{};  // where it started
+    bool bandDrawn_ = false;  // it went past a few pixels: not a click
     ChainNames chainNames_;
     // "CHANNEL 3", or "3  PADS" when it has a name.
     std::string channelTitle(int channel) const;

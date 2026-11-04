@@ -27,6 +27,7 @@ struct SongItem {
     bool loop = false;  // after its repeats: on until the next item or the section's end
     bool after = false; // starts where the item before it ends (the first: on its bar)
     int beats = 4;      // a Rest's length, 1 to kMaxRestBeats
+    int beat = 0;       // with `bar`: how many beats into that bar it starts (0 to the bar's beats - 1)
     friend bool operator==(const SongItem&, const SongItem&) = default;
 };
 
@@ -51,7 +52,8 @@ std::vector<double> songItemStarts(const std::vector<SongItem>& items, int beats
     starts.reserve(items.size());
     const double bar = beatsPerBar < 1 ? 1 : beatsPerBar;
     for (std::size_t i = 0; i < items.size(); ++i)
-        starts.push_back(items[i].after && i > 0 ? starts[i - 1] + itemBeats(items[i - 1]) : items[i].bar * bar);
+        starts.push_back(items[i].after && i > 0 ? starts[i - 1] + itemBeats(items[i - 1])
+                                                 : items[i].bar * bar + (items[i].beat < 0 ? 0 : items[i].beat < bar ? items[i].beat : bar - 1));
     return starts;
 }
 
