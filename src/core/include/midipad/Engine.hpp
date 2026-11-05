@@ -38,6 +38,7 @@ struct NoteInterval {
     std::uint8_t note = 0, velocity = 0;
     bool open = false;  // not released yet (being recorded): `end` is the loop's end
     std::uint32_t press = 0;  // the press it came from: a chord's notes share it (0: unknown)
+    std::uint8_t chance = 100;  // percent: how often it plays, each time the loop comes to it
 };
 
 // A note of a note loop: the one starting at sample `start` with pitch `note`.
@@ -438,6 +439,8 @@ public:
     // the notes stay on the scale.
     bool moveLoopNotes(int channel, const std::vector<LoopNoteRef>& notes, int samples, int semitones, bool byDegrees = false);
     bool removeLoopNotes(int channel, const std::vector<LoopNoteRef>& notes);
+    // Notes of a note loop given a velocity (1-127) and a chance (1-100 %), each its own; -1 keeps it.
+    bool setLoopNoteValues(int channel, const std::vector<LoopNoteRef>& notes, const std::vector<int>& velocities, const std::vector<int>& chances);
     // Notes lengthened (or shortened) together by `samples`: each keeps one
     // sample at least, ends inside the loop, and stops where the next note of
     // its pitch starts. Their start and pitch stay. False when none is there.
@@ -508,6 +511,9 @@ public:
     // Turns off every note and CC still on, latched or held, at once: humanized
     // notes not started yet are dropped.
     void releaseAll();
+    // Every note off: those held or latched, the delayed and echoed ones, any still sounding (loops
+    // included), then All Notes Off (CC 123) on every channel. The loops go on.
+    void allNotesOff();
     // releaseAll(), and forgets which controls are held: for a disconnected controller.
     void reset();
 
@@ -808,6 +814,7 @@ private:
         std::uint8_t note = 0, velocity = 0;
         bool on = false;
         std::uint32_t press = 0;  // the press it came from (0: none)
+        std::uint8_t chance = 100;  // percent, on both of a note's events
     };
     // The quantizer: a synced note loop's grid step in samples (0: none), and
     // how far each recent press moved, by press number (slot press % size).

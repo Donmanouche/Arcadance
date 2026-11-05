@@ -47,6 +47,7 @@ struct SessionLoop {
         std::uint8_t note = 0, velocity = 0;
         bool on = false;
         std::uint32_t press = 0;  // the press it came from: a chord's notes share it (0: unknown)
+        std::uint8_t chance = 100;  // percent: how often it plays
     };
     std::vector<Note> notes;
 };

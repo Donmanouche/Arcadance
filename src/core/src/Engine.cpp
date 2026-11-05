@@ -592,6 +592,17 @@ void Engine::runRetriggers() {
     }
 }
 
+void Engine::allNotesOff() {
+    releaseAll();
+    for (int channel = 0; channel < kChannelCount; ++channel) {
+        const auto c = static_cast<std::size_t>(channel);
+        for (int note = 0; note < 128; ++note)
+            if (soundingNotes_[c].test(static_cast<std::size_t>(note)))
+                emit(MidiMessage::noteOff(channel, note), loopSounding_[c].test(static_cast<std::size_t>(note)));
+        sendCc(channel, 123, 0);
+    }
+}
+
 void Engine::releaseAll() {
     for (RetriggerRun& run : retriggerRuns_)  // a retrigger stops with the notes
         run.repeats = 0;
@@ -2205,6 +2216,8 @@ void Engine::playLoopNotes(std::size_t index) {
     const Shaping sh = shaping(channel);  // a Transpose or Velocity axis set on the loop
     const int steps = sh.transposeLoop;
     auto play = [&](const NoteEvent& e, bool start) {
+        if (start && e.chance < 100 && randomBetween(1, 100) > e.chance)
+            return;  // not this time: its end is not sent either (the note is not on)
         if (start) {
             if (on.test(e.note))  // the same note again: the one on stops first
                 sendNow(MidiMessage::noteOff(channel, e.note + shift[e.note]));
@@ -2415,6 +2428,27 @@ bool Engine::removeLoopNotes(int channel, const std::vector<LoopNoteRef>& notes)
     return any;
 }
 
+bool Engine::setLoopNoteValues(int channel, const std::vector<LoopNoteRef>& notes, const std::vector<int>& velocities, const std::vector<int>& chances) {
+    channel = std::clamp(channel, 0, kChannelCount - 1);
+    auto& events = eventsOf(channel);
+    bool any = false;
+    for (std::size_t k = 0; k < notes.size(); ++k) {
+        int on = -1, off = -1;
+        if (!findLoopNote(channel, notes[k].start, notes[k].note, on, off))
+            continue;
+        if (k < velocities.size() && velocities[k] > 0)
+            events[static_cast<std::size_t>(on)].velocity = static_cast<std::uint8_t>(std::clamp(velocities[k], 1, 127));
+        if (k < chances.size() && chances[k] > 0) {
+            const auto chance = static_cast<std::uint8_t>(std::clamp(chances[k], 1, 100));
+            events[static_cast<std::size_t>(on)].chance = chance;
+            if (off >= 0)
+                events[static_cast<std::size_t>(off)].chance = chance;
+        }
+        any = true;
+    }
+    return any;
+}
+
 int Engine::noteLoopIntervals(int channel, NoteInterval* out, int max) const {
     channel = std::clamp(channel, 0, kChannelCount - 1);
     return clipNoteIntervals(channel, currentSlot_[static_cast<std::size_t>(channel)], out, max);
@@ -2435,7 +2469,7 @@ int Engine::clipNoteIntervals(int channel, int slot, NoteInterval* out, int max)
             if (count == max)
                 break;
             open[e.note] = count;
-            out[count++] = {e.at, -1, e.note, e.velocity, false, e.press};
+            out[count++] = {e.at, -1, e.note, e.velocity, false, e.press, e.chance};
         } else if (open[e.note] >= 0) {
             out[open[e.note]].end = std::max(e.at, out[open[e.note]].start + 1);
             open[e.note] = -1;
@@ -3491,7 +3525,7 @@ std::vector<SessionLoop> Engine::sessionLoops() const {
                 l.locked = loop.locked;
                 if (track == kNoteTrack) {
                     for (const NoteEvent& e : noteEvents_[index / kTrackCount])
-                        l.notes.push_back({e.at, e.note, e.velocity, e.on, e.press});
+                        l.notes.push_back({e.at, e.note, e.velocity, e.on, e.press, e.chance});
                 } else {
                     l.axis = axisOfTrack(track);
                     l.stretch = loop.stretch;
@@ -3519,7 +3553,7 @@ void Engine::fillLoop(const SessionLoop& l) {
             events.clear();
             for (const SessionLoop::Note& n : l.notes)
                 if (events.size() < kMaxNoteEvents)
-                    events.push_back({std::clamp(n.at, 0, l.length - 1), static_cast<std::uint8_t>(n.note & 0x7F), n.velocity, n.on, n.press});
+                    events.push_back({std::clamp(n.at, 0, l.length - 1), static_cast<std::uint8_t>(n.note & 0x7F), n.velocity, n.on, n.press, n.chance});
             for (const SessionLoop::Note& n : l.notes)  // new presses never take a number of these
                 pressCount_ = std::max(pressCount_, n.press);
         } else {

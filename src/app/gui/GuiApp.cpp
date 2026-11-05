@@ -747,9 +747,10 @@ private:
     // A value typed after a double-click: a chain step's repeats (0: forever; row: the step, item: its
     // clip), a song item's repeats or a silence's beats (col, row, item), a section's bars (row).
     struct ValueAsk {
-        enum class Kind : std::uint8_t { ChainRepeats, ItemRepeats, RestBeats, SectionBars } kind = Kind::ItemRepeats;
+        enum class Kind : std::uint8_t { ChainRepeats, ItemRepeats, RestBeats, SectionBars, NoteVelocity, NoteChance } kind = Kind::ItemRepeats;
         int col = 0, row = 0, item = 0, value = 0;
     };
+    std::vector<midipad::LoopNoteRef> valueAskNotes_;  // NoteVelocity, NoteChance: the notes set
     std::optional<ValueAsk> valueAsk_;
     bool openValueAsk_ = false;
     void drawValueAsk();
@@ -2475,6 +2476,15 @@ void GuiApp::songAction(const PerformanceView::SongAction& a, const LiveState& l
             undoWhat_.clear();
         }
         break;
+    case K::BeatsTo:
+        if (hasItem && (*items)[static_cast<std::size_t>(a.item)].kind == midipad::SongItem::Kind::Rest) {
+            (*items)[static_cast<std::size_t>(a.item)].beats = std::clamp(a.value, 1, midipad::kMaxRestBeats);
+            undoWhat_ = "Length (silence)";
+            c = {a.row, a.col, a.item, true};
+            songEdited();
+            undoWhat_.clear();
+        }
+        break;
     case K::RepeatsTo:
         if (hasItem) {
             (*items)[static_cast<std::size_t>(a.item)].repeats = std::clamp(a.value, 1, midipad::kMaxSongRepeats);
@@ -3011,12 +3021,8 @@ void GuiApp::openMenu(const PerformanceView::MenuTarget& t, const LiveState& liv
             }
         if (!any)
             add("Nothing recorded on this channel yet", kPick, false);
-        // A silence of a beat, a bar, two or four (its length then set like a clip's repeats).
-        const int bpb = std::max(live.beatsPerBar, 1);
-        for (int k = 0; k < 4; ++k) {
-            const int beats = k == 0 ? 1 : bpb * (k == 1 ? 1 : k == 2 ? 2 : 4);
-            add("Silence   " + PerformanceView::restText(beats, bpb), kPick + 16 + k);
-        }
+        // A silence of a beat: its length is then dragged, wheeled or set with the right stick.
+        add("Silence", kPick + 16);
         break;
     }
     case K::SongItem: {
@@ -3039,12 +3045,7 @@ void GuiApp::openMenu(const PerformanceView::MenuTarget& t, const LiveState& liv
             add("Start right after the one before", kItemGlue, t.axis > 0);
         add("Move a bar left", kItemLeft, start > 1e-6);
         add("Move a bar right", kItemRight, start < midipad::kMaxSectionBars - 1);
-        if (rest) {
-            add("A bar longer", kRestBarMore, it.beats + live.beatsPerBar <= midipad::kMaxRestBeats);
-            add("A bar shorter", kRestBarLess, it.beats > live.beatsPerBar);
-            add("A beat longer", kRestBeatMore, it.beats < midipad::kMaxRestBeats);
-            add("A beat shorter", kRestBeatLess, it.beats > 1);
-        } else {
+        if (!rest) {
             add(it.loop ? "After its repeats: silence" : "After its repeats: loop on", kItemLoop);
             add(it.kind == midipad::SongItem::Kind::Clip ? "Make it a chain" : "Make it a clip", kItemKind);
         }
@@ -3774,6 +3775,8 @@ void GuiApp::drawPerformance(const LiveState& live) {
                 }
             ImGui::EndMenu();
         }
+        if (ImGui::MenuItem("All notes off"))
+            runtime_->allNotesOff();
         if (ImGui::MenuItem("Fullscreen", "F11", (SDL_GetWindowFlags(window_) & SDL_WINDOW_FULLSCREEN) != 0))
             toggleFullscreen();
         if (ImGui::MenuItem("About…"))
@@ -3958,9 +3961,13 @@ void GuiApp::drawPerformance(const LiveState& live) {
             runtime_->transportPlay(songSection);
         ImGui::SetItemTooltip(songView_ ? "Plays the song from the section under the cursor (nothing while something plays)"
                                         : "Plays every channel's clips again, from their start (nothing while something plays)");
-        if (transport("##loopsstop", false))
-            runtime_->transportStop();
-        ImGui::SetItemTooltip("Stops what plays: the song, or every channel's loops, keeping them");
+        if (transport("##loopsstop", false)) {
+            if (loopsPlaying)
+                runtime_->transportStop();
+            else
+                runtime_->allNotesOff();  // pressed again: every note off
+        }
+        ImGui::SetItemTooltip("Stops what plays: the song, or every channel's loops, keeping them; again: every note off");
 
         // The clock: FREE, or its tempo (the wheel turns it, a double-click
         // types it, TAP taps it) and the beats of the bar; a click elsewhere
@@ -4134,17 +4141,6 @@ void GuiApp::drawPerformance(const LiveState& live) {
         }
     }
 
-    // PANIC, in the top right corner.
-    {
-        const float panicW = ImGui::CalcTextSize("PANIC").x + ImGui::GetStyle().FramePadding.x * 2;
-        ImGui::SetCursorScreenPos(ImVec2(winPos.x + winW - px(8) - panicW, winPos.y + px(9)));
-        ImGui::PushStyleColor(ImGuiCol_Text, color(Theme::kRed));
-        ImGui::PushStyleColor(ImGuiCol_Border, color(Theme::kRed));
-        if (ImGui::Button("PANIC"))
-            runtime_->panic();
-        ImGui::PopStyleColor(2);
-        ImGui::SetItemTooltip("Turns off every note and CC still on");
-    }
     ImGui::PopFont();
     ImGui::SetCursorScreenPos(ImVec2(winPos.x + px(8), winPos.y + barH + px(8)));
 
@@ -4250,8 +4246,15 @@ void GuiApp::drawPerformance(const LiveState& live) {
     } else {
         clicked = performance_.draw(withChannelOneControls(preset_.forChannel(live.channel), preset_.base), live, settings_.key);
     }
+    if (auto ask = performance_.takeNoteValueAsk()) {  // a stem double-clicked: its value typed
+        valueAsk_ = ValueAsk{ask->chance ? ValueAsk::Kind::NoteChance : ValueAsk::Kind::NoteVelocity, 0, 0, 0, ask->value};
+        valueAskNotes_ = std::move(ask->notes);
+        openValueAsk_ = true;
+    }
     if (auto edit = performance_.takeNoteEdit()) {  // from the note loop's editor (the last frame's)
-        if (edit->loopLength > 0)
+        if (!edit->velocities.empty() || !edit->chances.empty())
+            runtime_->setLoopNoteValues(std::move(edit->notes), std::move(edit->velocities), std::move(edit->chances));
+        else if (edit->loopLength > 0)
             runtime_->setNoteLoopLength(edit->loopLength);
         else if (edit->remove)
             runtime_->removeLoopNotes(std::move(edit->notes));
@@ -5828,7 +5831,7 @@ void GuiApp::drawValueAsk() {
         return;
     using K = ValueAsk::Kind;
     ValueAsk& v = *valueAsk_;
-    static constexpr const char* kNames[] = {"Repeats", "Repeats", "Beats", "Bars"};
+    static constexpr const char* kNames[] = {"Repeats", "Repeats", "Beats", "Bars", "Velocity", "Chance %"};
     ImGui::TextUnformatted(kNames[static_cast<int>(v.kind)]);
     ImGui::SameLine();
     if (ImGui::IsWindowAppearing())
@@ -5857,6 +5860,16 @@ void GuiApp::drawValueAsk() {
                 songEdited();
             }
             break;
+        case K::NoteVelocity:
+        case K::NoteChance: {
+            const int value = v.kind == K::NoteChance ? std::clamp(v.value, 1, 100) : std::clamp(v.value, 1, 127);
+            std::vector<int> set(valueAskNotes_.size(), value), keep(valueAskNotes_.size(), -1);
+            if (v.kind == K::NoteChance)
+                runtime_->setLoopNoteValues(valueAskNotes_, keep, set);
+            else
+                runtime_->setLoopNoteValues(valueAskNotes_, set, keep);
+            break;
+        }
         case K::SectionBars:
             if (v.row >= 0 && v.row < static_cast<int>(song_.sections.size())) {
                 auto& sec = song_.sections[static_cast<std::size_t>(v.row)];

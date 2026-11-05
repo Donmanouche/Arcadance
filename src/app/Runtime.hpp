@@ -205,7 +205,7 @@ public:
     // Notes still on are turned off on the previous output first.
     void setOutput(std::shared_ptr<MidiOutput> output);
     void setChannel(int channel);
-    void panic();  // also stops the loops, on every channel
+    void allNotesOff();  // Engine::allNotesOff
     void recenterTilt();  // Engine::recenterTilt
     void clearLoop(int source, int axis = -1);  // a LoopSource (one axis, or -1 both), on the active channel
     void toggleLoopLock(int source, int axis = -1);  // see Engine::toggleLoopLock, on the active channel; -1: both axes
@@ -236,6 +236,7 @@ public:
     void moveLoopNotes(std::vector<midipad::LoopNoteRef> notes, int samples, int semitones, bool byDegrees = false);
     void removeLoopNotes(std::vector<midipad::LoopNoteRef> notes);
     void resizeLoopNotes(std::vector<midipad::LoopNoteRef> notes, int samples);
+    void setLoopNoteValues(std::vector<midipad::LoopNoteRef> notes, std::vector<int> velocities, std::vector<int> chances);
     void setNoteLoopLength(int samples);  // Engine::setNoteLoopLength, in the same order
     // Session files: the loops of every channel as the input thread has them
     // (nothing if it does not answer within a second), and loops to play
@@ -358,6 +359,7 @@ private:
         bool byDegrees = false;
         bool resize = false;  // `samples` lengthens them
         int loopLength = 0;   // > 0: the loop's new length instead
+        std::vector<int> velocities{}, chances{};  // not empty: the notes' velocities and chances set instead (-1: kept)
     };
     std::vector<NoteEdit> noteEdits_;  // under sessionMutex_, oldest first
 

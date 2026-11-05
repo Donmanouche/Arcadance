@@ -105,7 +105,10 @@ Json sessionToJson(const Session& session) {
         if (l.source == LoopSource::Notes) {
             Json notes = Json::array();
             for (const SessionLoop::Note& n : l.notes)
-                notes.push_back(Json::array({n.at, n.note, n.velocity, n.on ? 1 : 0, n.press}));
+                if (n.chance < 100)  // [sample, note, velocity, on, press, chance]
+                    notes.push_back(Json::array({n.at, n.note, n.velocity, n.on ? 1 : 0, n.press, n.chance}));
+                else
+                    notes.push_back(Json::array({n.at, n.note, n.velocity, n.on ? 1 : 0, n.press}));
             o["notes"] = std::move(notes);
         } else {
             o["stretch"] = l.stretch;
@@ -266,14 +269,15 @@ Session sessionFromJson(const Json& j) {
                 if (!o.contains("notes") || !o["notes"].is_array() || o["notes"].size() > static_cast<std::size_t>(kMaxNotes))
                     fail(where + ".notes", "expected at most " + std::to_string(kMaxNotes) + " notes");
                 for (const Json& n : o["notes"]) {
-                    if (!n.is_array() || n.size() < 4 || n.size() > 5 || !n[0].is_number_integer() || !n[1].is_number_integer() ||
-                        !n[2].is_number_integer() || !n[3].is_number_integer() || (n.size() == 5 && !n[4].is_number_unsigned()))
-                        fail(where + ".notes", "expected [sample, note, velocity, on, press]");
+                    if (!n.is_array() || n.size() < 4 || n.size() > 6 || !n[0].is_number_integer() || !n[1].is_number_integer() ||
+                        !n[2].is_number_integer() || !n[3].is_number_integer() || (n.size() >= 5 && !n[4].is_number_unsigned()) ||
+                        (n.size() == 6 && (!n[5].is_number_integer() || n[5].get<int>() < 1 || n[5].get<int>() > 100)))
+                        fail(where + ".notes", "expected [sample, note, velocity, on, press, chance]");
                     const int at = n[0].get<int>(), note = n[1].get<int>(), velocity = n[2].get<int>();
                     if (at < 0 || at >= l.length || note < 0 || note > 127 || velocity < 0 || velocity > 127)
                         fail(where + ".notes", "a note out of range");
                     l.notes.push_back({at, static_cast<std::uint8_t>(note), static_cast<std::uint8_t>(velocity), n[3].get<int>() != 0,
-                                       n.size() == 5 ? n[4].get<std::uint32_t>() : 0u});
+                                       n.size() >= 5 ? n[4].get<std::uint32_t>() : 0u, static_cast<std::uint8_t>(n.size() == 6 ? n[5].get<int>() : 100)});
                 }
                 std::stable_sort(l.notes.begin(), l.notes.end(),
                                  [](const SessionLoop::Note& a, const SessionLoop::Note& b) { return a.at < b.at; });

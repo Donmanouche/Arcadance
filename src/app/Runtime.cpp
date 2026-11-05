@@ -164,7 +164,7 @@ void Runtime::setLinkStartStopSync(bool on) {
     startStopSync_.store(on, std::memory_order_relaxed);
 }
 
-void Runtime::panic() { commands_.push({Command::Kind::Panic}); }
+void Runtime::allNotesOff() { commands_.push({Command::Kind::Panic}); }
 void Runtime::recenterTilt() { commands_.push({Command::Kind::RecenterTilt}); }
 
 void Runtime::clearLoop(int source, int axis) { commands_.push({Command::Kind::ClearLoop, source, 0, axis}); }
@@ -271,6 +271,18 @@ void Runtime::resizeLoopNotes(std::vector<midipad::LoopNoteRef> notes, int sampl
     {
         std::lock_guard lock(sessionMutex_);
         noteEdits_.push_back({std::move(notes), false, samples, 0, false, true});
+    }
+    commands_.push({Command::Kind::EditNotes});
+}
+
+void Runtime::setLoopNoteValues(std::vector<midipad::LoopNoteRef> notes, std::vector<int> velocities, std::vector<int> chances) {
+    {
+        std::lock_guard lock(sessionMutex_);
+        NoteEdit edit;
+        edit.notes = std::move(notes);
+        edit.velocities = std::move(velocities);
+        edit.chances = std::move(chances);
+        noteEdits_.push_back(std::move(edit));
     }
     commands_.push({Command::Kind::EditNotes});
 }
@@ -681,6 +693,8 @@ void Runtime::run(std::stop_token stop, Options options, std::shared_ptr<const P
                     const NoteEdit& edit = noteEdits_.front();
                     if (edit.loopLength > 0)
                         engine.setNoteLoopLength(engine.channel(), edit.loopLength);
+                    else if (!edit.velocities.empty() || !edit.chances.empty())
+                        engine.setLoopNoteValues(engine.channel(), edit.notes, edit.velocities, edit.chances);
                     else if (edit.remove)
                         engine.removeLoopNotes(engine.channel(), edit.notes);
                     else if (edit.resize)
@@ -765,9 +779,8 @@ void Runtime::run(std::stop_token stop, Options options, std::shared_ptr<const P
                     linkPlaying = play;
                     linkPlayingKnown = true;
                 }
-            } else {
-                engine.releaseAll();
-                engine.stopLoops();
+            } else {  // Panic
+                engine.allNotesOff();
             }
         }
 

@@ -509,238 +509,789 @@ void dots(ImDrawList* dl, std::initializer_list<const char*> rows, float x, floa
 float tri01(float v) { return std::abs(std::fmod(v, 2.0f) - 1.0f); }  // a triangle wave in [0, 1]
 float hash01(int k) { return static_cast<float>((k * 2654435761u) % 1000u) / 1000.0f; }
 
-// One game in the box a-b, its shapes in `col`.
-void arcade(ImDrawList* dl, int game, ImVec2 a, ImVec2 b, double time, ImU32 col) {
-    const auto t = static_cast<float>(time);
-    const float w = b.x - a.x, h = b.y - a.y, u = h / 40.0f;  // a unit: a fortieth of the height
-    const ImU32 dim = alpha(col, 0.35f), faint = alpha(col, 0.15f);
-    const ImVec2 c((a.x + b.x) * 0.5f, (a.y + b.y) * 0.5f);
-    dl->PushClipRect(a, b, true);
-    switch (game) {
-    case 0: {  // Pac-Man: eating the pellets of a corridor, a ghost behind
-        const float y = c.y, span = w + u * 30;
-        const float x = a.x - u * 12 + std::fmod(t * u * 9.0f, span);
-        dl->AddLine(ImVec2(a.x, y - u * 7), ImVec2(b.x, y - u * 7), faint, u * 0.6f);
-        dl->AddLine(ImVec2(a.x, y + u * 7), ImVec2(b.x, y + u * 7), faint, u * 0.6f);
-        for (float px_ = a.x + u * 3; px_ < b.x; px_ += u * 5)
-            if (px_ > x + u * 2)
-                glowCircle(dl, ImVec2(px_, y), u * (std::fmod(px_ - a.x, u * 25) < u * 4 ? 1.3f : 0.6f), col);
-        const float open = 0.15f + 0.6f * tri01(t * 6.0f);
-        dl->PathLineTo(ImVec2(x, y));
-        dl->PathArcTo(ImVec2(x, y), u * 4.5f, open, 6.2832f - open, 24);
-        dl->PathFillConvex(col);
-        // The ghost: a dome, a waving hem, eyes looking ahead.
-        const float gx = x - u * 16;
+// The games of the idle LOOP boxes. Each is worked out from the time alone,
+// its wave (a few seconds to a minute) simulated again from its start at
+// every frame: no state kept, a few thousand small steps at most.
+struct Arcade {
+    ImDrawList* dl;
+    ImVec2 a, b, c;
+    float t, w, h, u;
+    ImU32 col, dim, faint;
+};
+
+// Pac-Man: eating the pellets of a corridor, a ghost behind; past a power
+// pellet the ghost turns hollow and flees, blinking before it comes back.
+void gamePacMan(const Arcade& g) {
+    auto [dl, a, b, c, t, w, h, u, col, dim, faint] = g;
+    const float y = c.y, span = w + u * 30, speed = u * 9;
+    const float x = a.x - u * 12 + std::fmod(t * speed, span);
+    dl->AddLine(ImVec2(a.x, y - u * 7), ImVec2(b.x, y - u * 7), faint, u * 0.6f);
+    dl->AddLine(ImVec2(a.x, y + u * 7), ImVec2(b.x, y + u * 7), faint, u * 0.6f);
+    auto power = [&](float px_) { return std::fmod(px_ - a.x, u * 25) < u * 4; };
+    float lastPower = -1e9f;
+    for (float px_ = a.x + u * 3; px_ < b.x; px_ += u * 5) {
+        if (px_ > x + u * 2)
+            glowCircle(dl, ImVec2(px_, y), u * (power(px_) ? 1.3f : 0.6f), col);
+        else if (power(px_))
+            lastPower = px_;
+    }
+    const float scared = (x - lastPower) / speed;  // seconds since the last power pellet
+    const bool frightened = scared >= 0 && scared < 3.0f;
+    const float open = 0.15f + 0.6f * tri01(t * 6.0f);
+    dl->PathLineTo(ImVec2(x, y));
+    dl->PathArcTo(ImVec2(x, y), u * 4.5f, open, 6.2832f - open, 24);
+    dl->PathFillConvex(col);
+    // The ghost: behind, or fleeing (hollow, its eyes small, blinking near the end).
+    const float gx = x - u * 16 - (frightened ? std::min(scared, 1.5f) * u * 6 : 0.0f);
+    const bool shown = !frightened || scared < 2.2f || std::fmod(t, 0.25f) < 0.13f;
+    if (shown) {
         dl->PathArcTo(ImVec2(gx, y - u * 0.5f), u * 4.2f, 3.1416f, 6.2832f, 16);
         for (int k = 0; k <= 6; ++k)
             dl->PathLineTo(ImVec2(gx + u * 4.2f - static_cast<float>(k) * u * 1.4f, y + u * 4.2f - (k % 2 ? u * 1.2f : 0) + std::sin(t * 12) * u * 0.3f));
-        dl->PathFillConvex(dim);
-        for (int e = -1; e <= 1; e += 2) {
-            dl->AddCircleFilled(ImVec2(gx + static_cast<float>(e) * u * 1.6f, y - u * 0.8f), u * 1.1f, IM_COL32(255, 255, 255, 230));
-            dl->AddCircleFilled(ImVec2(gx + static_cast<float>(e) * u * 1.6f + u * 0.5f, y - u * 0.7f), u * 0.5f, IM_COL32(20, 20, 30, 255));
+        if (frightened) {
+            dl->PathStroke(col, u * 0.6f, ImDrawFlags_Closed);
+            for (int k = 0; k < 4; ++k)  // its wavy mouth
+                dl->AddLine(ImVec2(gx - u * 2.4f + static_cast<float>(k) * u * 1.2f, y + u * 1.4f + (k % 2 ? u * 0.6f : 0)),
+                            ImVec2(gx - u * 1.2f + static_cast<float>(k) * u * 1.2f, y + u * 1.4f + (k % 2 ? 0 : u * 0.6f)), col, u * 0.4f);
+            for (int e = -1; e <= 1; e += 2)
+                dl->AddCircleFilled(ImVec2(gx + static_cast<float>(e) * u * 1.4f, y - u * 1.0f), u * 0.5f, col);
+        } else {
+            dl->PathFillConvex(dim);
+            for (int e = -1; e <= 1; e += 2) {
+                dl->AddCircleFilled(ImVec2(gx + static_cast<float>(e) * u * 1.6f, y - u * 0.8f), u * 1.1f, IM_COL32(255, 255, 255, 230));
+                dl->AddCircleFilled(ImVec2(gx + static_cast<float>(e) * u * 1.6f + u * 0.5f, y - u * 0.7f), u * 0.5f, IM_COL32(20, 20, 30, 255));
+            }
         }
-        break;
     }
-    case 1: {  // Space Invaders: a LED formation marching, shields, the cannon
-        const bool frame = std::fmod(t, 1.0f) < 0.5f;
-        const float q = u * 0.62f, formation = q * (13 * 4 + 11), room = std::max(0.0f, w - formation - u * 2);
-        const float left = a.x + u + room * tri01(t * 0.12f), top = a.y + u * 3 + std::fmod(std::floor(t * 0.12f), 4.0f) * u;
-        for (int row = 0; row < 3; ++row)
-            for (int k = 0; k < 5; ++k) {
-                const float ix = left + static_cast<float>(k) * q * 13, iy = top + static_cast<float>(row) * q * 11;
+}
+
+// Space Invaders: the cannon fires; a shot stops on the lowest invader of the
+// column it meets, which blows up; bombs wear the shields down; a new wave
+// marches in when the formation is gone.
+void gameInvaders(const Arcade& g) {
+    auto [dl, a, b, c, t, w, h, u, col, dim, faint] = g;
+    constexpr float kWave = 20.0f;
+    const int wave = static_cast<int>(t / kWave);
+    const float tw = std::fmod(t, kWave);
+    const float q = u * 0.62f, formation = q * (13 * 4 + 11), room = std::max(0.0f, w - formation - u * 2);
+    auto left = [&](float s) { return a.x + u + room * tri01(s * 0.12f); };
+    const float top = a.y + u * 3 + std::min(std::floor(tw / 4.0f), 3.0f) * u;
+    auto invaderY = [&](int row) { return top + static_cast<float>(row) * q * 11; };
+    auto cannonX = [&](float s) { return a.x + u * 3 + (w - u * 6) * tri01(s * 0.2f + hash01(wave * 7) * 2); };
+    const float shotY0 = b.y - u * 5, shotSpeed = h * 1.2f;
+    std::array<float, 15> dead;  // when each invader blew up (row * 5 + k); > kWave: alive
+    dead.fill(kWave * 2);
+    struct Shot {
+        float at, x, end, endY;
+    };
+    std::array<Shot, 16> shots{};
+    int shotCount = 0;
+    for (int k = 0; k < 16; ++k) {
+        const float at = 0.8f + static_cast<float>(k) * 1.1f;
+        const float x = cannonX(at);
+        Shot s{at, x, at + shotY0 / shotSpeed, a.y};
+        for (int row = 2; row >= 0; --row) {  // from the lowest row up: the first alive in its way
+            const float y = invaderY(row) + q * 4;
+            const float hit = at + (shotY0 - y) / shotSpeed;
+            const float col0 = left(hit);
+            const int k2 = static_cast<int>(std::floor((x - col0) / (q * 13)));
+            if (k2 < 0 || k2 > 4 || x - col0 - static_cast<float>(k2) * q * 13 > q * 11)
+                continue;
+            if (dead[static_cast<std::size_t>(row * 5 + k2)] < hit)
+                continue;
+            dead[static_cast<std::size_t>(row * 5 + k2)] = hit;
+            s.end = hit;
+            s.endY = y;
+            break;
+        }
+        shots[static_cast<std::size_t>(shotCount++)] = s;
+    }
+    const bool frame = std::fmod(t, 1.0f) < 0.5f;
+    for (int row = 0; row < 3; ++row)
+        for (int k = 0; k < 5; ++k) {
+            const float d = dead[static_cast<std::size_t>(row * 5 + k)];
+            const float ix = left(std::min(tw, d)) + static_cast<float>(k) * q * 13, iy = invaderY(row);
+            if (tw < d) {
                 const ImU32 ic = row == 0 ? col : alpha(col, 0.75f);
                 if (frame)
                     dots(dl, {"..X.....X..", "...X...X...", "..XXXXXXX..", ".XX.XXX.XX.", "XXXXXXXXXXX", "X.XXXXXXX.X", "X.X.....X.X", "...XX.XX..."}, ix, iy, q, ic);
                 else
                     dots(dl, {"..X.....X..", "X..X...X..X", "X.XXXXXXX.X", "XXX.XXX.XXX", "XXXXXXXXXXX", ".XXXXXXXXX.", "..X.....X..", ".X.......X."}, ix, iy, q, ic);
+            } else if (tw < d + 0.3f) {  // blowing up
+                dots(dl, {"X...X...X..", ".X..X..X...", "..X...X....", "XX.......XX", "..X...X....", ".X..X..X...", "X...X...X.."}, ix, iy, q,
+                     alpha(col, 1.0f - (tw - d) / 0.3f));
             }
-        for (int s = 0; s < 3; ++s) {  // shields
-            const float sx = a.x + w * (0.2f + 0.3f * static_cast<float>(s)), sy = b.y - u * 9;
-            dl->AddRectFilled(ImVec2(sx - u * 3, sy), ImVec2(sx + u * 3, sy + u * 3), dim, u * 1.5f, ImDrawFlags_RoundCornersTop);
         }
-        const float cx = a.x + u * 3 + (w - u * 6) * tri01(t * 0.2f);
-        glowRect(dl, ImVec2(cx - u * 2.5f, b.y - u * 3), ImVec2(cx + u * 2.5f, b.y - u * 1.5f), col, u * 0.5f);
-        dl->AddRectFilled(ImVec2(cx - u * 0.6f, b.y - u * 4.5f), ImVec2(cx + u * 0.6f, b.y - u * 3), col, u * 0.3f);
-        const float shot = std::fmod(t * 1.3f, 1.0f);
-        glowLine(dl, ImVec2(cx, b.y - u * 5 - shot * h * 0.8f), ImVec2(cx, b.y - u * 7 - shot * h * 0.8f), col, u * 0.5f);
-        break;
+    // Bombs, from an invader still there, every second and a half; each wears down the shield it falls on.
+    std::array<int, 3> worn{};
+    for (int k = 0; k < 13; ++k) {
+        const float at = 1.3f + static_cast<float>(k) * 1.5f;
+        if (at > tw)
+            break;
+        const int who = static_cast<int>(hash01(wave * 31 + k) * 15);
+        if (dead[static_cast<std::size_t>(who)] < at)
+            continue;
+        const float bx = left(at) + static_cast<float>(who % 5) * q * 13 + q * 5.5f, by0 = invaderY(who / 5) + q * 8;
+        const float fall = (tw - at) * h * 0.45f, by = by0 + fall;
+        int shield = -1;
+        for (int s = 0; s < 3; ++s)
+            if (std::abs(bx - (a.x + w * (0.2f + 0.3f * static_cast<float>(s)))) < u * 3)
+                shield = s;
+        const float stop = shield >= 0 ? b.y - u * 9 : b.y;
+        if (by < stop)
+            glowLine(dl, ImVec2(bx, by - u * 1.5f), ImVec2(bx, by), alpha(col, 0.8f), u * 0.35f);
+        else if (shield >= 0)
+            ++worn[static_cast<std::size_t>(shield)];
     }
-    case 2: {  // Asteroids, in vector lines
+    for (int s = 0; s < 3; ++s) {  // the shields, lower as they wear
+        const float sx = a.x + w * (0.2f + 0.3f * static_cast<float>(s)), sy = b.y - u * 9;
+        const float left2 = std::max(3.0f - static_cast<float>(worn[static_cast<std::size_t>(s)]), 0.0f);
+        if (left2 > 0)
+            dl->AddRectFilled(ImVec2(sx - u * 3, sy + u * (3 - left2)), ImVec2(sx + u * 3, sy + u * 3), dim, u * 1.5f, ImDrawFlags_RoundCornersTop);
+    }
+    const float cx = cannonX(tw);
+    glowRect(dl, ImVec2(cx - u * 2.5f, b.y - u * 3), ImVec2(cx + u * 2.5f, b.y - u * 1.5f), col, u * 0.5f);
+    dl->AddRectFilled(ImVec2(cx - u * 0.6f, b.y - u * 4.5f), ImVec2(cx + u * 0.6f, b.y - u * 3), col, u * 0.3f);
+    for (int k = 0; k < shotCount; ++k) {
+        const Shot& s = shots[static_cast<std::size_t>(k)];
+        if (tw < s.at || tw > s.end)
+            continue;
+        const float sy = shotY0 - (tw - s.at) * shotSpeed;
+        glowLine(dl, ImVec2(s.x, sy), ImVec2(s.x, sy - u * 2), col, u * 0.5f);
+    }
+}
+
+// Asteroids: the ship turns to the nearest rock and fires; a big rock hit
+// splits in two, a small one goes; everything wraps around the screen.
+void gameAsteroids(const Arcade& g) {
+    auto [dl, a, b, c, t, w, h, u, col, dim, faint] = g;
+    constexpr float kWave = 24.0f, kDt = 1.0f / 30.0f;
+    const int wave = static_cast<int>(t / kWave);
+    const float tw = std::fmod(t, kWave);
+    struct Rock {
+        ImVec2 p, v;
+        float r;
+        int seed;
+        bool on;
+    };
+    std::array<Rock, 12> rocks{};
+    int count = 0, round = 0;
+    auto spawn = [&] {  // four big rocks, coming in from the edges
         for (int k = 0; k < 4; ++k) {
-            const float r = u * (k == 0 ? 6.0f : 3.5f), sp = 0.15f + 0.1f * static_cast<float>(k);
-            const ImVec2 rc(a.x + std::fmod(hash01(k * 7) * w + t * u * 3 * (1 + sp), w + r * 2) - r, a.y + std::fmod(hash01(k * 13) * h + t * u * 2 * sp * 4, h + r * 2) - r);
-            ImVec2 pts[9];
-            for (int i = 0; i < 9; ++i) {
-                const float ang = static_cast<float>(i) / 9 * 6.2832f + t * sp;
-                const float rr = r * (0.75f + 0.25f * hash01(k * 31 + i));
-                pts[i] = ImVec2(rc.x + std::cos(ang) * rr, rc.y + std::sin(ang) * rr);
+            const int seed = (wave * 5 + round) * 4 + k;
+            const float ang = hash01(seed * 13) * 6.2832f;
+            const ImVec2 p = k % 2 ? ImVec2(a.x - u * 5, a.y + h * hash01(seed * 11)) : ImVec2(a.x + w * hash01(seed * 7), a.y - u * 5);
+            rocks[static_cast<std::size_t>(k)] = {p, ImVec2(std::cos(ang) * u * 4, std::sin(ang) * u * 4), u * 6, seed, true};
+        }
+        count = 4;
+        ++round;
+    };
+    spawn();
+    struct Bullet {
+        ImVec2 p, v;
+        float life;
+    };
+    std::array<Bullet, 4> bullets{};
+    float ang = 0, nextShot = 0.5f;
+    auto wrap = [&](ImVec2& p) {
+        if (p.x < a.x - u * 6) p.x += w + u * 12;
+        if (p.x > b.x + u * 6) p.x -= w + u * 12;
+        if (p.y < a.y - u * 6) p.y += h + u * 12;
+        if (p.y > b.y + u * 6) p.y -= h + u * 12;
+    };
+    const int steps = static_cast<int>(tw / kDt);
+    for (int s = 0; s < steps; ++s) {
+        const float now = static_cast<float>(s) * kDt;
+        if (std::none_of(rocks.begin(), rocks.begin() + count, [](const Rock& r) { return r.on; }))
+            spawn();
+        int target = -1;
+        float best = 1e9f;
+        for (int k = 0; k < count; ++k)
+            if (rocks[static_cast<std::size_t>(k)].on) {
+                const float dx = rocks[static_cast<std::size_t>(k)].p.x - c.x, dy = rocks[static_cast<std::size_t>(k)].p.y - c.y, d = dx * dx + dy * dy;
+                if (d < best) {
+                    best = d;
+                    target = k;
+                }
             }
-            dl->AddPolyline(pts, 9, alpha(col, 0.18f), u * 1.6f, ImDrawFlags_Closed);
-            dl->AddPolyline(pts, 9, col, u * 0.45f, ImDrawFlags_Closed);
+        if (target >= 0) {  // turns to it, a little at a time
+            const float want = std::atan2(rocks[static_cast<std::size_t>(target)].p.y - c.y, rocks[static_cast<std::size_t>(target)].p.x - c.x);
+            const float diff = std::remainder(want - ang, 6.2832f);
+            ang += std::clamp(diff, -3.0f * kDt, 3.0f * kDt);
+            if (now >= nextShot && std::abs(diff) < 0.2f)
+                for (Bullet& bl : bullets)
+                    if (bl.life <= 0) {
+                        bl = {ImVec2(c.x + std::cos(ang) * u * 3.5f, c.y + std::sin(ang) * u * 3.5f), ImVec2(std::cos(ang) * u * 45, std::sin(ang) * u * 45), 0.9f};
+                        nextShot = now + 1.0f;
+                        break;
+                    }
         }
-        const float ang = t * 0.9f;
-        auto rot = [&](float x, float y) { return ImVec2(c.x + x * std::cos(ang) - y * std::sin(ang), c.y + x * std::sin(ang) + y * std::cos(ang)); };
-        const ImVec2 ship[4] = {rot(u * 3.5f, 0), rot(-u * 2.5f, u * 2.2f), rot(-u * 1.5f, 0), rot(-u * 2.5f, -u * 2.2f)};
-        dl->AddPolyline(ship, 4, alpha(col, 0.2f), u * 1.8f, ImDrawFlags_Closed);
-        dl->AddPolyline(ship, 4, col, u * 0.55f, ImDrawFlags_Closed);
-        for (int k = 0; k < 3; ++k) {
-            const float d = std::fmod(t * u * 40 + static_cast<float>(k) * u * 12, u * 36) + u * 5;
-            glowCircle(dl, rot(d, 0), u * 0.45f, col);
+        for (int k = 0; k < count; ++k) {
+            Rock& r = rocks[static_cast<std::size_t>(k)];
+            r.p.x += r.v.x * kDt;
+            r.p.y += r.v.y * kDt;
+            wrap(r.p);
         }
-        break;
+        for (Bullet& bl : bullets) {
+            if (bl.life <= 0)
+                continue;
+            bl.p.x += bl.v.x * kDt;
+            bl.p.y += bl.v.y * kDt;
+            bl.life -= kDt;
+            for (int k = 0; k < count && bl.life > 0; ++k) {
+                Rock& r = rocks[static_cast<std::size_t>(k)];
+                if (!r.on || (bl.p.x - r.p.x) * (bl.p.x - r.p.x) + (bl.p.y - r.p.y) * (bl.p.y - r.p.y) > r.r * r.r)
+                    continue;
+                bl.life = 0;
+                r.on = false;
+                if (r.r > u * 4 && count + 2 <= static_cast<int>(rocks.size()))  // a big one: two small ones
+                    for (int half = -1; half <= 1; half += 2) {
+                        const float va = std::atan2(r.v.y, r.v.x) + static_cast<float>(half) * 0.9f;
+                        rocks[static_cast<std::size_t>(count++)] = {r.p, ImVec2(std::cos(va) * u * 7, std::sin(va) * u * 7), u * 3.2f, r.seed * 3 + half + 2, true};
+                    }
+            }
+        }
     }
-    case 3: {  // Pong: soft paddles, a ball with its trail, the scores
-        for (float y = a.y + u; y < b.y; y += u * 3)
-            dl->AddRectFilled(ImVec2(c.x - u * 0.3f, y), ImVec2(c.x + u * 0.3f, y + u * 1.5f), faint, u * 0.3f);
-        auto ball = [&](float tt) { return ImVec2(a.x + u * 4 + (w - u * 8) * tri01(tt * 0.45f), a.y + u * 2 + (h - u * 4) * tri01(tt * 0.62f + 0.3f)); };
-        for (int k = 8; k >= 1; --k)
-            dl->AddCircleFilled(ball(t - static_cast<float>(k) * 0.03f), u * 1.1f * (1 - static_cast<float>(k) * 0.08f), alpha(col, 0.08f * static_cast<float>(9 - k)));
-        const ImVec2 bp = ball(t);
-        glowCircle(dl, bp, u * 1.2f, col);
-        const float ph = u * 9, ly = std::clamp(bp.y - ph * 0.5f, a.y, b.y - ph), ry = std::clamp(a.y + (h - ph) * tri01(t * 0.5f + 0.7f), a.y, b.y - ph);
-        glowRect(dl, ImVec2(a.x + u * 1.5f, ly), ImVec2(a.x + u * 2.7f, ly + ph), col, u * 0.6f);
-        glowRect(dl, ImVec2(b.x - u * 2.7f, ry), ImVec2(b.x - u * 1.5f, ry + ph), col, u * 0.6f);
-        text(dl, gBold, u * 6, c.x - u * 5, a.y + u * 2, dim, "3", H::Right);
-        text(dl, gBold, u * 6, c.x + u * 5, a.y + u * 2, dim, "2", H::Left);
-        break;
+    for (int k = 0; k < count; ++k) {
+        const Rock& r = rocks[static_cast<std::size_t>(k)];
+        if (!r.on)
+            continue;
+        ImVec2 pts[9];
+        for (int i = 0; i < 9; ++i) {
+            const float an = static_cast<float>(i) / 9 * 6.2832f + tw * 0.3f;
+            const float rr = r.r * (0.75f + 0.25f * hash01(r.seed * 31 + i));
+            pts[i] = ImVec2(r.p.x + std::cos(an) * rr, r.p.y + std::sin(an) * rr);
+        }
+        dl->AddPolyline(pts, 9, alpha(col, 0.18f), u * 1.6f, ImDrawFlags_Closed);
+        dl->AddPolyline(pts, 9, col, u * 0.45f, ImDrawFlags_Closed);
     }
-    case 4: {  // Breakout: rounded bricks, the ball's trail, the paddle
-        const float bw = (w - u * 4) / 7.0f;
-        for (int row = 0; row < 4; ++row)
-            for (int k = 0; k < 7; ++k)
-                if ((row * 3 + k + static_cast<int>(t * 0.6f)) % 9 != 4)
-                    dl->AddRectFilled(ImVec2(a.x + u * 2 + static_cast<float>(k) * bw + u * 0.4f, a.y + u * 2 + static_cast<float>(row) * u * 3),
-                                      ImVec2(a.x + u * 2 + static_cast<float>(k + 1) * bw - u * 0.4f, a.y + u * 4.2f + static_cast<float>(row) * u * 3),
-                                      alpha(col, 1.0f - 0.18f * static_cast<float>(row)), u * 0.7f);
-        auto ball = [&](float tt) { return ImVec2(a.x + u * 2 + (w - u * 4) * tri01(tt * 0.5f), a.y + u * 15 + (h - u * 20) * tri01(tt * 0.7f)); };
-        for (int k = 6; k >= 1; --k)
-            dl->AddCircleFilled(ball(t - static_cast<float>(k) * 0.03f), u, alpha(col, 0.07f * static_cast<float>(7 - k)));
-        const ImVec2 bp = ball(t);
-        glowCircle(dl, bp, u * 1.1f, col);
-        const float pw = u * 10, pxl = std::clamp(bp.x - pw * 0.5f, a.x, b.x - pw);
-        glowRect(dl, ImVec2(pxl, b.y - u * 2.5f), ImVec2(pxl + pw, b.y - u * 1.2f), col, u * 0.65f);
-        break;
+    auto rot = [&](float x, float y) { return ImVec2(c.x + x * std::cos(ang) - y * std::sin(ang), c.y + x * std::sin(ang) + y * std::cos(ang)); };
+    const ImVec2 ship[4] = {rot(u * 3.5f, 0), rot(-u * 2.5f, u * 2.2f), rot(-u * 1.5f, 0), rot(-u * 2.5f, -u * 2.2f)};
+    dl->AddPolyline(ship, 4, alpha(col, 0.2f), u * 1.8f, ImDrawFlags_Closed);
+    dl->AddPolyline(ship, 4, col, u * 0.55f, ImDrawFlags_Closed);
+    for (const Bullet& bl : bullets)
+        if (bl.life > 0)
+            glowCircle(dl, bl.p, u * 0.45f, col);
+}
+
+// Pong: both paddles chase the ball, as fast as a hand goes; now and then one
+// is too late and the other side scores; the ball goes faster at each hit.
+void gamePong(const Arcade& g) {
+    auto [dl, a, b, c, t, w, h, u, col, dim, faint] = g;
+    constexpr float kMatch = 90.0f, kDt = 1.0f / 30.0f;
+    const int match = static_cast<int>(t / kMatch);
+    const float tm = std::fmod(t, kMatch);
+    for (float y = a.y + u; y < b.y; y += u * 3)
+        dl->AddRectFilled(ImVec2(c.x - u * 0.3f, y), ImVec2(c.x + u * 0.3f, y + u * 1.5f), faint, u * 0.3f);
+    const float ph = u * 9, lx = a.x + u * 2.7f, rx = b.x - u * 2.7f;
+    ImVec2 ball(c.x, c.y), v(u * 22, u * 13);
+    float ly = c.y - ph * 0.5f, ry = c.y - ph * 0.5f, wait = 0.6f;
+    int left = 0, right = 0, rally = 0, hits = 0;
+    std::array<ImVec2, 8> trail{};
+    const int steps = static_cast<int>(tm / kDt);
+    for (int s = 0; s < steps; ++s) {
+        // At each return, about one chance in three that the hand stays still.
+        const bool slowLeft = hits > 0 && hash01(match * 97 + rally * 31 + hits * 2) < 0.3f, slowRight = hits > 0 && hash01(match * 97 + rally * 31 + hits * 2 + 1) < 0.3f;
+        auto chase = [&](float& py, bool coming, bool slow) {
+            const float want = (coming ? ball.y : c.y) - ph * 0.5f, most = (slow ? 0.0f : u * 30) * kDt;
+            py = std::clamp(py + std::clamp(want - py, -most, most), a.y, b.y - ph);
+        };
+        chase(ly, v.x < 0, slowLeft);
+        chase(ry, v.x > 0, slowRight);
+        if (wait > 0) {
+            wait -= kDt;
+            continue;
+        }
+        ball.x += v.x * kDt;
+        ball.y += v.y * kDt;
+        if (ball.y < a.y + u || ball.y > b.y - u) {
+            v.y = -v.y;
+            ball.y = std::clamp(ball.y, a.y + u, b.y - u);
+        }
+        const bool atLeft = v.x < 0 && ball.x <= lx + u, atRight = v.x > 0 && ball.x >= rx - u;
+        if (atLeft || atRight) {
+            const float py = atLeft ? ly : ry;
+            if (ball.y >= py - u && ball.y <= py + ph + u) {  // hit: back, a little faster, steered by where it hit
+                v.x = -v.x * 1.05f;
+                v.y = (ball.y - (py + ph * 0.5f)) / (ph * 0.5f) * u * 18;
+                ++hits;
+            } else if (ball.x < a.x || ball.x > b.x) {  // missed: a point, the ball served again
+                (atLeft ? right : left) += 1;
+                ++rally;
+                hits = 0;
+                ball = c;
+                v = ImVec2((rally % 2 ? -1.0f : 1.0f) * u * 22, (hash01(match * 13 + rally) - 0.5f) * u * 30);
+                wait = 0.6f;
+            }
+        }
+        for (std::size_t k = trail.size() - 1; k > 0; --k)
+            trail[k] = trail[k - 1];
+        trail[0] = ball;
     }
-    case 5: {  // Missile Command: trails falling on the cities, interceptions blooming
-        dl->AddLine(ImVec2(a.x, b.y - u * 2), ImVec2(b.x, b.y - u * 2), dim, u * 0.6f);
-        for (int k = 0; k < 5; ++k)
-            dl->AddRectFilled(ImVec2(a.x + w * (0.1f + 0.2f * static_cast<float>(k)) - u * 2, b.y - u * 4), ImVec2(a.x + w * (0.1f + 0.2f * static_cast<float>(k)) + u * 2, b.y - u * 2),
-                              k == 2 ? col : dim, u * 0.6f, ImDrawFlags_RoundCornersTop);
-        for (int k = 0; k < 3; ++k) {
-            const float life = std::fmod(t * 0.3f + static_cast<float>(k) * 0.33f, 1.0f);
-            const ImVec2 from(a.x + w * hash01(k * 11 + static_cast<int>(t * 0.3f + static_cast<float>(k) * 0.33f)), a.y), to(a.x + w * (0.1f + 0.4f * static_cast<float>(k)), b.y - u * 4);
-            const ImVec2 head(from.x + (to.x - from.x) * life * 0.8f, from.y + (to.y - from.y) * life * 0.8f);
+    if (wait <= 0)
+        for (std::size_t k = 1; k < trail.size(); ++k)
+            if (trail[k].x != 0)
+                dl->AddCircleFilled(trail[k], u * 1.1f * (1 - static_cast<float>(k) * 0.08f), alpha(col, 0.06f * static_cast<float>(trail.size() - k)));
+    glowCircle(dl, ball, u * 1.2f, col);
+    glowRect(dl, ImVec2(a.x + u * 1.5f, ly), ImVec2(lx, ly + ph), col, u * 0.6f);
+    glowRect(dl, ImVec2(rx, ry), ImVec2(b.x - u * 1.5f, ry + ph), col, u * 0.6f);
+    text(dl, gBold, u * 6, c.x - u * 5, a.y + u * 2, dim, std::to_string(left % 10), H::Right);
+    text(dl, gBold, u * 6, c.x + u * 5, a.y + u * 2, dim, std::to_string(right % 10), H::Left);
+}
+
+// Breakout: the ball breaks the bricks it hits and bounces off them; the
+// paddle follows it; the wall comes back when it is gone.
+void gameBreakout(const Arcade& g) {
+    auto [dl, a, b, c, t, w, h, u, col, dim, faint] = g;
+    constexpr float kWave = 45.0f, kDt = 1.0f / 30.0f;
+    const int wave = static_cast<int>(t / kWave);
+    const float tw = std::fmod(t, kWave);
+    const float bw = (w - u * 4) / 7.0f, brickH = u * 2.2f;
+    auto brickRect = [&](int row, int k, ImVec2& p0, ImVec2& p1) {
+        p0 = ImVec2(a.x + u * 2 + static_cast<float>(k) * bw + u * 0.4f, a.y + u * 2 + static_cast<float>(row) * u * 3);
+        p1 = ImVec2(a.x + u * 2 + static_cast<float>(k + 1) * bw - u * 0.4f, p0.y + brickH);
+    };
+    std::array<bool, 28> brick;
+    brick.fill(true);
+    ImVec2 ball(c.x, b.y - u * 6), v((hash01(wave * 5) < 0.5f ? -1.0f : 1.0f) * u * 16, -u * 20);
+    std::array<ImVec2, 6> trail{};
+    int left = 28;
+    const int steps = static_cast<int>(tw / kDt);
+    for (int s = 0; s < steps && left > 0; ++s) {
+        ball.x += v.x * kDt;
+        ball.y += v.y * kDt;
+        if (ball.x < a.x + u || ball.x > b.x - u)
+            v.x = -v.x, ball.x = std::clamp(ball.x, a.x + u, b.x - u);
+        if (ball.y < a.y + u)
+            v.y = std::abs(v.y);
+        if (ball.y > b.y - u * 3.2f && v.y > 0)  // the paddle, always there
+            v.y = -std::abs(v.y), v.x = std::clamp(v.x + (hash01(wave * 17 + s) - 0.5f) * u * 8, -u * 22, u * 22);
+        for (int i = 0; i < 28; ++i) {
+            if (!brick[static_cast<std::size_t>(i)])
+                continue;
+            ImVec2 p0, p1;
+            brickRect(i / 7, i % 7, p0, p1);
+            if (ball.x >= p0.x - u && ball.x <= p1.x + u && ball.y >= p0.y - u && ball.y <= p1.y + u) {
+                brick[static_cast<std::size_t>(i)] = false;
+                --left;
+                v.y = -v.y;
+                break;
+            }
+        }
+        for (std::size_t k = trail.size() - 1; k > 0; --k)
+            trail[k] = trail[k - 1];
+        trail[0] = ball;
+    }
+    for (int i = 0; i < 28; ++i)
+        if (brick[static_cast<std::size_t>(i)]) {
+            ImVec2 p0, p1;
+            brickRect(i / 7, i % 7, p0, p1);
+            dl->AddRectFilled(p0, p1, alpha(col, 1.0f - 0.18f * static_cast<float>(i / 7)), u * 0.7f);
+        }
+    for (std::size_t k = 1; k < trail.size(); ++k)
+        if (trail[k].x != 0)
+            dl->AddCircleFilled(trail[k], u, alpha(col, 0.07f * static_cast<float>(trail.size() - k)));
+    glowCircle(dl, ball, u * 1.1f, col);
+    const float pw = u * 10, pxl = std::clamp(ball.x - pw * 0.5f, a.x, b.x - pw);
+    glowRect(dl, ImVec2(pxl, b.y - u * 2.5f), ImVec2(pxl + pw, b.y - u * 1.2f), col, u * 0.65f);
+}
+
+// Missile Command: missiles fall on the cities; the base fires interceptors
+// that bloom where the missiles are; one gets through now and then, and its
+// city goes dark until the next wave.
+void gameMissiles(const Arcade& g) {
+    auto [dl, a, b, c, t, w, h, u, col, dim, faint] = g;
+    constexpr float kWave = 14.0f, kFall = 5.0f;
+    const int wave = static_cast<int>(t / kWave);
+    const float tw = std::fmod(t, kWave);
+    const float ground = b.y - u * 2;
+    dl->AddLine(ImVec2(a.x, ground), ImVec2(b.x, ground), dim, u * 0.6f);
+    const ImVec2 base(c.x, ground - u * 2);
+    dl->AddTriangleFilled(ImVec2(c.x - u * 3, ground), ImVec2(c.x + u * 3, ground), ImVec2(c.x, ground - u * 3), col);
+    std::array<bool, 4> hit{};
+    auto cityX = [&](int k) { return a.x + w * (k < 2 ? 0.1f + 0.17f * static_cast<float>(k) : 0.56f + 0.17f * static_cast<float>(k - 2)); };
+    for (int k = 0; k < 6; ++k) {
+        const float at = 0.5f + static_cast<float>(k) * 1.4f;
+        if (tw < at)
+            continue;
+        const int city = static_cast<int>(hash01(wave * 19 + k) * 4);
+        const ImVec2 from(a.x + w * hash01(wave * 11 + k), a.y), to(cityX(city), ground - u * 2);
+        const bool through = hash01(wave * 23 + k) < 0.25f;
+        const float cut = through ? 1.0f : 0.55f;  // where it stops: intercepted, or on its city
+        const float life = std::min((tw - at) / kFall, cut);
+        const ImVec2 head(from.x + (to.x - from.x) * life, from.y + (to.y - from.y) * life);
+        if (life < cut) {
             glowLine(dl, from, head, alpha(col, 0.7f), u * 0.35f);
             glowCircle(dl, head, u * 0.5f, IM_COL32(255, 255, 255, 220));
-            if (life > 0.55f) {  // the interception: a bloom, growing then fading
-                const float k2 = (life - 0.55f) / 0.45f;
-                const ImVec2 at(head.x + u * 4, head.y - u * 3);
-                dl->AddCircleFilled(at, u * 5 * std::sin(k2 * 3.1416f), alpha(col, 0.22f * (1 - k2)));
-                dl->AddCircle(at, u * 5 * std::sin(k2 * 3.1416f), alpha(col, 0.8f * (1 - k2)), 24, u * 0.4f);
+        }
+        if (!through) {  // the interceptor, from the base, meeting it
+            const float launch = cut - 0.2f, k2 = (tw - at) / kFall;
+            const ImVec2 meet(from.x + (to.x - from.x) * cut, from.y + (to.y - from.y) * cut);
+            if (k2 >= launch && k2 < cut) {
+                const float f = (k2 - launch) / 0.2f;
+                const ImVec2 p(base.x + (meet.x - base.x) * f, base.y + (meet.y - base.y) * f);
+                dl->AddLine(base, p, faint, u * 0.3f);
+                glowCircle(dl, p, u * 0.4f, col);
+            }
+            const float bloom = (tw - at - cut * kFall) / 1.0f;
+            if (bloom >= 0 && bloom < 1) {
+                dl->AddCircleFilled(meet, u * 5 * std::sin(bloom * 3.1416f), alpha(col, 0.22f * (1 - bloom)));
+                dl->AddCircle(meet, u * 5 * std::sin(bloom * 3.1416f), alpha(col, 0.8f * (1 - bloom)), 24, u * 0.4f);
+            }
+        } else if (tw - at >= kFall) {
+            hit[static_cast<std::size_t>(city)] = true;
+            const float flash = (tw - at - kFall) / 0.6f;
+            if (flash < 1)
+                dl->AddCircleFilled(to, u * 4 * (1 - flash), alpha(IM_COL32(255, 255, 255, 255), 0.5f * (1 - flash)));
+        }
+    }
+    for (int k = 0; k < 4; ++k)
+        dl->AddRectFilled(ImVec2(cityX(k) - u * 2, ground - u * 2), ImVec2(cityX(k) + u * 2, ground), hit[static_cast<std::size_t>(k)] ? faint : col, u * 0.6f,
+                          ImDrawFlags_RoundCornersTop);
+}
+
+// Tetris: each piece falls and lands on the stack, where it leaves it lowest;
+// full lines flash and go; the well is emptied when it fills up.
+void gameTetris(const Arcade& g) {
+    auto [dl, a, b, c, t, w, h, u, col, dim, faint] = g;
+    constexpr int kW = 10, kH = 11;
+    constexpr float kPiece = 1.6f;
+    const float cell = std::min(u * 3.2f, (h - u * 2) / static_cast<float>(kH));
+    const float wx = c.x - cell * kW * 0.5f, wy = b.y - u;
+    dl->AddLine(ImVec2(wx - u, a.y), ImVec2(wx - u, wy), dim, u * 0.5f);
+    dl->AddLine(ImVec2(wx + cell * kW + u, a.y), ImVec2(wx + cell * kW + u, wy), dim, u * 0.5f);
+    // Pieces in their four turns, blocks as (x, y) from their top left.
+    static constexpr int kPieces[5][4][4][2] = {
+        {{{0, 1}, {1, 1}, {2, 1}, {3, 1}}, {{1, 0}, {1, 1}, {1, 2}, {1, 3}}, {{0, 1}, {1, 1}, {2, 1}, {3, 1}}, {{1, 0}, {1, 1}, {1, 2}, {1, 3}}},  // I
+        {{{0, 0}, {1, 0}, {0, 1}, {1, 1}}, {{0, 0}, {1, 0}, {0, 1}, {1, 1}}, {{0, 0}, {1, 0}, {0, 1}, {1, 1}}, {{0, 0}, {1, 0}, {0, 1}, {1, 1}}},  // O
+        {{{0, 0}, {1, 0}, {2, 0}, {1, 1}}, {{1, 0}, {1, 1}, {1, 2}, {0, 1}}, {{1, 0}, {0, 1}, {1, 1}, {2, 1}}, {{0, 0}, {0, 1}, {0, 2}, {1, 1}}},  // T
+        {{{0, 0}, {0, 1}, {0, 2}, {1, 2}}, {{0, 0}, {1, 0}, {2, 0}, {0, 1}}, {{0, 0}, {1, 0}, {1, 1}, {1, 2}}, {{2, 0}, {0, 1}, {1, 1}, {2, 1}}},  // L
+        {{{1, 0}, {2, 0}, {0, 1}, {1, 1}}, {{0, 0}, {0, 1}, {1, 1}, {1, 2}}, {{1, 0}, {2, 0}, {0, 1}, {1, 1}}, {{0, 0}, {0, 1}, {1, 1}, {1, 2}}}};  // S
+    std::array<std::array<bool, kW>, kH> well{};  // row 0 at the bottom
+    auto fits = [&](int p, int r, int x, int y) {  // y: the piece's top row, counted from the bottom
+        for (const auto& bl : kPieces[p][r]) {
+            const int cx = x + bl[0], cy = y - bl[1];
+            if (cx < 0 || cx >= kW || cy < 0 || (cy < kH && well[static_cast<std::size_t>(cy)][static_cast<std::size_t>(cx)]))
+                return false;
+        }
+        return true;
+    };
+    auto landing = [&](int p, int r, int x) {
+        int y = kH + 2;
+        while (fits(p, r, x, y - 1))
+            --y;
+        return y;
+    };
+    const int pieces = static_cast<int>(t / kPiece);
+    const int first = std::max(0, pieces - 60);  // a long enough past to have a stack
+    int lastCleared = -1;
+    std::array<int, 4> clearedRows{};
+    int clearedCount = 0;
+    int curP = 0, curR = 0, curX = 0;
+    for (int i = first; i <= pieces; ++i) {
+        const int p = static_cast<int>(hash01(i * 7 + 3) * 5), r = static_cast<int>(hash01(i * 13 + 1) * 4);
+        int bestX = 0, bestY = 1 << 20;
+        for (int x = -1; x < kW; ++x) {  // where it lands lowest (ties: by chance)
+            if (!fits(p, r, x, kH + 2))
+                continue;
+            const int y = landing(p, r, x);
+            if (y < bestY || (y == bestY && hash01(i * 31 + x) < 0.4f)) {
+                bestY = y;
+                bestX = x;
             }
         }
-        break;
-    }
-    case 6: {  // Tetris: the well, the stack, a piece falling and turning
-        const float cell = u * 3.2f, wx = c.x - cell * 5, wy = b.y - u;
-        dl->AddLine(ImVec2(wx - u, a.y), ImVec2(wx - u, wy), dim, u * 0.5f);
-        dl->AddLine(ImVec2(wx + cell * 10 + u, a.y), ImVec2(wx + cell * 10 + u, wy), dim, u * 0.5f);
-        static constexpr int kStack[4][10] = {{1, 1, 0, 1, 1, 1, 1, 0, 1, 1}, {1, 1, 1, 1, 0, 1, 1, 1, 1, 1}, {0, 1, 1, 0, 0, 0, 1, 1, 0, 1}, {0, 0, 1, 0, 0, 0, 0, 1, 0, 0}};
-        auto block = [&](float x, float y, ImU32 bc) { dl->AddRectFilled(ImVec2(x + u * 0.25f, y + u * 0.25f), ImVec2(x + cell - u * 0.25f, y + cell - u * 0.25f), bc, u * 0.6f); };
-        for (int r = 0; r < 4; ++r)
-            for (int k = 0; k < 10; ++k)
-                if (kStack[r][k])
-                    block(wx + static_cast<float>(k) * cell, wy - static_cast<float>(r + 1) * cell, alpha(col, 0.55f + 0.1f * static_cast<float>(r)));
-        const float fall = std::fmod(t * 0.35f, 1.0f);
-        const int turn = static_cast<int>(t * 0.9f) % 4;
-        static constexpr int kT[4][4][2] = {{{0, 0}, {1, 0}, {2, 0}, {1, 1}}, {{1, -1}, {1, 0}, {1, 1}, {0, 0}}, {{0, 1}, {1, 1}, {2, 1}, {1, 0}}, {{1, -1}, {1, 0}, {1, 1}, {2, 0}}};
-        const float px0 = wx + cell * 4, py0 = a.y + u + fall * (h - cell * 7);
-        for (const auto& bl : kT[turn]) {
-            const float bx = px0 + static_cast<float>(bl[0]) * cell, by = py0 + static_cast<float>(bl[1]) * cell;
-            dl->AddRectFilled(ImVec2(bx - u * 0.4f, by - u * 0.4f), ImVec2(bx + cell + u * 0.4f, by + cell + u * 0.4f), alpha(col, 0.15f), u);
-            block(bx, by, col);
+        if (i == pieces) {
+            curP = p;
+            curR = r;
+            curX = bestX;
+            break;
         }
-        break;
-    }
-    case 7: {  // Galaga: a formation, one diving in a loop, the fighter firing
-        const float sway = std::sin(t * 0.8f) * u * 3;
-        auto bug = [&](ImVec2 p, ImU32 bc, float flap) {
-            dl->AddEllipseFilled(ImVec2(p.x - u * 1.6f, p.y), ImVec2(u * 1.4f, u * (0.7f + 0.5f * flap)), alpha(bc, 0.6f));
-            dl->AddEllipseFilled(ImVec2(p.x + u * 1.6f, p.y), ImVec2(u * 1.4f, u * (0.7f + 0.5f * flap)), alpha(bc, 0.6f));
-            glowCircle(dl, p, u * 1.1f, bc);
-        };
-        const float flap = tri01(t * 4);
-        for (int row = 0; row < 2; ++row)
-            for (int k = 0; k < 6; ++k)
-                if (!(row == 0 && k == 3))
-                    bug(ImVec2(a.x + w * (0.14f + 0.145f * static_cast<float>(k)) + sway, a.y + u * 5 + static_cast<float>(row) * u * 6), row == 0 ? col : dim, flap);
-        const float dive = std::fmod(t * 0.4f, 1.0f) * 6.2832f;
-        bug(ImVec2(c.x + std::sin(dive) * w * 0.32f, a.y + u * 5 + (1 - std::cos(dive)) * h * 0.3f), col, flap);
-        const float fx = c.x + std::sin(t * 0.7f) * w * 0.3f, fy = b.y - u * 4;
-        dl->AddTriangleFilled(ImVec2(fx, fy - u * 3), ImVec2(fx - u * 2.5f, fy + u * 1.5f), ImVec2(fx + u * 2.5f, fy + u * 1.5f), col);
-        dl->AddCircleFilled(ImVec2(fx, fy), u * 3.5f, alpha(col, 0.1f));
-        for (int k = 0; k < 2; ++k) {
-            const float sy = fy - u * 4 - std::fmod(t * h * 1.2f + static_cast<float>(k) * h * 0.5f, h);
-            glowLine(dl, ImVec2(fx, sy), ImVec2(fx, sy - u * 2), IM_COL32(255, 255, 255, 220), u * 0.4f);
+        if (bestY > kH - 2) {  // full: emptied
+            for (auto& row : well)
+                row.fill(false);
+            continue;
         }
-        break;
+        for (const auto& bl : kPieces[p][r])
+            well[static_cast<std::size_t>(bestY - bl[1])][static_cast<std::size_t>(bestX + bl[0])] = true;
+        clearedCount = 0;
+        for (int y = kH - 1; y >= 0; --y)
+            if (std::all_of(well[static_cast<std::size_t>(y)].begin(), well[static_cast<std::size_t>(y)].end(), [](bool on) { return on; })) {
+                if (clearedCount < 4)
+                    clearedRows[static_cast<std::size_t>(clearedCount++)] = y;
+                for (int y2 = y; y2 < kH - 1; ++y2)
+                    well[static_cast<std::size_t>(y2)] = well[static_cast<std::size_t>(y2 + 1)];
+                well[kH - 1].fill(false);
+            }
+        if (clearedCount > 0)
+            lastCleared = i;
     }
-    case 8: {  // Donkey Kong: slanted girders, ladders, barrels rolling down
-        const int floors = 3;
-        auto girderY = [&](int f, float x) {
-            const float y0 = a.y + u * 9 + static_cast<float>(f) * (h - u * 12) / static_cast<float>(floors - 1);
-            const float tilt = (f % 2 ? 1.0f : -1.0f) * u * 2;
-            return y0 + tilt * ((x - a.x) / w - 0.5f);
-        };
-        for (int f = 0; f < floors; ++f) {
-            const ImVec2 l(a.x + (f % 2 ? u * 4 : 0), girderY(f, a.x)), r(b.x - (f % 2 ? 0 : u * 4), girderY(f, b.x));
-            glowLine(dl, l, r, dim, u * 1.2f);
-            for (float x = l.x + u * 2; x < r.x; x += u * 4)
-                dl->AddCircleFilled(ImVec2(x, girderY(f, x)), u * 0.35f, col);
-            if (f < floors - 1) {
-                const float lx = f % 2 ? a.x + w * 0.2f : a.x + w * 0.75f;
-                for (float yy = girderY(f, lx) + u; yy < girderY(f + 1, lx) - u; yy += u * 1.5f)
-                    dl->AddLine(ImVec2(lx - u * 1.2f, yy), ImVec2(lx + u * 1.2f, yy), faint, u * 0.4f);
+    auto block = [&](float x, float y, ImU32 bc) { dl->AddRectFilled(ImVec2(x + u * 0.25f, y + u * 0.25f), ImVec2(x + cell - u * 0.25f, y + cell - u * 0.25f), bc, u * 0.6f); };
+    for (int y = 0; y < kH; ++y)
+        for (int x = 0; x < kW; ++x)
+            if (well[static_cast<std::size_t>(y)][static_cast<std::size_t>(x)])
+                block(wx + static_cast<float>(x) * cell, wy - static_cast<float>(y + 1) * cell, alpha(col, 0.55f + 0.04f * static_cast<float>(y % 4)));
+    const float into = std::fmod(t, kPiece) / kPiece;
+    if (lastCleared == pieces - 1 && into < 0.25f)  // the lines just made: a flash
+        for (int k = 0; k < clearedCount; ++k)
+            dl->AddRectFilled(ImVec2(wx, wy - static_cast<float>(clearedRows[static_cast<std::size_t>(k)] + 1) * cell), ImVec2(wx + cell * kW, wy - static_cast<float>(clearedRows[static_cast<std::size_t>(k)]) * cell),
+                              alpha(IM_COL32(255, 255, 255, 255), 0.7f * (1 - into / 0.25f)), u * 0.6f);
+    // The piece falling: from the top to where it lands, then resting a moment.
+    const int land = landing(curP, curR, curX);
+    const float fallTop = static_cast<float>(kH + 1), y = fallTop - (fallTop - static_cast<float>(land)) * std::min(into / 0.8f, 1.0f);
+    for (const auto& bl : kPieces[curP][curR]) {
+        const float bx = wx + static_cast<float>(curX + bl[0]) * cell, by = wy - (y - static_cast<float>(bl[1]) + 1) * cell;
+        if (by < a.y - cell)
+            continue;
+        dl->AddRectFilled(ImVec2(bx - u * 0.4f, by - u * 0.4f), ImVec2(bx + cell + u * 0.4f, by + cell + u * 0.4f), alpha(col, 0.15f), u);
+        block(bx, by, col);
+    }
+}
+
+// Galaga: the fighter fires at the bug above it, which blows up; one bug
+// dives in a loop and goes back to its place; a new formation when all are gone.
+void gameGalaga(const Arcade& g) {
+    auto [dl, a, b, c, t, w, h, u, col, dim, faint] = g;
+    constexpr float kWave = 18.0f;
+    const int wave = static_cast<int>(t / kWave);
+    const float tw = std::fmod(t, kWave);
+    auto bug = [&](ImVec2 p, ImU32 bc, float flap) {
+        dl->AddEllipseFilled(ImVec2(p.x - u * 1.6f, p.y), ImVec2(u * 1.4f, u * (0.7f + 0.5f * flap)), alpha(bc, 0.6f));
+        dl->AddEllipseFilled(ImVec2(p.x + u * 1.6f, p.y), ImVec2(u * 1.4f, u * (0.7f + 0.5f * flap)), alpha(bc, 0.6f));
+        glowCircle(dl, p, u * 1.1f, bc);
+    };
+    auto slot = [&](int i, float s) {
+        return ImVec2(a.x + w * (0.14f + 0.145f * static_cast<float>(i % 6)) + std::sin(s * 0.8f) * u * 3, a.y + u * 5 + static_cast<float>(i / 6) * u * 6);
+    };
+    auto fighterX = [&](float s) { return c.x + std::sin(s * 0.7f + static_cast<float>(wave)) * w * 0.3f; };
+    const int diver = static_cast<int>(hash01(wave * 3) * 12);
+    auto diving = [&](float s, ImVec2& p) {  // the diver, out of its place for the first half of each 5 s
+        const float d = std::fmod(s, 5.0f) / 2.5f;
+        if (d >= 1)
+            return false;
+        const ImVec2 home = slot(diver, s), turn = ImVec2(c.x + std::sin(d * 6.2832f) * w * 0.32f, a.y + u * 5 + (1 - std::cos(d * 6.2832f)) * h * 0.3f);
+        const float back = std::sin(d * 3.1416f);
+        p = ImVec2(home.x + (turn.x - home.x) * back, home.y + (turn.y - home.y) * back);
+        return true;
+    };
+    std::array<float, 12> dead;
+    dead.fill(kWave * 2);
+    const float fy = b.y - u * 4, speed = h * 1.1f;
+    struct Shot {
+        float at, x, end;
+    };
+    std::array<Shot, 18> shots{};
+    for (int k = 0; k < 18; ++k) {
+        const float at = 0.6f + static_cast<float>(k) * 0.9f, x = fighterX(at);
+        Shot s{at, x, at + h / speed};
+        float bestHit = 1e9f;
+        int who = -1;
+        for (int i = 0; i < 12; ++i) {  // the first bug in its way
+            ImVec2 p = slot(i, at);
+            if (i == diver)
+                diving(at, p);
+            const float hit = at + (fy - u * 4 - p.y) / speed;
+            if (dead[static_cast<std::size_t>(i)] < hit || std::abs(p.x - x) > u * 2 || hit >= bestHit)
+                continue;
+            bestHit = hit;
+            who = i;
+        }
+        if (who >= 0) {
+            dead[static_cast<std::size_t>(who)] = bestHit;
+            s.end = bestHit;
+        }
+        shots[static_cast<std::size_t>(k)] = s;
+    }
+    const float flap = tri01(t * 4);
+    for (int i = 0; i < 12; ++i) {
+        ImVec2 p = slot(i, tw);
+        if (i == diver)
+            diving(tw, p);
+        const float d = dead[static_cast<std::size_t>(i)];
+        if (tw < d)
+            bug(p, i / 6 == 0 || i == diver ? col : dim, flap);
+        else if (tw < d + 0.35f)
+            for (int k = 0; k < 8; ++k) {
+                const float an = static_cast<float>(k) * 0.785f, r = u * (1 + 8 * (tw - d));
+                dl->AddCircleFilled(ImVec2(p.x + std::cos(an) * r, p.y + std::sin(an) * r), u * 0.4f, alpha(col, 1 - (tw - d) / 0.35f));
+            }
+    }
+    const float fx = fighterX(tw);
+    dl->AddTriangleFilled(ImVec2(fx, fy - u * 3), ImVec2(fx - u * 2.5f, fy + u * 1.5f), ImVec2(fx + u * 2.5f, fy + u * 1.5f), col);
+    dl->AddCircleFilled(ImVec2(fx, fy), u * 3.5f, alpha(col, 0.1f));
+    for (const Shot& s : shots)
+        if (tw >= s.at && tw < s.end) {
+            const float sy = fy - u * 4 - (tw - s.at) * speed;
+            glowLine(dl, ImVec2(s.x, sy), ImVec2(s.x, sy - u * 2), IM_COL32(255, 255, 255, 220), u * 0.4f);
+        }
+}
+
+// Donkey Kong: barrels roll down the girders; a little man walks up from the
+// bottom, climbs the ladders and jumps over the barrels on his way to Kong.
+void gameKong(const Arcade& g) {
+    auto [dl, a, b, c, t, w, h, u, col, dim, faint] = g;
+    const int floors = 3;
+    auto girderY = [&](int f, float x) {
+        const float y0 = a.y + u * 9 + static_cast<float>(f) * (h - u * 12) / static_cast<float>(floors - 1);
+        const float tilt = (f % 2 ? 1.0f : -1.0f) * u * 2;
+        return y0 + tilt * ((x - a.x) / w - 0.5f);
+    };
+    auto ladderX = [&](int f) { return f % 2 ? a.x + w * 0.2f : a.x + w * 0.75f; };  // between floor f and f + 1
+    for (int f = 0; f < floors; ++f) {
+        const ImVec2 l(a.x + (f % 2 ? u * 4 : 0), girderY(f, a.x)), r(b.x - (f % 2 ? 0 : u * 4), girderY(f, b.x));
+        glowLine(dl, l, r, dim, u * 1.2f);
+        for (float x = l.x + u * 2; x < r.x; x += u * 4)
+            dl->AddCircleFilled(ImVec2(x, girderY(f, x)), u * 0.35f, col);
+        if (f < floors - 1) {
+            const float lx = ladderX(f);
+            for (float yy = girderY(f, lx) + u; yy < girderY(f + 1, lx) - u; yy += u * 1.5f)
+                dl->AddLine(ImVec2(lx - u * 1.2f, yy), ImVec2(lx + u * 1.2f, yy), faint, u * 0.4f);
+        }
+    }
+    auto barrelX = [&](int f, float s) {
+        const float dir = f % 2 ? -1.0f : 1.0f, prog = std::fmod(s * 0.25f + static_cast<float>(f) * 0.33f, 1.0f);
+        return std::pair{dir > 0 ? a.x + u * 3 + prog * (w - u * 6) : b.x - u * 3 - prog * (w - u * 6), prog};
+    };
+    for (int f = 0; f < floors; ++f) {  // a barrel per floor, rolling the floor's way
+        const auto [x, prog] = barrelX(f, t);
+        const float dir = f % 2 ? -1.0f : 1.0f;
+        const ImVec2 bc(x, girderY(f, x) - u * 2.2f);
+        glowCircle(dl, bc, u * 1.8f, col);
+        const float ang = prog * 25.0f * dir;
+        dl->AddLine(ImVec2(bc.x - std::cos(ang) * u * 1.4f, bc.y - std::sin(ang) * u * 1.4f), ImVec2(bc.x + std::cos(ang) * u * 1.4f, bc.y + std::sin(ang) * u * 1.4f),
+                    IM_COL32(20, 20, 30, 200), u * 0.5f);
+    }
+    dl->AddRectFilled(ImVec2(a.x + u * 2, girderY(0, a.x) - u * 7), ImVec2(a.x + u * 7, girderY(0, a.x) - u * 1.5f), dim, u * 1.2f);  // Kong, at the top
+    // The little man: along floor 2, up to floor 1, along it, up to floor 0, to Kong; then again.
+    const float walk = u * 6, climb = u * 4;
+    struct Leg {
+        int floor;
+        float x0, x1;
+        bool up;
+    };
+    const Leg legs[5] = {{2, b.x - u * 6, ladderX(1), false}, {1, ladderX(1), ladderX(1), true}, {1, ladderX(1), ladderX(0), false}, {0, ladderX(0), ladderX(0), true},
+                         {0, ladderX(0), a.x + u * 10, false}};
+    float total = 0;
+    float length[5];
+    for (int k = 0; k < 5; ++k) {
+        length[k] = legs[k].up ? (girderY(legs[k].floor + 1, legs[k].x0) - girderY(legs[k].floor, legs[k].x0)) / climb : std::abs(legs[k].x1 - legs[k].x0) / walk;
+        total += length[k];
+    }
+    float s = std::fmod(t, total + 1.0f);
+    int leg = 0;
+    while (leg < 4 && s > length[leg]) {
+        s -= length[leg];
+        ++leg;
+    }
+    const Leg& l = legs[leg];
+    const float f = std::clamp(s / std::max(length[leg], 0.01f), 0.0f, 1.0f);
+    float mx, my;
+    if (l.up) {
+        mx = l.x0;
+        my = girderY(l.floor + 1, mx) + (girderY(l.floor, mx) - girderY(l.floor + 1, mx)) * f;
+    } else {
+        mx = l.x0 + (l.x1 - l.x0) * f;
+        my = girderY(l.floor, mx);
+        const float bx = barrelX(l.floor, t).first;  // a barrel coming: a jump over it
+        if (std::abs(bx - mx) < u * 5)
+            my -= u * 4 * std::cos((bx - mx) / (u * 5) * 1.5708f);
+    }
+    const float step = std::fmod(t * 6, 2.0f) < 1 ? 1.0f : -1.0f;
+    dl->AddCircleFilled(ImVec2(mx, my - u * 4.6f), u * 1.0f, col);  // head
+    dl->AddRectFilled(ImVec2(mx - u * 1.0f, my - u * 3.6f), ImVec2(mx + u * 1.0f, my - u * 1.6f), col, u * 0.4f);  // body
+    dl->AddLine(ImVec2(mx, my - u * 1.6f), ImVec2(mx - u * 0.8f * step, my), col, u * 0.5f);  // legs
+    dl->AddLine(ImVec2(mx, my - u * 1.6f), ImVec2(mx + u * 0.8f * step, my), col, u * 0.5f);
+}
+
+// Q*bert: he hops around the pyramid, lighting the tops he lands on; when all
+// are lit they flash and go dark; a snake, a hollow ball, follows his trail.
+void gameQbert(const Arcade& g) {
+    auto [dl, a, b, c, t, w, h, u, col, dim, faint] = g;
+    const float s = u * 3.6f;  // half a cube's width
+    const ImVec2 top(c.x, a.y + u * 6);
+    auto cubeAt = [&](int r, int k) { return ImVec2(top.x + (static_cast<float>(k) - static_cast<float>(r) * 0.5f) * s * 2, top.y + static_cast<float>(r) * s * 1.5f); };
+    constexpr float kHop = 0.7f;
+    const int hops = static_cast<int>(t / kHop);
+    // His path from the level's start: random hops that stay on the pyramid.
+    std::array<std::array<int, 2>, 64> path{};
+    std::array<bool, 10> lit{};
+    int count = 0, levelStart = std::max(0, hops - 60), litCount = 0, done = -1;
+    int r = 0, k = 0;
+    for (int i = levelStart; i <= hops; ++i) {
+        if (litCount == 10) {  // all lit: they flash, then a new level
+            if (done < 0)
+                done = i;
+            if (i - done >= 2) {
+                lit.fill(false);
+                litCount = 0;
+                done = -1;
+                r = k = 0;
+                count = 0;
+            }
+        } else {
+            const float pick = hash01(i * 11 + 5);
+            const int moves[4][2] = {{1, 0}, {1, 1}, {-1, -1}, {-1, 0}};
+            for (int m = 0; m < 4; ++m) {
+                const auto& mv = moves[(static_cast<int>(pick * 4) + m) % 4];
+                const int r2 = r + mv[0], k2 = k + mv[1];
+                if (r2 >= 0 && r2 < 4 && k2 >= 0 && k2 <= r2) {
+                    r = r2;
+                    k = k2;
+                    break;
+                }
             }
         }
-        for (int k = 0; k < 3; ++k) {  // a barrel per floor, rolling the floor's way
-            const int f = k;
-            const float dir = f % 2 ? -1.0f : 1.0f;
-            const float prog = std::fmod(t * 0.25f + static_cast<float>(k) * 0.33f, 1.0f);
-            const float x = dir > 0 ? a.x + u * 3 + prog * (w - u * 6) : b.x - u * 3 - prog * (w - u * 6);
-            const ImVec2 bc(x, girderY(f, x) - u * 2.2f);
-            glowCircle(dl, bc, u * 1.8f, col);
-            const float ang = prog * 25.0f * dir;
-            dl->AddLine(ImVec2(bc.x - std::cos(ang) * u * 1.4f, bc.y - std::sin(ang) * u * 1.4f), ImVec2(bc.x + std::cos(ang) * u * 1.4f, bc.y + std::sin(ang) * u * 1.4f),
-                        IM_COL32(20, 20, 30, 200), u * 0.5f);
+        const int cube = r * (r + 1) / 2 + k;
+        if (!lit[static_cast<std::size_t>(cube)]) {
+            lit[static_cast<std::size_t>(cube)] = true;
+            ++litCount;
         }
-        dl->AddRectFilled(ImVec2(a.x + u * 2, girderY(0, a.x) - u * 7), ImVec2(a.x + u * 7, girderY(0, a.x) - u * 1.5f), dim, u * 1.2f);  // Kong, at the top
-        break;
+        path[static_cast<std::size_t>(count++ % 64)] = {r, k};
     }
-    default: {  // Q*bert: a pyramid of cubes, a ball hopping, the tops lighting up
-        const float s = u * 3.6f;  // half a cube's width
-        const ImVec2 top(c.x, a.y + u * 6);
-        auto cubeAt = [&](int r, int k) { return ImVec2(top.x + (static_cast<float>(k) - static_cast<float>(r) * 0.5f) * s * 2, top.y + static_cast<float>(r) * s * 1.5f); };
-        const int path[6][2] = {{0, 0}, {1, 1}, {2, 1}, {3, 2}, {2, 2}, {1, 0}};
-        const float hop = t * 1.4f;
-        const int at = static_cast<int>(hop) % 6, next = (at + 1) % 6;
-        for (int r = 0; r < 4; ++r)
-            for (int k = 0; k <= r; ++k) {
-                const ImVec2 p = cubeAt(r, k);
-                bool lit = false;
-                for (int q = 0; q <= at; ++q)
-                    lit = lit || (path[q][0] == r && path[q][1] == k);
-                const ImVec2 t0(p.x, p.y - s * 0.5f), t1(p.x + s, p.y), t2(p.x, p.y + s * 0.5f), t3(p.x - s, p.y);
-                dl->AddQuadFilled(t0, t1, t2, t3, lit ? col : alpha(col, 0.3f));
-                dl->AddQuadFilled(t3, t2, ImVec2(p.x, p.y + s * 1.6f), ImVec2(p.x - s, p.y + s * 1.1f), alpha(col, 0.18f));
-                dl->AddQuadFilled(t2, t1, ImVec2(p.x + s, p.y + s * 1.1f), ImVec2(p.x, p.y + s * 1.6f), alpha(col, 0.1f));
-            }
-        const ImVec2 p0 = cubeAt(path[at][0], path[at][1]), p1 = cubeAt(path[next][0], path[next][1]);
-        const float f = hop - std::floor(hop);
-        const ImVec2 ball(p0.x + (p1.x - p0.x) * f, p0.y + (p1.y - p0.y) * f - s * 0.9f - std::sin(f * 3.1416f) * u * 4);
-        glowCircle(dl, ball, u * 1.6f, IM_COL32(255, 255, 255, 235));
-        break;
-    }
+    const bool flash = litCount == 10 && std::fmod(t, 0.3f) < 0.15f;
+    for (int rr = 0; rr < 4; ++rr)
+        for (int kk = 0; kk <= rr; ++kk) {
+            const ImVec2 p = cubeAt(rr, kk);
+            const bool on = lit[static_cast<std::size_t>(rr * (rr + 1) / 2 + kk)] && !flash;
+            const ImVec2 t0(p.x, p.y - s * 0.5f), t1(p.x + s, p.y), t2(p.x, p.y + s * 0.5f), t3(p.x - s, p.y);
+            dl->AddQuadFilled(t0, t1, t2, t3, on ? col : alpha(col, 0.3f));
+            dl->AddQuadFilled(t3, t2, ImVec2(p.x, p.y + s * 1.6f), ImVec2(p.x - s, p.y + s * 1.1f), alpha(col, 0.18f));
+            dl->AddQuadFilled(t2, t1, ImVec2(p.x + s, p.y + s * 1.1f), ImVec2(p.x, p.y + s * 1.6f), alpha(col, 0.1f));
+        }
+    const float f = std::fmod(t, kHop) / kHop;
+    auto hopper = [&](int back, float lift) {  // `back` hops behind him on his path
+        if (count - 1 - back < 1)
+            return std::optional<ImVec2>{};
+        const auto& p0 = path[static_cast<std::size_t>((count - 2 - back) % 64)];
+        const auto& p1 = path[static_cast<std::size_t>((count - 1 - back) % 64)];
+        const ImVec2 q0 = cubeAt(p0[0], p0[1]), q1 = cubeAt(p1[0], p1[1]);
+        return std::optional<ImVec2>{ImVec2(q0.x + (q1.x - q0.x) * f, q0.y + (q1.y - q0.y) * f - s * 0.9f - std::sin(f * 3.1416f) * u * lift)};
+    };
+    if (const auto snake = hopper(3, 3))  // the snake: hollow, its eyes on
+        if (litCount < 10) {
+            dl->AddCircle(*snake, u * 1.5f, col, 16, u * 0.5f);
+            dl->AddCircleFilled(ImVec2(snake->x - u * 0.5f, snake->y - u * 0.3f), u * 0.3f, col);
+            dl->AddCircleFilled(ImVec2(snake->x + u * 0.5f, snake->y - u * 0.3f), u * 0.3f, col);
+        }
+    if (const auto him = hopper(0, 4))
+        glowCircle(dl, *him, u * 1.6f, IM_COL32(255, 255, 255, 235));
+}
+
+// One game in the box a-b, its shapes in `col`.
+void arcade(ImDrawList* dl, int game, ImVec2 a, ImVec2 b, double time, ImU32 col) {
+    const float w = b.x - a.x, h = b.y - a.y, u = h / 40.0f;  // a unit: a fortieth of the height
+    const Arcade g{dl, a, b, ImVec2((a.x + b.x) * 0.5f, (a.y + b.y) * 0.5f), static_cast<float>(std::fmod(time, 3600.0)), w, h, u, col, alpha(col, 0.35f), alpha(col, 0.15f)};
+    dl->PushClipRect(a, b, true);
+    switch (game) {
+    case 0: gamePacMan(g); break;
+    case 1: gameInvaders(g); break;
+    case 2: gameAsteroids(g); break;
+    case 3: gamePong(g); break;
+    case 4: gameBreakout(g); break;
+    case 5: gameMissiles(g); break;
+    case 6: gameTetris(g); break;
+    case 7: gameGalaga(g); break;
+    case 8: gameKong(g); break;
+    default: gameQbert(g); break;
     }
     dl->PopClipRect();
 }
@@ -1342,6 +1893,9 @@ void PerformanceView::drawPianoRoll(const Mapping& m, const LiveState& live, flo
         rollGx0_ = gx0;
         rollAx1_ = ax1;
         editorClip_ = clip;
+        rollShown_ = shownLength;
+        rollFrom_ = viewFrom;
+        rollZoom_ = zoom;
     }
 
     // The range: the notes in view, two octaves at least, eased.
@@ -1503,6 +2057,9 @@ void PerformanceView::drawPianoRoll(const Mapping& m, const LiveState& live, flo
             const ImU32 fill = alpha(cut ? IM_COL32(0xFF, 0x5C, 0x5C, 255) : chosen ? kMauve : IM_COL32_WHITE,
                                      (cut ? 0.75f : 0.1f) + (cut ? 0.25f : 0.9f) * static_cast<float>(n.velocity) / 127.0f);
             dl->AddRectFilled(na, ImVec2(noteBarEnd(na.x, nb.x, true), nb.y), dragged ? alpha(IM_COL32_WHITE, 0.12f) : fill, px(1));
+            if (n.chance < 100 && !dragged)  // played by chance: dashed
+                for (float gx = na.x + px(4); gx < noteBarEnd(na.x, nb.x, true) - px(1); gx += px(6))
+                    dl->AddRectFilled(ImVec2(gx, na.y), ImVec2(std::min(gx + px(2), nb.x), nb.y), IM_COL32(0x16, 0x18, 0x1B, 230));
             if (!dragged && chosen)
                 dl->AddRect(ImVec2(na.x - 1, na.y - 1), ImVec2(nb.x + 1, nb.y + 1), T::kCyan, px(1), px(1.5f));
         }
@@ -2661,6 +3218,36 @@ static int snappedBeat(float x, float x0, float barW, int beatsPerBar, int bars)
     return std::clamp(beat, 0, std::max(bars * beatsPerBar - unit, 0));
 }
 
+// The beat nearest `x` on such a timeline, on the same grid: where a right edge dragged there ends.
+static int snappedEnd(float x, float x0, float barW, int beatsPerBar) {
+    beatsPerBar = std::max(beatsPerBar, 1);
+    const float beatW = barW / static_cast<float>(beatsPerBar);
+    const int unit = ImGui::GetIO().KeyShift || beatW >= px(5) ? 1 : beatsPerBar;
+    return static_cast<int>(std::lround((x - x0) / (beatW * static_cast<float>(unit)))) * unit;
+}
+
+// An item's right edge dragged to `x` (from `x0`, bars `barW` wide; it starts `start` bars in):
+// a silence's beats (BeatsTo), or a clip's or chain's repeats (RepeatsTo) on its length `once` (in bars).
+static std::optional<PerformanceView::SongAction> edgeDragged(const midipad::SongItem& it, int row, int col, int item, double start, double once,
+                                                              float x, float x0, float barW, int beatsPerBar) {
+    using A = PerformanceView::SongAction;
+    const int bpb = std::max(beatsPerBar, 1);
+    if (it.kind == midipad::SongItem::Kind::Rest) {
+        const int beats = std::clamp(snappedEnd(x, x0, barW, bpb) - static_cast<int>(std::lround(start * bpb)), 1, midipad::kMaxRestBeats);
+        ImGui::SetTooltip("%s", PerformanceView::restText(beats, bpb).c_str());
+        if (beats != it.beats)
+            return A{A::Kind::BeatsTo, row, col, item, beats};
+        return std::nullopt;
+    }
+    if (once <= 0)
+        return std::nullopt;
+    const int repeats = std::clamp(static_cast<int>(std::lround(((x - x0) / barW - start) / once)), 1, midipad::kMaxSongRepeats);
+    ImGui::SetTooltip("\xC3\x97%d", repeats);
+    if (repeats != it.repeats)
+        return A{A::Kind::RepeatsTo, row, col, item, repeats};
+    return std::nullopt;
+}
+
 // "bar 3", or "bar 3.2" on its second beat.
 static std::string barBeatText(int beat, int beatsPerBar) {
     beatsPerBar = std::max(beatsPerBar, 1);
@@ -3186,7 +3773,7 @@ std::optional<PerformanceView::SongAction> PerformanceView::drawSong(const LiveS
             for (const Box& box : boxes)
                 if (io.MousePos.x >= box.x0 && io.MousePos.x <= box.x1 + px(2)) {
                     under = box.item;
-                    edge = !box.rest && io.MousePos.x >= box.x1 - px(5);
+                    edge = io.MousePos.x >= box.x1 - px(5);
                 }
             if (cellHovered && edge && !ImGui::IsMouseDown(ImGuiMouseButton_Left))
                 ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
@@ -3201,13 +3788,9 @@ std::optional<PerformanceView::SongAction> PerformanceView::drawSong(const LiveS
                 ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
                 SongItem one = items[static_cast<std::size_t>(edgeItem_)];
                 one.repeats = 1;
-                const double once = songItemBeats(live, ch, one) / bar;
-                if (once > 0) {
-                    const double endBars = (io.MousePos.x - ix0) / barW;
-                    const int repeats = std::clamp(static_cast<int>(std::lround((endBars - st[static_cast<std::size_t>(edgeItem_)]) / once)), 1, midipad::kMaxSongRepeats);
-                    if (repeats != items[static_cast<std::size_t>(edgeItem_)].repeats)
-                        action = SongAction{SongAction::Kind::RepeatsTo, r, ch, edgeItem_, repeats};
-                }
+                if (auto set = edgeDragged(items[static_cast<std::size_t>(edgeItem_)], r, ch, edgeItem_, st[static_cast<std::size_t>(edgeItem_)],
+                                           songItemBeats(live, ch, one) / bar, io.MousePos.x, ix0, barW, live.beatsPerBar))
+                    action = set;
             }
             if (mine && grabItem_ >= 0 && grabItem_ < static_cast<int>(items.size()) && ImGui::BeginDragDropSource()) {
                 const int payload[3] = {r, ch, grabItem_};
@@ -3357,12 +3940,23 @@ std::optional<PerformanceView::SongAction> PerformanceView::drawSong(const LiveS
             action = SongAction{io.KeyShift ? SongAction::Kind::ItemToggle : SongAction::Kind::ItemSelect, r, ch, static_cast<int>(i)};
         itemBoxes.push_back({static_cast<int>(i), x0, x1});
         const bool hovered = ImGui::IsItemHovered();
-        // Dragged sideways: to another bar; up or down: its repeats (a silence: its beats).
+        // By its right edge: its repeats (a silence: its length). Dragged sideways: to another bar;
+        // up or down: its repeats (a silence: its beats).
+        const bool onEdge = io.MousePos.x >= x1 - px(6);
+        if (hovered && onEdge && !ImGui::IsMouseDown(ImGuiMouseButton_Left))
+            ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
         if (ImGui::IsItemActivated()) {
             songDragAxis_ = 0;
             dragNotches_ = 0;
+            editorEdge_ = onEdge ? static_cast<int>(i) : -1;
         }
-        if (ImGui::IsItemActive() && ImGui::IsMouseDragging(ImGuiMouseButton_Left, px(5))) {
+        if (ImGui::IsItemActive() && editorEdge_ == static_cast<int>(i)) {
+            ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+            SongItem one = it;
+            one.repeats = 1;
+            if (auto set = edgeDragged(it, r, ch, static_cast<int>(i), at, songItemBeats(live, ch, one) / bar, io.MousePos.x, ex0, barW, live.beatsPerBar))
+                action = set;
+        } else if (ImGui::IsItemActive() && ImGui::IsMouseDragging(ImGuiMouseButton_Left, px(5))) {
             const ImVec2 d = ImGui::GetMouseDragDelta(ImGuiMouseButton_Left, 0.0f);
             if (songDragAxis_ == 0)
                 songDragAxis_ = std::abs(d.x) >= std::abs(d.y) ? 1 : 2;
@@ -3515,6 +4109,8 @@ std::optional<PerformanceView::SongAction> PerformanceView::drawSong(const LiveS
 
 void PerformanceView::drawNoteEditor(const Mapping& mapping, const LiveState& live, float w, float h) {
     const ImVec2 at = ImGui::GetCursorScreenPos();
+    const float laneH = px(96);
+    h = std::max(h - laneH, px(120));
     editing_ = true;
     escapeTaken_ = false;
     editorClip_ = false;
@@ -3542,9 +4138,131 @@ void PerformanceView::drawNoteEditor(const Mapping& mapping, const LiveState& li
                             : ImGui::IsItemActive() || ImGui::IsItemHovered() ? IM_COL32(0x9A, 0xA0, 0xAC, 255)
                                                                               : IM_COL32(0x78, 0x7E, 0x8A, 255);
         dl->AddRectFilled(ImVec2(tx0 + 1, barY + 1), ImVec2(tx1 - 1, barY + barH - 1), thumb, px(3));
+        drawNoteLane(live, at.x, barY + barH + px(8), laneH - px(14));
     }
-    ImGui::SetCursorScreenPos(ImVec2(at.x, barY + barH + px(2)));
+    ImGui::SetCursorScreenPos(ImVec2(at.x, barY + barH + px(2) + (editorClip_ ? laneH - px(6) : 0.0f)));
     ImGui::Dummy(ImVec2(w, 0));
+}
+
+// The lane of the note editor: a stem per note, at its start, as high as its
+// velocity (VELOCITY) or its chance (CHANCE). Dragged up or down, a stem sets
+// its note, or every note selected with it (each keeping its difference);
+// double-clicked, its value is typed.
+void PerformanceView::drawNoteLane(const LiveState& live, float x, float y, float h) {
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const ImGuiIO& io = ImGui::GetIO();
+    const bool chance = laneMode_ == 1;
+    // The tabs.
+    for (int k = 0; k < 2; ++k) {
+        const ImVec2 a(x + static_cast<float>(k) * px(92), y), b(a.x + px(86), y + px(18));
+        ImGui::SetCursorScreenPos(a);
+        ImGui::PushID(k);
+        if (ImGui::InvisibleButton("##lanetab", ImVec2(b.x - a.x, b.y - a.y)))
+            laneMode_ = k;
+        const bool on = laneMode_ == k, hovered = ImGui::IsItemHovered();
+        ImGui::PopID();
+        dl->AddRectFilled(a, b, on ? alpha(T::kGreen, 0.3f) : hovered ? IM_COL32(0x3A, 0x3E, 0x45, 255) : IM_COL32(0x2C, 0x30, 0x36, 255), px(4));
+        dl->AddRect(a, b, on ? T::kGreen : IM_COL32(0x4A, 0x4F, 0x57, 255), px(4), px(1));
+        text(dl, gBold, px(10.5f), (a.x + b.x) * 0.5f, (a.y + b.y) * 0.5f, T::kText, k == 0 ? "VELOCITY" : "CHANCE", H::Center, V::Middle);
+    }
+    const float gx0 = rollGx0_, gx1 = rollAx1_, ly0 = y + px(24), ly1 = y + h;
+    if (gx1 <= gx0 || ly1 <= ly0 + px(10))
+        return;
+    dl->AddRectFilled(ImVec2(gx0, ly0), ImVec2(gx1, ly1), IM_COL32(0x14, 0x16, 0x19, 255), px(3));
+    for (int k = 1; k < 4; ++k)
+        dl->AddLine(ImVec2(gx0, ly0 + (ly1 - ly0) * static_cast<float>(k) / 4), ImVec2(gx1, ly0 + (ly1 - ly0) * static_cast<float>(k) / 4), IM_COL32(0x22, 0x25, 0x2A, 255));
+    auto xAt = [&](int sample) { return gx0 + (gx1 - gx0) * (static_cast<float>(sample) / rollShown_ - rollFrom_) * rollZoom_; };
+    const int top = chance ? 100 : 127, low = 1;
+    auto yOf = [&](int v) { return ly1 - (ly1 - ly0 - px(4)) * static_cast<float>(v) / static_cast<float>(top); };
+    auto valueAt = [&](float my) { return std::clamp(static_cast<int>(std::lround((ly1 - my) / (ly1 - ly0 - px(4)) * static_cast<float>(top))), low, top); };
+    auto valueOf = [&](const NoteInterval& n) { return chance ? static_cast<int>(n.chance) : static_cast<int>(n.velocity); };
+    // The lane's button: the stem under the mouse, grabbed.
+    ImGui::SetCursorScreenPos(ImVec2(gx0, ly0));
+    ImGui::InvisibleButton("##lane", ImVec2(gx1 - gx0, ly1 - ly0));
+    const bool laneHovered = ImGui::IsItemHovered();
+    int near = -1;
+    float nearDist = px(6);
+    std::vector<float> stemX(static_cast<std::size_t>(live.noteLoopCount), -1.0f);
+    for (int i = 0; i < live.noteLoopCount; ++i) {
+        const NoteInterval& n = live.noteLoop[static_cast<std::size_t>(i)];
+        float sx = xAt(n.start);
+        if (sx < gx0 - px(2) || sx > gx1)
+            continue;
+        int same = 0;  // notes starting together: side by side
+        for (int k = 0; k < i; ++k)
+            same += live.noteLoop[static_cast<std::size_t>(k)].start == n.start;
+        sx += static_cast<float>(same) * px(4) + px(2);
+        stemX[static_cast<std::size_t>(i)] = sx;
+        if (const float d = std::abs(io.MousePos.x - sx); laneHovered && d < nearDist) {
+            nearDist = d;
+            near = i;
+        }
+    }
+    if (ImGui::IsItemActivated() && near >= 0) {
+        laneGrab_ = near;
+        laneDelta_ = 0;
+        laneDrag_.clear();
+        const NoteInterval& g = live.noteLoop[static_cast<std::size_t>(near)];
+        const bool inSelection = selected(g);
+        for (int i = 0; i < live.noteLoopCount; ++i) {
+            const NoteInterval& n = live.noteLoop[static_cast<std::size_t>(i)];
+            if (i == near || (inSelection && selected(n)))
+                laneDrag_.push_back({{n.start, n.note}, valueOf(n)});
+        }
+    }
+    const bool dragging = ImGui::IsItemActive() && laneGrab_ >= 0 && laneGrab_ < live.noteLoopCount;
+    if (dragging) {
+        ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
+        laneDelta_ = valueAt(io.MousePos.y) - valueOf(live.noteLoop[static_cast<std::size_t>(laneGrab_)]);
+    }
+    auto shown = [&](const NoteInterval& n) {  // its value, as being dragged
+        if (dragging)
+            for (const auto& [ref, v] : laneDrag_)
+                if (ref.start == n.start && ref.note == n.note)
+                    return std::clamp(v + laneDelta_, low, top);
+        return valueOf(n);
+    };
+    for (int i = 0; i < live.noteLoopCount; ++i) {
+        const float sx = stemX[static_cast<std::size_t>(i)];
+        if (sx < 0)
+            continue;
+        const NoteInterval& n = live.noteLoop[static_cast<std::size_t>(i)];
+        const int v = shown(n);
+        const ImU32 col = selected(n) ? IM_COL32(0xB0, 0x8C, 0xFF, 255) : chance && v < 100 ? T::kCyan : chance ? IM_COL32(0x9A, 0xA0, 0xAC, 255) : IM_COL32(0xF0, 0xF2, 0xF5, 255);
+        const float ty = yOf(v);
+        dl->AddLine(ImVec2(sx, ly1), ImVec2(sx, ty), col, px(1.6f));
+        dl->AddCircleFilled(ImVec2(sx, ty), i == near || i == laneGrab_ ? px(3.5f) : px(2.6f), col);
+        if (chance && v < 100)
+            text(dl, gBold, px(9.5f), sx + px(5), ty - px(6), T::kCyan, std::to_string(v) + "%", H::Left, V::Middle);
+    }
+    if (near >= 0 && !dragging) {
+        const NoteInterval& n = live.noteLoop[static_cast<std::size_t>(near)];
+        ImGui::SetTooltip(chance ? "Chance %d%%" : "Velocity %d", valueOf(n));
+        if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+            NoteValueAsk ask{{}, chance, valueOf(n)};
+            for (int i = 0; i < live.noteLoopCount; ++i) {
+                const NoteInterval& o = live.noteLoop[static_cast<std::size_t>(i)];
+                if (i == near || (selected(n) && selected(o)))
+                    ask.notes.push_back({o.start, o.note});
+            }
+            noteValueAsk_ = std::move(ask);
+        }
+    }
+    if (dragging)
+        ImGui::SetTooltip(chance ? "Chance %d%%" : "Velocity %d", shown(live.noteLoop[static_cast<std::size_t>(laneGrab_)]));
+    if (ImGui::IsItemDeactivated() && laneGrab_ >= 0) {  // let go: the values set
+        if (laneDelta_ != 0 && !laneDrag_.empty()) {
+            NoteEdit edit;
+            for (const auto& [ref, v] : laneDrag_) {
+                edit.notes.push_back(ref);
+                (chance ? edit.chances : edit.velocities).push_back(std::clamp(v + laneDelta_, low, top));
+                (chance ? edit.velocities : edit.chances).push_back(-1);
+            }
+            noteEdit_ = std::move(edit);
+        }
+        laneGrab_ = -1;
+        laneDrag_.clear();
+    }
 }
 
 bool PerformanceView::selected(const NoteInterval& n) const {

@@ -148,7 +148,8 @@ public:
         enum class Kind : std::uint8_t {
             Cursor, Play, Stop, Loop, LoopSong, AddSection, EditCell, Bars, ItemSelect, ItemMove, ItemContent, ItemRepeats, AddItem, RepeatsAsk, BarsAsk, Rename,
             DropNew, DropItem, RepeatsTo, SectionMove,
-            ItemToggle  // a Shift+click on an item of the editor: added to the selection, or taken out
+            ItemToggle,  // a Shift+click on an item of the editor: added to the selection, or taken out
+            BeatsTo      // a silence's length set to `value` beats (its right edge dragged)
         } kind = Kind::Cursor;
         int row = 0, col = -1, item = 0, value = 0;
         int fromRow = -1;
@@ -260,7 +261,15 @@ public:
         bool byDegrees = false;
         bool resize = false;  // lengthened by `samples` instead
         int loopLength = 0;   // > 0: the loop's new length, in samples, instead
+        std::vector<int> velocities{}, chances{};  // not empty: the notes' velocities or chances set instead (-1: kept)
     };
+    // A double-click on a note's stem in the editor's lane: its value (and the selection's) typed.
+    struct NoteValueAsk {
+        std::vector<midipad::LoopNoteRef> notes;
+        bool chance = false;
+        int value = 0;
+    };
+    std::optional<NoteValueAsk> takeNoteValueAsk() { return std::exchange(noteValueAsk_, std::nullopt); }
     std::optional<NoteEdit> takeNoteEdit() { return std::exchange(noteEdit_, std::nullopt); }
     // Escape, during the last drawNoteEditor(), cancelled a drag or cleared the
     // selection: the window should stay open.
@@ -345,6 +354,7 @@ private:
     // An item of a song cell grabbed by its right edge (its repeats dragged): its cell and index, -1 none.
     int edgeRow_ = -1, edgeCol_ = -1, edgeItem_ = -1;
     int grabItem_ = -1;  // the item of that cell grabbed by its body (dragged to a bar or another section), -1 none
+    int editorEdge_ = -1;  // the item of the song's editor grabbed by its right edge, -1 none
     // A section's right edge dragged in the song at scale: the section (-1 none), its bars and the mouse then, pixels a bar.
     int secEdge_ = -1, secEdgeBars_ = 0;
     float secEdgeX_ = 0, secEdgePerBar_ = 1;
@@ -379,6 +389,14 @@ private:
     std::optional<NoteEdit> noteEdit_;
     int quantize_ = 0;
     bool editing_ = false;     // drawing the note loop editor, not the view's piano roll
+    // The editor's lane under the roll: the notes' velocities (0) or chances (1), each a stem.
+    int laneMode_ = 0;
+    float rollShown_ = 1, rollFrom_ = 0, rollZoom_ = 1;  // the roll's view, as last drawn, for the lane
+    int laneGrab_ = -1;  // a stem dragged: the note's index in the loop, -1 none
+    std::vector<std::pair<midipad::LoopNoteRef, int>> laneDrag_;  // the notes it moves, and their values then
+    int laneDelta_ = 0;
+    std::optional<NoteValueAsk> noteValueAsk_;
+    void drawNoteLane(const LiveState& live, float x, float y, float h);
     bool scaleMoves_ = true;
     std::optional<midipad::Key> key_;
     struct NoteDrag {
