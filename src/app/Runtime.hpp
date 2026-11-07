@@ -239,6 +239,8 @@ public:
     void resizeLoopNotes(std::vector<midipad::LoopNoteRef> notes, int samples);
     void setLoopNoteValues(std::vector<midipad::LoopNoteRef> notes, std::vector<int> velocities, std::vector<int> chances);
     void setNoteLoopLength(int samples);  // Engine::setNoteLoopLength, in the same order
+    void addLoopNotes(std::vector<midipad::NoteInterval> notes);                            // Engine::addLoopNotes
+    void quantizeLoopNotes(std::vector<midipad::LoopNoteRef> notes, double step);        // Engine::quantizeLoopNotes
     // Session files: the loops of every channel as the input thread has them
     // (nothing if it does not answer within a second), and loops to play
     // instead of all of them, after any preset given before.
@@ -361,6 +363,8 @@ private:
         bool resize = false;  // `samples` lengthens them
         int loopLength = 0;   // > 0: the loop's new length instead
         std::vector<int> velocities{}, chances{};  // not empty: the notes' velocities and chances set instead (-1: kept)
+        std::vector<midipad::NoteInterval> added{};  // not empty: these notes added instead
+        double quantizeStep = 0;                      // > 0: the notes put on a grid of this step instead
     };
     std::vector<NoteEdit> noteEdits_;  // under sessionMutex_, oldest first
 

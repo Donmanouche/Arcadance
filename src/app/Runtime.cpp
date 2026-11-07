@@ -288,6 +288,27 @@ void Runtime::setLoopNoteValues(std::vector<midipad::LoopNoteRef> notes, std::ve
     commands_.push({Command::Kind::EditNotes});
 }
 
+void Runtime::addLoopNotes(std::vector<midipad::NoteInterval> notes) {
+    {
+        std::lock_guard lock(sessionMutex_);
+        NoteEdit edit;
+        edit.added = std::move(notes);
+        noteEdits_.push_back(std::move(edit));
+    }
+    commands_.push({Command::Kind::EditNotes});
+}
+
+void Runtime::quantizeLoopNotes(std::vector<midipad::LoopNoteRef> notes, double step) {
+    {
+        std::lock_guard lock(sessionMutex_);
+        NoteEdit edit;
+        edit.notes = std::move(notes);
+        edit.quantizeStep = step;
+        noteEdits_.push_back(std::move(edit));
+    }
+    commands_.push({Command::Kind::EditNotes});
+}
+
 void Runtime::setNoteLoopLength(int samples) {
     {
         std::lock_guard lock(sessionMutex_);
@@ -736,6 +757,10 @@ void Runtime::run(std::stop_token stop, Options options, std::shared_ptr<const P
                     const NoteEdit& edit = noteEdits_.front();
                     if (edit.loopLength > 0)
                         engine.setNoteLoopLength(engine.channel(), edit.loopLength);
+                    else if (!edit.added.empty())
+                        engine.addLoopNotes(engine.channel(), edit.added);
+                    else if (edit.quantizeStep > 0)
+                        engine.quantizeLoopNotes(engine.channel(), edit.notes, edit.quantizeStep);
                     else if (!edit.velocities.empty() || !edit.chances.empty())
                         engine.setLoopNoteValues(engine.channel(), edit.notes, edit.velocities, edit.chances);
                     else if (edit.remove)

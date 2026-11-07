@@ -2410,6 +2410,67 @@ bool Engine::setAxisLoopLength(int channel, int source, int axis, int length) {
     return true;
 }
 
+bool Engine::addLoopNotes(int channel, const std::vector<NoteInterval>& notes) {
+    channel = std::clamp(channel, 0, kChannelCount - 1);
+    const Loop& loop = loops_[loopIndex(channel, kNoteTrack)];
+    if (loop.state != LoopStatus::State::Playing || loop.length < 2)
+        return false;
+    auto& events = eventsOf(channel);
+    bool any = false;
+    for (const NoteInterval& n : notes) {
+        if (events.size() + 2 > static_cast<std::size_t>(kMaxNoteEvents))
+            break;
+        const int start = std::clamp(static_cast<int>(n.start), 0, loop.length - 2);
+        const int end = std::clamp(static_cast<int>(n.end), start + 1, loop.length - 1);
+        const auto note = static_cast<std::uint8_t>(std::clamp<int>(n.note, 0, 127));
+        const auto velocity = static_cast<std::uint8_t>(std::clamp<int>(n.velocity, 1, 127));
+        const std::uint32_t press = ++pressCount_ == 0 ? ++pressCount_ : pressCount_;
+        silenceLoopNote(channel, note);
+        events.push_back({start, note, velocity, true, press});
+        events.push_back({end, note, velocity, false, press});
+        any = true;
+    }
+    if (any)
+        tidyNoteLoop(channel);
+    return any;
+}
+
+bool Engine::quantizeLoopNotes(int channel, const std::vector<LoopNoteRef>& notes, double step) {
+    channel = std::clamp(channel, 0, kChannelCount - 1);
+    const Loop& loop = loops_[loopIndex(channel, kNoteTrack)];
+    if (loop.state != LoopStatus::State::Playing || loop.length < 2 || step < 1)
+        return false;
+    auto& events = eventsOf(channel);
+    auto& found = movedNotes_;
+    found.clear();
+    for (const LoopNoteRef& ref : notes) {
+        int on = -1, off = -1;
+        if (findLoopNote(channel, ref.start, ref.note, on, off))
+            found.push_back({on, off});
+    }
+    bool any = false;
+    for (const auto& f : found) {
+        NoteEvent& on = events[static_cast<std::size_t>(f[0])];
+        int to = static_cast<int>(std::lround(std::round(on.at / step) * step));
+        if (to >= loop.length - 1)
+            to = 0;  // the loop's end: its start
+        const int by = to - on.at;
+        if (by == 0)
+            continue;
+        silenceLoopNote(channel, on.note);
+        if (f[1] >= 0) {
+            NoteEvent& off = events[static_cast<std::size_t>(f[1])];
+            const int length = std::max(off.at - on.at, 1);
+            off.at = std::clamp(to + length, to + 1, loop.length - 1);
+        }
+        on.at = to;
+        any = true;
+    }
+    if (any)
+        tidyNoteLoop(channel);  // in order again; notes they land on are cut short
+    return any;
+}
+
 bool Engine::removeLoopNotes(int channel, const std::vector<LoopNoteRef>& notes) {
     channel = std::clamp(channel, 0, kChannelCount - 1);
     auto& events = eventsOf(channel);
@@ -2794,6 +2855,7 @@ bool Engine::transportPlay(int section) {
             if (clipPlaying_[static_cast<std::size_t>(ch)])
                 songResume_ = static_cast<std::uint16_t>(songResume_ | (1u << ch));
             songStopChannel(ch);
+            restCcs(ch, -1, kClipSlots);  // every CC its loops move, from its rest: the song starts the same each time
         }
         loopsPaused_ = false;
         playSong(section);
@@ -3035,8 +3097,62 @@ void Engine::setRecordSlot(int channel, int slot) {
     recordSlot_[static_cast<std::size_t>(std::clamp(channel, 0, kChannelCount - 1))] = std::clamp(slot, 0, kClipSlots - 1);
 }
 
+bool Engine::restCc(std::size_t index, int& cc, int& value) const {
+    const Loop& loop = loops_[index];
+    const int track = trackOfLoop(index);
+    if (!preset_ || track == kNoteTrack || loop.state != LoopStatus::State::Playing || (!loop.sendsCc && modulatesOthers(index)))
+        return false;
+    const int source = sourceOfTrack(track), axis = axisOfTrack(track);
+    const Mapping& m = preset_->forChannel(channelOfLoop(index));
+    const AxisBinding* a = nullptr;
+    float rest = 0.5f;
+    if (source < 2) {
+        a = &m.axes[static_cast<std::size_t>(source * 2 + axis)];
+    } else if (source == static_cast<int>(LoopSource::Triggers)) {
+        a = &m.axes[static_cast<std::size_t>(axis == 0 ? Axis::LeftTrigger : Axis::RightTrigger)];
+        rest = 0.0f;
+    } else if (source == static_cast<int>(LoopSource::Tilt)) {
+        a = axis == 0 ? &m.tilt.x : &m.tilt.y;
+    } else {
+        return false;  // a finger lifted leaves its CC where it was
+    }
+    if (a->enabled && a->mode != AxisMode::Cc)
+        return false;
+    const LoopBinding& binding = m.loops[static_cast<std::size_t>(source)];
+    const float position = a->invert ? 1.0f - rest : rest;
+    const int lo = a->enabled ? a->min : 0, hi = a->enabled ? a->max : 127;
+    cc = loopCc(binding, *a, axis) & 0x7F;
+    value = lo + static_cast<int>(std::lround(position * static_cast<float>(hi - lo)));
+    return true;
+}
+
+void Engine::restCcs(int channel, int from, int to) {
+    if (silenced(channel))
+        return;
+    std::bitset<128> kept, sent;
+    if (to >= 0 && to < kClipSlots)
+        for (int track = 0; track < kNoteTrack; ++track) {
+            int cc = 0, value = 0;
+            if (restCc(slotIndex(channel, to, track), cc, value))
+                kept.set(static_cast<std::size_t>(cc));
+        }
+    for (int slot = from < 0 ? 0 : from; slot < (from < 0 ? kClipSlots : from + 1); ++slot)
+        for (int track = 0; track < kNoteTrack; ++track) {
+            int cc = 0, value = 0;
+            if (!restCc(slotIndex(channel, slot, track), cc, value) || kept.test(static_cast<std::size_t>(cc)) || sent.test(static_cast<std::size_t>(cc)))
+                continue;
+            const int source = sourceOfTrack(track), axis = axisOfTrack(track);
+            if (channel == channel_ && controlMoving(source, axis))
+                continue;  // in the hand: it decides
+            sent.set(static_cast<std::size_t>(cc));
+            sendCc(channel, cc, value);
+        }
+}
+
 void Engine::switchClip(int channel, int slot) {
     const auto c = static_cast<std::size_t>(channel);
+    if (clipPlaying_[c] && slot != currentSlot_[c])  // what its loops leave goes back to rest
+        restCcs(channel, currentSlot_[c], slot);
     fromLoop_ = true;
     for (int track = 0; track < kTrackCount; ++track) {
         silenceLoop(loopIndex(channel, track));

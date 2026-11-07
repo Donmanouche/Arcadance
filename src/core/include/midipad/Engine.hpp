@@ -460,6 +460,13 @@ public:
     bool removeLoopNote(int channel, int start, int note) {
         return removeLoopNotes(channel, {{start, static_cast<std::uint8_t>(note)}});
     }
+    // Notes added to the note loop (start and end in loop samples, the end
+    // inside the loop; velocity 1-127), each a press of its own; a note of
+    // the same pitch they land on is cut short. False without a note loop playing.
+    bool addLoopNotes(int channel, const std::vector<NoteInterval>& notes);
+    // Notes moved each onto the nearest step of a grid of `step` samples (the
+    // loop's end wraps to its start), their lengths kept.
+    bool quantizeLoopNotes(int channel, const std::vector<LoopNoteRef>& notes, double step);
     static constexpr int kMaxNoteEvents = 4096;  // per note loop
     void stopLoops(int channel);  // but the locked ones
     // A bit per channel where a loop plays or records.
@@ -727,6 +734,14 @@ private:
         return slotIndex(channel, currentSlot_[static_cast<std::size_t>(channel)], track);
     }
     void clearTrack(std::size_t index);
+    // The CC a movement loop sends and the value its control sends at rest (a
+    // stick centred, a trigger let go, the controller level); false for a
+    // touchpad finger, a loop that only modulates, or a control not on a CC.
+    bool restCc(std::size_t index, int& cc, int& value) const;
+    // A channel's loops stopping: the CCs of clip `from`'s movement loops go
+    // back to their controls' rest, but those clip `to` (kClipSlots: none)
+    // loops too. `from` < 0: every clip of the channel.
+    void restCcs(int channel, int from, int to);
     float modulationFactor(std::size_t index) const;  // the amplitude a loop takes from the one modulating it
     bool modulatesOthers(std::size_t index) const;
     void fillModulation(LoopStatus& status, std::size_t index) const;

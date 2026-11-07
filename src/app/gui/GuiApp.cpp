@@ -17,6 +17,7 @@
 #include "midipad/Labels.hpp"
 #include "midipad/PresetIO.hpp"
 #include "midipad/PresetLibrary.hpp"
+#include "midipad/MidiExport.hpp"
 #include "midipad/Scales.hpp"
 #include "midipad/Session.hpp"
 #include "midipad/TapTempo.hpp"
@@ -583,11 +584,15 @@ private:
     std::array<LiveState::Chains, kChannelCount> liveChains_{};  // as last drawn
     std::string toast_;  // in the status bar, a moment: what was done, undone or redone
     bool toastUndone_ = false;
+    bool toastPlain_ = false;  // a message alone: no Undo
     double toastUntil_ = 0;
     void pushUndo(UndoStep step);
     void songUndo();
     void rememberChains(int channel, const char* what);
     void rememberClips(std::vector<std::pair<int, int>> clips, const char* what);
+    // A clip (slot of channel), or the whole song (channel -1), written as a MIDI file in the
+    // export folder (Music/Arcadance), which opens: from there, it drags into a DAW.
+    void exportMidi(int channel, int slot);
     UndoStep currentState(const UndoStep& like);
     void applyState(const UndoStep& state);
     void undoRedo(bool redo);
@@ -2028,6 +2033,7 @@ void GuiApp::pushUndo(UndoStep step) {
     redo_.clear();
     toast_ = undo_.back().what;
     toastUndone_ = false;
+    toastPlain_ = false;
     toastUntil_ = ImGui::GetTime() + 4.0;
 }
 
@@ -2125,6 +2131,7 @@ void GuiApp::undoRedo(bool redo) {
     applyState(step);
     to.push_back(std::move(now));
     toast_ = (redo ? "Redone: " : "Undone: ") + step.what;
+    toastPlain_ = false;
     toastUndone_ = !redo;
     toastUntil_ = ImGui::GetTime() + 4.0;
 }
@@ -2183,6 +2190,7 @@ void GuiApp::sessionDrop(const PerformanceView::SessionAction& a, const LiveStat
                 if (t.first < 0 || t.first >= kChannelCount || t.second < 0 || t.second >= Engine::kClipSlots || !(free || moving)) {
                     toast_ = "Not there: some clips would be overwritten";
                     toastUndone_ = false;
+                    toastPlain_ = true;
                     toastUntil_ = ImGui::GetTime() + 2.5;
                     return;
                 }
@@ -2240,6 +2248,7 @@ void GuiApp::sessionDrop(const PerformanceView::SessionAction& a, const LiveStat
         if (steps.back().first >= 0 || a.clip < 0) {  // no room left: the last step would be lost
             toast_ = "The chain is full";
             toastUndone_ = false;
+            toastPlain_ = true;
             toastUntil_ = ImGui::GetTime() + 2.0;
             return;
         }
@@ -2635,7 +2644,7 @@ enum MenuId : int {
     kSongPlay, kSongStop, kSongLoop, kLoopSong, kSectionRename, kSectionFit, kSectionDuplicate, kSectionInsert, kSectionUp, kSectionDown, kSectionDelete,
     kCellEdit, kCellClear, kCellCopy, kCellPaste,
     kRestBarMore, kRestBarLess, kRestBeatMore, kRestBeatLess,
-    kItemChange, kItemGlue, kItemLeft, kItemRight, kItemLoop, kItemKind, kItemDuplicate, kItemDelete, kEditClipNotes,
+    kItemChange, kItemGlue, kItemLeft, kItemRight, kItemLoop, kItemKind, kItemDuplicate, kItemDelete, kEditClipNotes, kExportClip,
     kModPick, kModStop, kModSendCc, kModDepth, kModDirection, kCopyMapping,
     kPick = 1000,  // + the clip (0-7) or 8 + the chain: what a song item plays
     kModTarget = 2000  // + the movement track a loop modulates
@@ -2786,6 +2795,7 @@ void GuiApp::screenKeys(const LiveState& live) {
             songClipboardPart_ = true;
             toast_ = "Copied (" + std::to_string(songClipboard_.size()) + " items)";
             toastUndone_ = false;
+            toastPlain_ = true;
             toastUntil_ = ImGui::GetTime() + 2.0;
         } else {
             undoWhat_ = "Delete (" + std::to_string(picked.size()) + " items)";
@@ -2854,6 +2864,7 @@ void GuiApp::openMenu(const PerformanceView::MenuTarget& t, const LiveState& liv
         add("Move up", kClipUp, has && t.slot > 0);
         add("Move down", kClipDown, has && t.slot < Engine::kClipSlots - 1);
         add("Add to the chain", kAddToChain, has && freeStep);
+        add("Export as MIDI", kExportClip, has);
         add("Clear", kClearClip, has);
         break;
     }
@@ -3343,6 +3354,7 @@ void GuiApp::runMenu(const PerformanceView::MenuTarget& t, int id, const LiveSta
         colourChannel_ = ch;
         openColour_ = true;
         break;
+    case kExportClip: exportMidi(ch, t.slot); break;
     case kEditClipNotes:  // the clip made the channel's current one (played, if another plays), then its notes
         moveSessionCursor(ch, t.slot, live);
         if (live.currentClip[c] != t.slot || live.queuedClip[c] >= 0) {
@@ -3757,6 +3769,8 @@ void GuiApp::drawPerformance(const LiveState& live) {
             nameError_.clear();
             openNameDialog_ = true;
         }
+        if (ImGui::MenuItem("Export the song as MIDI", nullptr, false, !song_.sections.empty()))
+            exportMidi(-1, 0);
         ImGui::Separator();
         if (ImGui::MenuItem("Settings", nullptr, false)) {
             refreshPorts();
@@ -4256,7 +4270,21 @@ void GuiApp::drawPerformance(const LiveState& live) {
         openValueAsk_ = true;
     }
     if (auto edit = performance_.takeNoteEdit()) {  // from the note loop's editor (the last frame's)
-        if (!edit->velocities.empty() || !edit->chances.empty())
+        // Undoable: the clip as it is, first.
+        const char* what = edit->loopLength > 0                                  ? "Loop length"
+                           : !edit->added.empty()                                ? "Note added"
+                           : edit->quantizeStep > 0                              ? "Notes quantized"
+                           : !edit->velocities.empty()                           ? "Velocity"
+                           : !edit->chances.empty()                              ? "Chance"
+                           : edit->remove                                        ? "Notes deleted"
+                           : edit->resize                                        ? "Notes lengthened"
+                                                                                 : "Notes moved";
+        rememberClips({{live.channel, live.currentClip[static_cast<std::size_t>(live.channel)]}}, what);
+        if (!edit->added.empty())
+            runtime_->addLoopNotes(std::move(edit->added));
+        else if (edit->quantizeStep > 0)
+            runtime_->quantizeLoopNotes(std::move(edit->notes), edit->quantizeStep);
+        else if (!edit->velocities.empty() || !edit->chances.empty())
             runtime_->setLoopNoteValues(std::move(edit->notes), std::move(edit->velocities), std::move(edit->chances));
         else if (edit->loopLength > 0)
             runtime_->setNoteLoopLength(edit->loopLength);
@@ -4367,18 +4395,20 @@ void GuiApp::drawPerformanceStatus(const LiveState& live, float height) {
         const char* keys = toastUndone_ ? "Ctrl+Shift+Z" : "Ctrl+Z";
         const ImVec2 tsz = medium->CalcTextSizeA(px(12), FLT_MAX, 0, toast_.c_str());
         const ImVec2 bsz = bold->CalcTextSizeA(px(12), FLT_MAX, 0, link), ksz = medium->CalcTextSizeA(px(11), FLT_MAX, 0, keys);
-        const float w = px(14) + tsz.x + px(18) + bsz.x + px(8) + ksz.x + px(14);
+        const float w = toastPlain_ ? px(14) + tsz.x + px(14) : px(14) + tsz.x + px(18) + bsz.x + px(8) + ksz.x + px(14);
         const ImVec2 a(p.x + (width - w) * 0.5f, cy - px(11)), b(a.x + w, cy + px(11));
         dl->AddRectFilled(a, b, IM_COL32(0x23, 0x26, 0x2B, 255), px(6));
         dl->AddRect(a, b, IM_COL32(0x3A, 0x3E, 0x45, 255), px(6), px(1));
         dl->AddText(medium, px(12), ImVec2(a.x + px(14), cy - tsz.y * 0.5f), Theme::kText, toast_.c_str());
         const ImVec2 la(a.x + px(14) + tsz.x + px(18), cy - bsz.y * 0.5f);
+        if (!toastPlain_) {
         ImGui::SetCursorScreenPos(ImVec2(la.x - px(4), a.y));
         const bool clicked = ImGui::InvisibleButton("##undotoast", ImVec2(bsz.x + px(8) + ksz.x + px(8), b.y - a.y));
         dl->AddText(bold, px(12), la, ImGui::IsItemHovered() ? Theme::kText : Theme::kCyan, link);
         dl->AddText(medium, px(11), ImVec2(la.x + bsz.x + px(8), cy - ksz.y * 0.5f), Theme::kDim, keys);
         if (clicked)
             undoRedo(toastUndone_);
+        }
         ImGui::SetCursorScreenPos(p);
     }
 
@@ -5119,6 +5149,11 @@ void GuiApp::drawMappingOverlay(const LiveState& live) {
                                    std::string(settings_.key->type().label).c_str());
             else
                 ImGui::TextColored(kHintColor, "(no tonality)");
+            ImGui::SameLine(0, em);
+            if (ImGui::Button("QUANTIZE"))
+                performance_.askQuantize();
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("The selected notes, or all of them, on the grid (Q)");
             performance_.setScaleMoves(!chromatic);
             performance_.drawNoteEditor(target, live, em * 56, em * 24);
             ImGui::Spacing();
@@ -5366,6 +5401,58 @@ void GuiApp::newSong() {
     sessionName_.reset();
     sessionPrintIn_ = 10;
     log("New song.");
+}
+
+void GuiApp::exportMidi(int channel, int slot) {
+    auto session = collectSession();
+    auto fail = [&](const std::string& why) {
+        toast_ = why;
+        toastPlain_ = true;
+        toastUntil_ = ImGui::GetTime() + 6.0;
+    };
+    if (!session)
+        return fail("Not exported: the session did not answer");
+    midipad::MidiExportOptions o;
+    o.tempo = session->tempo > 0 ? session->tempo : settings_.tempo;
+    o.beatsPerBar = settings_.beatsPerBar;
+    o.title = sessionName_.value_or("Arcadance");
+    o.channelNames = preset_.channelNames;
+    auto clean = [](std::string name) {  // a file name: no slash
+        std::replace(name.begin(), name.end(), '/', '-');
+        return name;
+    };
+    std::string name;
+    std::vector<std::uint8_t> bytes;
+    if (channel < 0) {
+        bytes = midipad::exportSongMidi(*session, o);
+        name = o.title + " - song";
+    } else {
+        const std::string& chName = preset_.channelNames[static_cast<std::size_t>(channel)];
+        name = o.title + " - " + (chName.empty() ? "channel " + std::to_string(channel + 1) : chName) + " - clip " + std::to_string(slot + 1);
+        o.title = name;
+        bytes = midipad::exportClipMidi(*session, o, channel, slot);
+    }
+    if (bytes.empty())
+        return fail("Nothing to export");
+    fs::path dir;
+    if (const char* music = SDL_GetUserFolder(SDL_FOLDER_MUSIC))
+        dir = fs::path(music) / "Arcadance";
+    else
+        dir = prefPath() / "MIDI";
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    const fs::path file = dir / (clean(name) + ".mid");
+    try {
+        midipad::writeFile(file, bytes);
+    } catch (const std::exception& e) {
+        log(e.what());
+        return fail("Not exported: " + file.string() + " cannot be written");
+    }
+    log("Exported " + file.string());
+    toast_ = "Exported: " + file.filename().string();
+    toastPlain_ = true;
+    toastUntil_ = ImGui::GetTime() + 6.0;
+    SDL_OpenURL(("file://" + dir.string()).c_str());
 }
 
 void GuiApp::saveSession() {
@@ -5868,6 +5955,10 @@ void GuiApp::drawValueAsk() {
         case K::NoteChance: {
             const int value = v.kind == K::NoteChance ? std::clamp(v.value, 1, 100) : std::clamp(v.value, 1, 127);
             std::vector<int> set(valueAskNotes_.size(), value), keep(valueAskNotes_.size(), -1);
+            {
+                const LiveState now = runtime_->live();
+                rememberClips({{now.channel, now.currentClip[static_cast<std::size_t>(now.channel)]}}, v.kind == K::NoteChance ? "Chance" : "Velocity");
+            }
             if (v.kind == K::NoteChance)
                 runtime_->setLoopNoteValues(valueAskNotes_, keep, set);
             else

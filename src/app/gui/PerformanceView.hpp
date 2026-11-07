@@ -262,6 +262,8 @@ public:
         bool resize = false;  // lengthened by `samples` instead
         int loopLength = 0;   // > 0: the loop's new length, in samples, instead
         std::vector<int> velocities{}, chances{};  // not empty: the notes' velocities or chances set instead (-1: kept)
+        std::vector<midipad::NoteInterval> added{};  // not empty: these notes added instead (a double-click on an empty place)
+        double quantizeStep = 0;                      // > 0: `notes` put on a grid of this step instead (Q)
     };
     // A double-click on a note's stem in the editor's lane: its value (and the selection's) typed.
     struct NoteValueAsk {
@@ -275,6 +277,8 @@ public:
     // selection: the window should stay open.
     bool tookEscape() const { return escapeTaken_; }
     void setQuantize(int stepsPerBeat) { quantize_ = stepsPerBeat; }  // AppSettings::quantize
+    // The editor's selected notes (all of them, none selected) put on its grid, at its next frame.
+    void askQuantize() { quantizeAsked_ = true; }
 
 private:
     struct Trail {
@@ -431,6 +435,7 @@ private:
     std::vector<midipad::LoopNoteRef> selection_;  // in the active channel's note loop
     int selectionChannel_ = -1;
     double lastNoteEdit_ = -1e9;
+    bool quantizeAsked_ = false;
     std::optional<ImVec2> bandFrom_;  // a selection rectangle being drawn, from there
     bool selected(const midipad::NoteInterval& n) const;
     float wheelRest_ = 0;           // a partial wheel notch (touchpads scroll by fractions)

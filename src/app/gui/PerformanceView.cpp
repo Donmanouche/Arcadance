@@ -2220,6 +2220,8 @@ void PerformanceView::drawPianoRoll(const Mapping& m, const LiveState& live, flo
     if (!editing_ || !clip) {  // the view's piano roll: a click opens the editor
         if (pressed && !editing_)
             click("notes");
+        if (editing_)
+            quantizeAsked_ = false;
         return;
     }
     const ImGuiIO& io = ImGui::GetIO();
@@ -2243,6 +2245,10 @@ void PerformanceView::drawPianoRoll(const Mapping& m, const LiveState& live, flo
     }
     const float sampleAt = sampleAtX(mouse.x);
     const bool byDegrees = scaleMoves_ && key_.has_value();
+    // The grid notes are added and quantized on: the quantize setting's steps
+    // (sixteenths without one) on a synced loop, eighths of a second on a free one.
+    const double gridStep = st.beats > 0 ? static_cast<double>(st.length) / (st.beats * (quantize_ > 0 ? quantize_ : 4))
+                                         : static_cast<double>(Engine::kLoopRateHz) / 8.0;
     // The selection keeps only notes still there (once an edit had time to land).
     if (time_ - lastNoteEdit_ > 0.5)
         std::erase_if(selection_, [&](const LoopNoteRef& r) {
@@ -2316,6 +2322,35 @@ void PerformanceView::drawPianoRoll(const Mapping& m, const LiveState& live, flo
             d.grabY = mouse.y;
             drag_ = std::move(d);
         }
+    } else if (pressed && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+        // A double-click on an empty place: a note there, a step of the grid long, on the scale's row nearest.
+        bandFrom_.reset();
+        const double step = gridStep;
+        const int start = static_cast<int>(std::lround(std::floor(std::max(sampleAt, 0.0f) / step) * step));
+        int note = std::clamp(static_cast<int>(std::floor(low + (ay1 - mouse.y) / rowH)), 0, 127);
+        if (byDegrees)
+            for (int d = 0; d < 7; ++d) {
+                if (note + d <= 127 && inKey(*key_, note + d)) {
+                    note += d;
+                    break;
+                }
+                if (note - d >= 0 && inKey(*key_, note - d)) {
+                    note -= d;
+                    break;
+                }
+            }
+        if (start < st.length - 1) {
+            NoteInterval n;
+            n.start = start;
+            n.end = std::min(static_cast<int>(std::lround(start + step)), st.length - 1);
+            n.note = static_cast<std::uint8_t>(note);
+            n.velocity = 100;
+            NoteEdit edit;
+            edit.added = {n};
+            noteEdit_ = std::move(edit);
+            lastNoteEdit_ = time_;
+            selection_ = {{n.start, n.note}};
+        }
     } else if (pressed) {  // empty space: a selection rectangle (with Ctrl, added to the selection)
         bandFrom_ = mouse;
         if (!io.KeyCtrl)
@@ -2335,6 +2370,25 @@ void PerformanceView::drawPianoRoll(const Mapping& m, const LiveState& live, flo
     const bool keysFree = !ImGui::IsAnyItemActive() && ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
     if (!selection_.empty() && !drag_ && keysFree && ImGui::IsKeyPressed(ImGuiKey_Delete, false))
         removeNotes(std::exchange(selection_, {}));
+    if (std::exchange(quantizeAsked_, false) || (!drag_ && keysFree && ImGui::IsKeyPressed(ImGuiKey_Q, false))) {
+        // The selection (or every note) on the grid, each to its nearest step; the selection follows.
+        NoteEdit edit;
+        edit.quantizeStep = gridStep;
+        if (selection_.empty())
+            for (int i = 0; i < live.noteLoopCount; ++i)
+                edit.notes.push_back({noteAt(i).start, noteAt(i).note});
+        else
+            edit.notes = selection_;
+        for (LoopNoteRef& r : selection_) {
+            r.start = static_cast<std::int32_t>(std::lround(std::round(r.start / gridStep) * gridStep));
+            if (r.start >= st.length - 1)
+                r.start = 0;
+        }
+        if (!edit.notes.empty()) {
+            noteEdit_ = std::move(edit);
+            lastNoteEdit_ = time_;
+        }
+    }
     if (!selection_.empty() && !drag_ && keysFree && ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
         selection_.clear();
         escapeTaken_ = true;
