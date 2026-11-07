@@ -617,8 +617,6 @@ private:
     void addSongItem(int row, int col, const LiveState& live, midipad::SongItem::Kind kind, int index);
     // `bar`: a new item on that beat of the section + 1 (0: after the last).
     void openSongPick(int row, int col, int item, const LiveState& live, bool fromController, ImVec2 at, int bar = 0);
-    void addToSong(int channel, midipad::SongItem::Kind kind, int index, const LiveState& live);  // from the session screen
-    std::string songTargetName() const;  // the section addToSong puts it in
     void addSongSection(int at);
     // Play from a section (its name, its menu): a jump while the song plays,
     // else the song plays from there, what played stopped first.
@@ -2004,28 +2002,6 @@ void GuiApp::openSongPick(int row, int col, int item, const LiveState& live, boo
     openMenu({PerformanceView::MenuTarget::Kind::SongPick, col, row, bar, item}, live, fromController, at);
 }
 
-std::string GuiApp::songTargetName() const {
-    const int count = static_cast<int>(song_.sections.size());
-    if (count == 0)
-        return "SECTION 1";
-    const int row = std::clamp(songCursor_.row, 0, count - 1);
-    const std::string& name = song_.sections[static_cast<std::size_t>(row)].name;
-    return name.empty() ? "SECTION " + std::to_string(row + 1) : name;
-}
-
-// From the session screen: after the last item of the channel in the section
-// under the song's cursor (a first section if there is none).
-void GuiApp::addToSong(int channel, midipad::SongItem::Kind kind, int index, const LiveState& live) {
-    if (song_.sections.empty())
-        addSongSection(0);
-    const int row = std::clamp(songCursor_.row, 0, static_cast<int>(song_.sections.size()) - 1);
-    const auto keep = songCursor_;
-    addSongItem(row, channel, live, kind, index);
-    songCursor_ = keep;
-    songCursor_.row = row;
-    log("Added to the song, in " + songTargetName() + ".");
-}
-
 void GuiApp::playSongFrom(int section, const LiveState& live) {
     if (live.song.playing) {
         runtime_->playSong(section);
@@ -2156,11 +2132,33 @@ void GuiApp::undoRedo(bool redo) {
 void GuiApp::launchRow(int slot, const LiveState& live) {
     if (slot < 0 || slot >= Engine::kClipSlots)
         return;
+    // Every clip of the row playing it (or about to): the row stops. Otherwise its
+    // clips are launched, and the channels without one there stop.
+    bool any = false, all = true;
     for (int ch = 0; ch < kChannelCount; ++ch) {
         const auto c = static_cast<std::size_t>(ch);
+        if (!live.clips[c * Engine::kClipSlots + static_cast<std::size_t>(slot)].sources)
+            continue;
+        any = true;
         const bool plays = ((live.clipsPlaying >> ch) & 1u) && live.currentClip[c] == slot;
-        if (live.clips[c * Engine::kClipSlots + static_cast<std::size_t>(slot)].sources && !plays && live.queuedClip[c] != slot)
-            runtime_->launchClip(ch, slot);
+        all = all && (plays || live.queuedClip[c] == slot);
+    }
+    if (!any)
+        return;
+    for (int ch = 0; ch < kChannelCount; ++ch) {
+        const auto c = static_cast<std::size_t>(ch);
+        const bool here = live.clips[c * Engine::kClipSlots + static_cast<std::size_t>(slot)].sources;
+        const bool busy = ((live.clipsPlaying >> ch) & 1u) || live.queuedClip[c] >= 0 || live.chains[c].at >= 0;
+        if (all) {
+            if (here && busy)
+                runtime_->stopClip(ch);
+        } else if (here) {
+            const bool plays = ((live.clipsPlaying >> ch) & 1u) && live.currentClip[c] == slot;
+            if (!plays && live.queuedClip[c] != slot)
+                runtime_->launchClip(ch, slot);
+        } else if (busy) {
+            runtime_->stopClip(ch);
+        }
     }
 }
 
@@ -2637,7 +2635,7 @@ enum MenuId : int {
     kSongPlay, kSongStop, kSongLoop, kLoopSong, kSectionRename, kSectionFit, kSectionDuplicate, kSectionInsert, kSectionUp, kSectionDown, kSectionDelete,
     kCellEdit, kCellClear, kCellCopy, kCellPaste,
     kRestBarMore, kRestBarLess, kRestBeatMore, kRestBeatLess,
-    kItemChange, kItemGlue, kItemLeft, kItemRight, kItemLoop, kItemKind, kItemDuplicate, kItemDelete, kAddToSong,
+    kItemChange, kItemGlue, kItemLeft, kItemRight, kItemLoop, kItemKind, kItemDuplicate, kItemDelete, kEditClipNotes,
     kModPick, kModStop, kModSendCc, kModDepth, kModDirection, kCopyMapping,
     kPick = 1000,  // + the clip (0-7) or 8 + the chain: what a song item plays
     kModTarget = 2000  // + the movement track a loop modulates
@@ -2850,12 +2848,12 @@ void GuiApp::openMenu(const PerformanceView::MenuTarget& t, const LiveState& liv
         else
             add("Launch", kLaunch, has);
         add("Launch the row", kLaunchRow);
+        add("Edit the notes\xE2\x80\xA6", kEditClipNotes, ((live.clips[c * Engine::kClipSlots + static_cast<std::size_t>(t.slot)].sources >> static_cast<int>(LoopSource::Notes)) & 1u) != 0);
         add("Record here", kRecordHere);
         add("Duplicate", kDuplicate, has && freeSlot);
         add("Move up", kClipUp, has && t.slot > 0);
         add("Move down", kClipDown, has && t.slot < Engine::kClipSlots - 1);
         add("Add to the chain", kAddToChain, has && freeStep);
-        add("Add to the song (" + songTargetName() + ")", kAddToSong, has);
         add("Clear", kClearClip, has);
         break;
     }
@@ -2908,7 +2906,6 @@ void GuiApp::openMenu(const PerformanceView::MenuTarget& t, const LiveState& liv
             free = free || (&other != &chain && other.empty());
         add("Duplicate", kDuplicateChain, !chain.empty() && free);
         add("Rename\xE2\x80\xA6", kRenameChain);
-        add("Add to the song (" + songTargetName() + ")", kAddToSong, !chain.empty());
         add("Clear", kClearChain, !chain.empty() || chain.then != Engine::kThenLoop);
         break;
     }
@@ -3346,8 +3343,15 @@ void GuiApp::runMenu(const PerformanceView::MenuTarget& t, int id, const LiveSta
         colourChannel_ = ch;
         openColour_ = true;
         break;
-    case kAddToSong:
-        addToSong(ch, t.kind == K::Chain ? midipad::SongItem::Kind::Chain : midipad::SongItem::Kind::Clip, t.kind == K::Chain ? shown : t.slot, live);
+    case kEditClipNotes:  // the clip made the channel's current one (played, if another plays), then its notes
+        moveSessionCursor(ch, t.slot, live);
+        if (live.currentClip[c] != t.slot || live.queuedClip[c] >= 0) {
+            if ((live.clipsPlaying >> ch) & 1u)
+                runtime_->launchClip(ch, t.slot);
+            else
+                runtime_->selectClip(ch, t.slot);
+        }
+        openWindow("notes");
         break;
     case kItemChange: openSongPick(t.slot, t.channel, t.axis, live, menuFromController_, menuAt_); break;
     case kSongPlay:

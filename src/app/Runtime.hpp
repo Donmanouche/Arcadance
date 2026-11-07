@@ -211,6 +211,7 @@ public:
     void toggleLoopLock(int source, int axis = -1);  // see Engine::toggleLoopLock, on the active channel; -1: both axes
     // Clips (Engine::launchClip, stopClip, setRecordSlot), on any channel.
     void launchClip(int channel, int slot);
+    void selectClip(int channel, int slot);  // Engine::selectClip
     void stopClip(int channel) { launchClip(channel, midipad::Engine::kClipSlots); }
     void setRecordSlot(int channel, int slot);
     // The session screen from the controller (Engine::setSessionMode); what
@@ -309,7 +310,7 @@ private:
     class Tap;
     struct Command {
         enum class Kind : std::uint8_t {
-            SetChannel, Panic, ClearLoop, ToggleLock, ChainStep, ChainThen, ChainGo, ChainStop, ClearClip, CopyClip, ResetShape, LaunchClip, RecordSlot, StretchLoop, AmplifyLoop, AxisLength, PauseLoops, PlayLoops,
+            SetChannel, Panic, ClearLoop, ToggleLock, ChainStep, ChainThen, ChainGo, ChainStop, ClearClip, CopyClip, ResetShape, LaunchClip, SelectClip, RecordSlot, StretchLoop, AmplifyLoop, AxisLength, PauseLoops, PlayLoops,
             SaveLoops, LoadLoops, RestoreClip, LoadChains, LoadSong, SongPlay, SongStop, SongLoop, Mute, Solo, MuteSolo, Modulation, ModulationCc, OffsetLoop, EditNotes, RecenterTilt
         } kind;
         int channel = 0;

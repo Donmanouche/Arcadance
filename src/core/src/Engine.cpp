@@ -2807,6 +2807,17 @@ bool Engine::transportPlay(int section) {
     return true;
 }
 
+void Engine::forgetPausedClips() {
+    if (!loopsPaused_)
+        return;
+    for (int ch = 0; ch < kChannelCount; ++ch) {
+        stopChain(ch);
+        queued_[static_cast<std::size_t>(ch)] = -1;
+        clipPlaying_[static_cast<std::size_t>(ch)] = false;
+    }
+    songResume_ = 0;
+}
+
 void Engine::transportStop() {
     stopSong();
     pauseLoops();
@@ -2889,6 +2900,26 @@ void Engine::launchClip(int channel, int slot) {
     channel = std::clamp(channel, 0, kChannelCount - 1);
     stopChain(channel);  // the hand wins
     queueClip(channel, slot);
+}
+
+void Engine::selectClip(int channel, int slot) {
+    channel = std::clamp(channel, 0, kChannelCount - 1);
+    slot = std::clamp(slot, 0, kClipSlots - 1);
+    const auto c = static_cast<std::size_t>(channel);
+    if ((clipPlaying_[c] && !loopsPaused_) || slot == currentSlot_[c])
+        return;
+    stopChain(channel);
+    finishRecording(channel);
+    if (clipPlaying_[c]) {  // stopped: what comes back on Play is that clip, from its start
+        fromLoop_ = true;
+        for (int track = 0; track < kTrackCount; ++track)
+            silenceLoop(loopIndex(channel, track));
+        fromLoop_ = false;
+    }
+    queued_[c] = -1;
+    currentSlot_[c] = recordSlot_[c] = slot;
+    if (clipPlaying_[c])
+        clipPlaying_[c] = currentHasLoops(channel);
 }
 
 void Engine::queueClip(int channel, int slot) {

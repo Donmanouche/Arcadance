@@ -179,6 +179,7 @@ void Runtime::copyClip(int channel, int from, int to) { commands_.push({Command:
 void Runtime::resetLoopShape(int source, int axis) { commands_.push({Command::Kind::ResetShape, source, 0, axis}); }
 void Runtime::toggleLoopLock(int source, int axis) { commands_.push({Command::Kind::ToggleLock, source, 0, axis}); }
 void Runtime::launchClip(int channel, int slot) { commands_.push({Command::Kind::LaunchClip, channel, slot}); }
+void Runtime::selectClip(int channel, int slot) { commands_.push({Command::Kind::SelectClip, channel, slot}); }
 void Runtime::setRecordSlot(int channel, int slot) { commands_.push({Command::Kind::RecordSlot, channel, slot}); }
 
 void Runtime::stretchLoop(int source, int axis, int steps) { commands_.push({Command::Kind::StretchLoop, source, steps, axis}); }
@@ -485,11 +486,13 @@ void Runtime::publish(const GamepadInput& gamepad, const Engine& engine, std::ui
     song_ = {engine.songPlaying(), engine.songLoop(), engine.songSection(), engine.songBeat()};
     // The clips: their state every poll, their sketches 20 times a second.
     clipsPlaying_ = 0;
+    // Stopped: the clips that come back on Play show as stopped till then.
+    const bool stopped = engine.loopsPaused() && !engine.songPlaying();
     for (int c = 0; c < kChannelCount; ++c) {
         const auto ci = static_cast<std::size_t>(c);
         currentClip_[ci] = static_cast<std::int8_t>(engine.currentClip(c));
         queuedClip_[ci] = static_cast<std::int8_t>(engine.queuedClip(c));
-        clipProgress_[ci] = engine.clipProgress(c);
+        clipProgress_[ci] = stopped ? -1.0f : engine.clipProgress(c);
         LiveState::Chains& chains = chains_[ci];
         for (int n = 0; curves && n < Engine::kChains; ++n) {
             LiveState::Chain& chain = chains.list[static_cast<std::size_t>(n)];
@@ -500,8 +503,8 @@ void Runtime::publish(const GamepadInput& gamepad, const Engine& engine, std::ui
             }
             chain.then = static_cast<std::int8_t>(engine.chainThen(c, n));
         }
-        chains.playing = static_cast<std::int8_t>(engine.chainPlaying(c));
-        chains.at = static_cast<std::int8_t>(engine.chainAt(c));
+        chains.playing = static_cast<std::int8_t>(stopped ? -1 : engine.chainPlaying(c));
+        chains.at = static_cast<std::int8_t>(stopped ? -1 : engine.chainAt(c));
         chains.next = static_cast<std::int8_t>(engine.chainNext(c));
         chains.nextChain = static_cast<std::int8_t>(engine.chainNextChain(c));
         chains.turns = engine.chainTurns(c);
@@ -516,7 +519,7 @@ void Runtime::publish(const GamepadInput& gamepad, const Engine& engine, std::ui
         }
         for (int k = 0; curves && k < Engine::kClipSlots; ++k)
             clipBeats_[ci][static_cast<std::size_t>(k)] = static_cast<float>(engine.clipBeats(c, k));
-        if (engine.clipPlaying(c))
+        if (engine.clipPlaying(c) && !stopped)
             clipsPlaying_ = static_cast<std::uint16_t>(clipsPlaying_ | (1u << c));
     }
     if (--clipSketchCountdown_ > 0)
@@ -640,6 +643,41 @@ void Runtime::run(std::stop_token stop, Options options, std::shared_ptr<const P
                 tap.setOutput(std::move(newOutput));
             }
         }
+        // Play (`section`: the song from there, -1: the clips) or Stop, for the
+        // engine, the devices on the MIDI clock and the Link session.
+        auto transport = [&](bool play, int section) {
+            const bool internal = clock_.load(std::memory_order_relaxed) == ClockMode::Internal;
+            if (play && internal) {
+                // The internal clock starts again from beat 0, before what plays
+                // takes its place on it: the song starts at once, on its first bar.
+                internalBeat = 0;
+                internalAt = start;
+                clockPulse = -1;
+                engine.setBeatClock({true, internalTempo_.load(std::memory_order_relaxed), 0});
+            }
+            if (play)
+                engine.transportPlay(section);
+            else
+                engine.transportStop();
+            if (internal && midiClockOut_.load(std::memory_order_relaxed))  // external devices: Start from the beat's start, or Stop
+                tap.sendClock(MidiMessage::realtime(play ? 0xFA : 0xFC));
+            if (clock_.load(std::memory_order_relaxed) == ClockMode::Link && startStopSync_.load(std::memory_order_relaxed)) {
+                // And the session, for the other apps; Arcadance is already there.
+                auto state = link_->link.captureAudioSessionState();
+                state.setIsPlaying(play, link_->link.clock().micros());
+                link_->link.commitAudioSessionState(state);
+                linkPlaying = play;
+                linkPlayingKnown = true;
+            }
+        };
+        // A clip or a chain launched while stopped: what was stopped is
+        // forgotten, and the transport starts with it alone.
+        auto wake = [&] {
+            if (!engine.loopsPaused() || engine.songPlaying())
+                return;
+            engine.forgetPausedClips();
+            transport(true, -1);
+        };
         while (auto command = commands_.pop()) {
             if (command->kind == Command::Kind::SetChannel) {
                 engine.setChannel(command->channel);
@@ -655,6 +693,7 @@ void Runtime::run(std::stop_token stop, Options options, std::shared_ptr<const P
             } else if (command->kind == Command::Kind::ChainThen) {
                 engine.setChainThen(command->channel, command->chain, command->value);
             } else if (command->kind == Command::Kind::ChainGo) {
+                wake();
                 engine.chainGoTo(command->channel, command->chain, command->value);
             } else if (command->kind == Command::Kind::ChainStop) {
                 engine.stopChain(command->channel);
@@ -670,7 +709,11 @@ void Runtime::run(std::stop_token stop, Options options, std::shared_ptr<const P
                 else
                     engine.toggleLoopLock(engine.channel(), command->channel, command->axis);
             } else if (command->kind == Command::Kind::LaunchClip) {
+                if (command->value < Engine::kClipSlots)
+                    wake();
                 engine.launchClip(command->channel, command->value);
+            } else if (command->kind == Command::Kind::SelectClip) {
+                engine.selectClip(command->channel, command->value);
             } else if (command->kind == Command::Kind::RecordSlot) {
                 engine.setRecordSlot(command->channel, command->value);
             } else if (command->kind == Command::Kind::StretchLoop) {  // `channel` holds the source
@@ -756,29 +799,7 @@ void Runtime::run(std::stop_token stop, Options options, std::shared_ptr<const P
                 // something plays does nothing, for the devices and Link either.
                 if (play && engine.playing())
                     continue;
-                const bool internal = clock_.load(std::memory_order_relaxed) == ClockMode::Internal;
-                if (play && internal) {
-                    // The internal clock starts again from beat 0, before what plays
-                    // takes its place on it: the song starts at once, on its first bar.
-                    internalBeat = 0;
-                    internalAt = start;
-                    clockPulse = -1;
-                    engine.setBeatClock({true, internalTempo_.load(std::memory_order_relaxed), 0});
-                }
-                if (play)
-                    engine.transportPlay(command->value);
-                else
-                    engine.transportStop();
-                if (internal && midiClockOut_.load(std::memory_order_relaxed))  // external devices: Start from the beat's start, or Stop
-                    tap.sendClock(MidiMessage::realtime(play ? 0xFA : 0xFC));
-                if (clock_.load(std::memory_order_relaxed) == ClockMode::Link && startStopSync_.load(std::memory_order_relaxed)) {
-                    // And the session, for the other apps; Arcadance is already there.
-                    auto state = link_->link.captureAudioSessionState();
-                    state.setIsPlaying(play, link_->link.clock().micros());
-                    link_->link.commitAudioSessionState(state);
-                    linkPlaying = play;
-                    linkPlayingKnown = true;
-                }
+                transport(play, command->value);
             } else {  // Panic
                 engine.allNotesOff();
             }

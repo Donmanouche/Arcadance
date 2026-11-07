@@ -304,6 +304,8 @@ public:
     double songItemBeats(int channel, const SongItem& item, bool& open) const;
     int sectionBars(const SongSection& section) const;
     void launchClip(int channel, int slot);
+    // A clip made its channel's current one without playing it (the channel not playing: else nothing).
+    void selectClip(int channel, int slot);
     void stopClip(int channel) { launchClip(channel, kClipSlots); }
     void setRecordSlot(int channel, int slot);
     // A clip emptied (the current one stops); a clip copied into another slot
@@ -469,6 +471,8 @@ public:
     void pauseLoops();
     void playLoops();
     bool loopsPaused() const { return loopsPaused_; }
+    // Stopped: what would come back on Play is forgotten (its clips stopped, its chains too).
+    void forgetPausedClips();
     // The transport (Play / Stop), the same for the song and the clips. Play
     // does nothing while something plays (false); otherwise it plays the song
     // from `section` (>= 0, every channel from silence), or the clips (-1:

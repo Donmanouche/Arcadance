@@ -2702,7 +2702,8 @@ std::optional<PerformanceView::SessionAction> PerformanceView::drawSession(const
         for (int ch = 0; ch < kChannelCount; ++ch)
             if (live.clips[static_cast<std::size_t>(ch * kSlots + slot)].sources) {
                 any = true;
-                all = all && ((live.clipsPlaying >> ch) & 1u) && live.currentClip[static_cast<std::size_t>(ch)] == slot;
+                all = all && ((((live.clipsPlaying >> ch) & 1u) && live.currentClip[static_cast<std::size_t>(ch)] == slot) ||
+                              live.queuedClip[static_cast<std::size_t>(ch)] == slot);
             }
         ImGui::PushID(1000 + slot);
         ImGui::SetCursorScreenPos(a);
@@ -2710,7 +2711,7 @@ std::optional<PerformanceView::SessionAction> PerformanceView::drawSession(const
             action = SessionAction{SessionAction::Kind::LaunchRow, 0, slot};
         const bool hovered = ImGui::IsItemHovered() && any;
         if (hovered)
-            ImGui::SetTooltip("Launch row %d", slot + 1);
+            ImGui::SetTooltip(all ? "Stop row %d" : "Launch row %d", slot + 1);
         ImGui::PopID();
         const bool lit = any && all;
         dl->AddRectFilled(a, b, lit ? alpha(T::kGreen, 0.25f) : hovered ? IM_COL32(0x2C, 0x30, 0x36, 255) : IM_COL32(0x1E, 0x20, 0x24, 255), px(5));
@@ -2718,7 +2719,10 @@ std::optional<PerformanceView::SessionAction> PerformanceView::drawSession(const
         const float mx = (a.x + b.x) * 0.5f, my = (a.y + b.y) * 0.5f;
         text(dl, gBold, px(11), mx, my - px(9), any ? T::kLabel : T::kDim, std::to_string(slot + 1), H::Center, V::Middle);
         const ImU32 sign = lit ? T::kGreen : hovered ? T::kGreen : any ? T::kLabel : IM_COL32(0x40, 0x44, 0x4A, 255);
-        dl->AddTriangleFilled(ImVec2(mx - px(3.5f), my + px(3)), ImVec2(mx - px(3.5f), my + px(13)), ImVec2(mx + px(5), my + px(8)), sign);
+        if (lit && hovered)  // a click stops it
+            dl->AddRectFilled(ImVec2(mx - px(4), my + px(4)), ImVec2(mx + px(4), my + px(12)), sign, px(1));
+        else
+            dl->AddTriangleFilled(ImVec2(mx - px(3.5f), my + px(3)), ImVec2(mx - px(3.5f), my + px(13)), ImVec2(mx + px(5), my + px(8)), sign);
     }
     // The chain of the active channel, then the other eight channels' link in its header.
     const float by = origin.y + gridH + px(8);
