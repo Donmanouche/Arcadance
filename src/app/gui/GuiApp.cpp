@@ -4423,7 +4423,7 @@ void GuiApp::drawPerformance(const LiveState& live) {
         ImGui::PushFont(bold, 15.0f);
         std::string current = hasFile_ ? preset_.name : std::string("Untitled");
         {  // shortened with an ellipsis when the list is narrow
-            const float room = comboW - ImGui::GetFrameHeight() - ImGui::GetStyle().FramePadding.x * 2 - px(10);
+            const float room = comboW - ImGui::GetFrameHeight() - ImGui::GetStyle().FramePadding.x;  // as the list clips it
             if (ImGui::CalcTextSize(current.c_str()).x > room) {
                 while (!current.empty() && ImGui::CalcTextSize((current + "\xE2\x80\xA6").c_str()).x > room) {
                     current.pop_back();

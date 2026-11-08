@@ -59,21 +59,27 @@ had: a looper, clips, chains and a song arranger you drive with your thumbs.
 
 ## Build a track with your thumbs
 
-![The session screen: a column of clips per channel, each clip filled with its channel's colour, its notes or its movement, those playing outlined in green, and the chain of channel 1 underneath](docs/media/session.png)
+![The session screen: a column of clips per channel, each clip filled with its channel's colour and named, those playing outlined in green, named rows on the left, and the chain of channel 1 underneath](docs/media/session.png)
 
 1. **Record clips.** Each channel keeps up to eight clips, each a full set of
    loops. The session screen shows them all, a column per channel. Launch a clip
    and it starts at the end of the current one, so changes always land on the
-   beat.
+   beat; launch a whole row at once, and stop it the same way. Name your clips
+   and rows, drag clips around with the mouse, select several, undo anything.
 2. **Chain them.** A chain plays a channel's clips in order: clip 3 twice, a
    random clip four times, two bars of silence, clip 1 until you move on.
    Eight chains per channel, each going on to the next or looping.
 3. **Arrange the song.** The song screen lays out sections (intro, drop,
-   break…), and in each one what every channel plays and when. Play from any
-   section, loop one while you jam over it, or loop the whole song, and watch
-   the playhead run across the track.
+   break…), and in each one what every channel plays and when. Drag clips and
+   chains in on the bar or the beat, stretch a silence to the length you want,
+   play from any section, loop one while you jam over it, or loop the whole
+   song, and watch the playhead run across the track.
 4. **Save the session.** Clips, chains, song, preset, key and tempo in one file.
    Quitting asks before losing anything.
+5. **Take it to your DAW.** Export a clip or the whole song as a MIDI file, a
+   track per channel with its notes and CCs, and drag it into Bitwig, Live or
+   any other DAW. The song always starts the same: when a loop stops, its CC
+   goes back to where the control rests.
 
 ![The chain of a channel: clip 3 twice, a random clip four times, clip 2 sixteen times, clip 1 until you move on, a random clip once](docs/media/chain.png)
 
@@ -82,10 +88,13 @@ had: a looper, clips, chains and a song arranger you drive with your thumbs.
 ## See every loop
 
 Each part of the controller has its own panel: what you play, what it sends,
-and its loops drawn as they play, each with its length, playhead and CC. The
-piano roll shows the notes you play and turns into a full editor for the note
-loop: move, stretch or delete notes, snap them to the key, shorten the loop,
-all without recording again.
+and its loops drawn as they play, each with its length, playhead and CC. A rail
+above them shows all sixteen channels at a glance, and the modules take the
+colour of the channel you play. The piano roll shows the notes you play and
+opens into a full editor for the note loop: add, move, stretch or delete notes,
+put them on a grid, snap them to the key, set each note's velocity and the
+chance it plays, shorten the loop, all without recording again, and every edit
+can be undone.
 
 ![Loops of a stick, the triggers and a touchpad finger, playing beside the live controls](docs/media/loops.gif)
 
@@ -104,8 +113,8 @@ all without recording again.
 ## Made for the stage
 
 - One window that plays and edits at the same time, fullscreen with **F11**.
-- One Play / Stop for every clip or the whole song, a PANIC button that silences
-  everything.
+- One Play / Stop for every clip or the whole song; Stop again silences
+  everything. Launch a clip while stopped and it starts playing.
 - Set everything up from the controller: an edit mode puts a cursor on the
   screen, and small menus open on any clip, loop or chain. Hold the Mode button
   for a reminder of the controls of the screen you are on.
