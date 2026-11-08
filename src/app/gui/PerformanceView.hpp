@@ -179,7 +179,7 @@ public:
     // the item), the clips and chains of a channel to put in a song cell
     // (SongPick: `axis` the item they replace, -1 a new one after the last).
     struct MenuTarget {
-        enum class Kind : std::uint8_t { Lane, Panel, NoteLoop, Control, Clip, Step, Channel, ChannelBlock, Chain, Section, SongCell, SongItem, SongPick, ModPick } kind =
+        enum class Kind : std::uint8_t { Lane, Panel, NoteLoop, Control, Clip, Step, Channel, ChannelBlock, Chain, Section, SongCell, SongItem, SongPick, ModPick, Row } kind =
             Kind::Control;
         int channel = 0, slot = 0, source = 0, axis = -1;
         std::string spec;
@@ -212,6 +212,17 @@ public:
     }
     std::optional<std::vector<std::pair<int, int>>> takeClipBand() { return std::exchange(clipBand_, std::nullopt); }
     std::optional<std::vector<int>> takeItemBand() { return std::exchange(itemBand_, std::nullopt); }
+    // The names of the session screen's rows and of the clips (empty: none).
+    using ClipNames = std::array<std::array<std::string, midipad::Engine::kClipSlots>, midipad::kChannelCount>;
+    void setNames(const std::array<std::string, midipad::Engine::kClipSlots>& rows, const ClipNames& clips) {
+        rowNames_ = rows;
+        clipNames_ = clips;
+    }
+    std::string clipLabel(int channel, int slot) const {  // its name, or "Clip n"
+        const std::string& n = clipNames_[static_cast<std::size_t>(std::clamp(channel, 0, midipad::kChannelCount - 1))]
+                                         [static_cast<std::size_t>(std::clamp(slot, 0, midipad::Engine::kClipSlots - 1))];
+        return n.empty() ? "Clip " + std::to_string(slot + 1) : n;
+    }
     ImU32 channelColor(int channel) const;
     static ImU32 defaultChannelColor(int channel);
     // The chain the session screen shows for each channel, and the chains' names.
@@ -279,6 +290,14 @@ public:
     void setQuantize(int stepsPerBeat) { quantize_ = stepsPerBeat; }  // AppSettings::quantize
     // The editor's selected notes (all of them, none selected) put on its grid, at its next frame.
     void askQuantize() { quantizeAsked_ = true; }
+    // The note editor's grid, in steps a beat (2: eighths, 3: eighth triplets,
+    // 4: sixteenths, 6, 8); 0: none (moves are free, notes go on sixteenths).
+    int editorGrid() const { return editorGrid_; }
+    void setEditorGrid(int stepsPerBeat) { editorGrid_ = stepsPerBeat; }
+    // The note editor as a panel in the modules' place, the buttons still below:
+    // draw() leaves it the room, panelRect() says where.
+    void setNotesPanel(bool on) { notesPanel_ = on; }
+    std::pair<ImVec2, ImVec2> panelRect() const { return {panelA_, panelB_}; }
 
 private:
     struct Trail {
@@ -392,6 +411,13 @@ private:
     void menuOnRightClick(const MenuTarget& target, bool recorded, bool locked, const ImVec2* a = nullptr, const ImVec2* b = nullptr);
     std::optional<NoteEdit> noteEdit_;
     int quantize_ = 0;
+    std::array<std::string, midipad::Engine::kClipSlots> rowNames_{};
+    ClipNames clipNames_{};
+    int editorGrid_ = 4;
+    bool notesPanel_ = false;
+    ImVec2 panelA_{}, panelB_{};
+    bool songGridFolded_ = false;  // the song screen's rows folded away
+    ImU32 accent_ = Theme::kBlue;  // the active channel's colour: the modules' accent (draw)
     bool editing_ = false;     // drawing the note loop editor, not the view's piano roll
     // The editor's lane under the roll: the notes' velocities (0) or chances (1), each a stem.
     int laneMode_ = 0;

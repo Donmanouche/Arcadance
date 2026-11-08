@@ -199,6 +199,20 @@ Json sessionToJson(const Session& session) {
         if (session.song.loop)
             j["song"]["loop"] = true;
     }
+    // The names of the rows (null: none) and of the clips (channel and clip from 1).
+    if (std::any_of(session.rowNames.begin(), session.rowNames.end(), [](const std::string& n) { return !n.empty(); })) {
+        Json rows = Json::array();
+        for (const std::string& n : session.rowNames)
+            rows.push_back(n.empty() ? Json() : Json(n));
+        j["rows"] = std::move(rows);
+    }
+    if (!session.clipNames.empty()) {
+        Json names = Json::array();
+        for (const Session::ClipName& c : session.clipNames)
+            if (!c.name.empty())
+                names.push_back({{"channel", c.channel + 1}, {"clip", c.clip + 1}, {"name", c.name}});
+        j["clipNames"] = std::move(names);
+    }
     return j;
 }
 
@@ -386,6 +400,17 @@ Session sessionFromJson(const Json& j) {
             s.chains.push_back(std::move(c));
         }
     }
+    if (j.contains("rows") && j["rows"].is_array())
+        for (std::size_t i = 0; i < std::min<std::size_t>(j["rows"].size(), s.rowNames.size()); ++i)
+            if (j["rows"][i].is_string())
+                s.rowNames[i] = j["rows"][i].get<std::string>();
+    if (j.contains("clipNames") && j["clipNames"].is_array())
+        for (const Json& o : j["clipNames"]) {
+            if (!o.is_object() || !o.contains("name") || !o["name"].is_string())
+                continue;
+            const int channel = readInt(o, "channel", 1, 16, 1, "session.clipNames") - 1, clip = readInt(o, "clip", 1, 8, 1, "session.clipNames") - 1;
+            s.clipNames.push_back({channel, clip, o["name"].get<std::string>()});
+        }
     if (j.contains("song")) {
         const Json& song = j["song"];
         if (!song.is_object() || (song.contains("sections") && !song["sections"].is_array()))

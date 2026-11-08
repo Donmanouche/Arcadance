@@ -8,6 +8,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <array>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -85,6 +86,15 @@ struct Session {
     std::vector<SessionChain> chains;
     Song song;
     std::uint16_t muted = 0, soloed = 0;  // a bit per channel (Engine::setMuted, setSoloed)
+    // Names given to the rows of the session screen (each a clip slot) and to
+    // clips; empty: none.
+    std::array<std::string, 8> rowNames{};
+    struct ClipName {
+        int channel = 0, clip = 0;
+        std::string name;
+        friend bool operator==(const ClipName&, const ClipName&) = default;
+    };
+    std::vector<ClipName> clipNames;
 };
 
 class SessionError : public std::runtime_error {

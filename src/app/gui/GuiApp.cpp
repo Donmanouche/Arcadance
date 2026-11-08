@@ -554,6 +554,13 @@ private:
     // cursor's slot (its channel is the active one). Leaving it, every
     // channel records into its current clip again.
     void toggleSession(const LiveState& live);
+    void showView(int view, const LiveState& live);
+    void drawNotesPanel(const LiveState& live);  // the note loop's editor, a panel of the main screen
+    void openNotes(const LiveState& live) {      // it, on the main screen
+        showView(0, live);
+        notesPanel_ = true;
+        overlaySpec_.reset();
+    }  // 0: the main screen, 1: the session's, 2: the song's
     bool sessionView_ = false;
     // The song screen: the song (kept in the session, given to the engine at
     // each change), the cursor on it, items copied from a cell.
@@ -577,6 +584,7 @@ private:
         std::array<std::string, Engine::kChains> chainNames;
         std::vector<std::pair<int, int>> clips;  // (channel, slot)
         std::vector<midipad::SessionLoop> loops;
+        std::vector<std::string> clipNames;  // one per clip
     };
     std::vector<UndoStep> undo_, redo_;
     midipad::Song songShadow_;  // the song before the edit being made
@@ -585,6 +593,7 @@ private:
     std::string toast_;  // in the status bar, a moment: what was done, undone or redone
     bool toastUndone_ = false;
     bool toastPlain_ = false;  // a message alone: no Undo
+    bool notesPanel_ = false;  // the note editor, in the main screen's modules' place
     double toastUntil_ = 0;
     void pushUndo(UndoStep step);
     void songUndo();
@@ -609,6 +618,7 @@ private:
     struct ClipCopy {
         int channels = 0, slots = 0;
         std::vector<midipad::SessionLoop> loops;
+        std::string name;
     };
     std::vector<ClipCopy> clipClipboard_;
     // The clips selected in the session screen (Shift+click, a rectangle), and the items of a song cell.
@@ -631,6 +641,16 @@ private:
     PerformanceView::SongCursor songCursor_;
     std::vector<midipad::SongItem> songClipboard_;
     int renameSection_ = -1;
+    int renameRow_ = -1, renameClipChannel_ = -1, renameClipSlot_ = -1;  // a row, a clip being renamed
+    // The names of the session screen's rows and of the clips (empty: none),
+    // and the clips seen holding something: one emptied loses its name.
+    std::array<std::string, Engine::kClipSlots> rowNames_{};
+    std::array<std::array<std::string, Engine::kClipSlots>, kChannelCount> clipNames_{};
+    std::array<std::uint8_t, kChannelCount * Engine::kClipSlots> clipSeen_{};
+    std::string clipName(int channel, int slot) const {  // its name, or "Clip n"
+        const std::string& n = clipNames_[static_cast<std::size_t>(std::clamp(channel, 0, kChannelCount - 1))][static_cast<std::size_t>(std::clamp(slot, 0, Engine::kClipSlots - 1))];
+        return n.empty() ? "Clip " + std::to_string(slot + 1) : n;
+    }
     bool editView_ = false;   // edit mode: a cursor on the main view (Shift + Mode)
     bool helpShown_ = false;  // the Mode control held: the help of the screen
     // Context menus: the same small list for the mouse (where it clicked) and
@@ -1024,9 +1044,46 @@ bool GuiApp::init() {
     ImGui::StyleColorsDark();
     ImGuiStyle& style = ImGui::GetStyle();
     style.WindowRounding = 0;
-    style.FrameRounding = 4;
+    style.FrameRounding = 5;
     style.GrabRounding = 4;
-    style.TabRounding = 4;
+    style.TabRounding = 5;
+    style.PopupRounding = 6;
+    style.ScrollbarRounding = 6;
+    style.FrameBorderSize = 1;
+    style.SeparatorTextBorderSize = 1;
+    {  // the flat look of the screens, for the windows and dialogs too: their greys, one green accent
+        using Theme = PerformanceView::Theme;
+        auto c = [](ImU32 v) { return ImGui::ColorConvertU32ToFloat4(v); };
+        ImVec4* col = style.Colors;
+        col[ImGuiCol_Text] = c(Theme::kText);
+        col[ImGuiCol_TextDisabled] = c(Theme::kDim);
+        col[ImGuiCol_WindowBg] = c(Theme::kPanelHeader);
+        col[ImGuiCol_PopupBg] = c(Theme::kPanel);
+        col[ImGuiCol_Border] = c(IM_COL32(0x4A, 0x4F, 0x57, 200));
+        col[ImGuiCol_FrameBg] = c(Theme::kControl);
+        col[ImGuiCol_FrameBgHovered] = c(IM_COL32(0x47, 0x4C, 0x54, 255));
+        col[ImGuiCol_FrameBgActive] = c(IM_COL32(0x52, 0x58, 0x62, 255));
+        col[ImGuiCol_TitleBg] = col[ImGuiCol_TitleBgActive] = col[ImGuiCol_TitleBgCollapsed] = c(Theme::kTopBar);
+        col[ImGuiCol_CheckMark] = c(Theme::kGreen);
+        col[ImGuiCol_SliderGrab] = c(Theme::kGreen);
+        col[ImGuiCol_SliderGrabActive] = c(IM_COL32(0x6C, 0xF0, 0xA6, 255));
+        col[ImGuiCol_Button] = c(Theme::kControl);
+        col[ImGuiCol_ButtonHovered] = c(IM_COL32(0x47, 0x4C, 0x54, 255));
+        col[ImGuiCol_ButtonActive] = c(IM_COL32(0x52, 0x58, 0x62, 255));
+        col[ImGuiCol_Header] = c(IM_COL32(0x3F, 0x46, 0x52, 255));
+        col[ImGuiCol_HeaderHovered] = c(IM_COL32(0x38, 0x3D, 0x45, 255));
+        col[ImGuiCol_HeaderActive] = c(IM_COL32(0x45, 0x4C, 0x58, 255));
+        col[ImGuiCol_Separator] = col[ImGuiCol_SeparatorHovered] = c(IM_COL32(0x4A, 0x4F, 0x57, 255));
+        col[ImGuiCol_SeparatorActive] = c(Theme::kGreen);
+        col[ImGuiCol_Tab] = c(Theme::kControl);
+        col[ImGuiCol_TabHovered] = c(IM_COL32(0x47, 0x4C, 0x54, 255));
+        col[ImGuiCol_TabSelected] = c(IM_COL32(0x2A, 0x5B, 0x43, 255));
+        col[ImGuiCol_TabSelectedOverline] = c(Theme::kGreen);
+        col[ImGuiCol_ScrollbarBg] = c(IM_COL32(0, 0, 0, 40));
+        col[ImGuiCol_ScrollbarGrab] = c(IM_COL32(0x4E, 0x53, 0x5C, 255));
+        col[ImGuiCol_ResizeGrip] = c(IM_COL32(0x4E, 0x53, 0x5C, 120));
+        col[ImGuiCol_NavCursor] = c(Theme::kCyan);
+    }
     baseStyle_ = style;  // scaled with the page, frame by frame (see fitPage)
 
     ImFontConfig font;
@@ -1877,7 +1934,7 @@ void GuiApp::editEvent(Engine::SessionEvent e, const LiveState& live) {
         io.AddKeyEvent(key, true);
         io.AddKeyEvent(key, false);
     };
-    if (overlaySpec_ || optionsOpen_) {
+    if (overlaySpec_ || optionsOpen_ || notesPanel_) {  // a window or the note editor: its fields
         switch (e) {
         case E::Up: tap(ImGuiKey_GamepadDpadUp); break;
         case E::Down: tap(ImGuiKey_GamepadDpadDown); break;
@@ -1889,9 +1946,11 @@ void GuiApp::editEvent(Engine::SessionEvent e, const LiveState& live) {
         case E::Back:
             if (ImGui::IsAnyItemActive()) {
                 tap(ImGuiKey_GamepadFaceRight);
-            } else {
+            } else if (overlaySpec_ || optionsOpen_) {
                 overlaySpec_.reset();
                 optionsOpen_ = false;
+            } else {
+                notesPanel_ = false;
             }
             break;
         default: break;
@@ -1942,6 +2001,172 @@ void GuiApp::toggleSession(const LiveState& live) {
     } else {
         for (int ch = 0; ch < kChannelCount; ++ch)
             runtime_->setRecordSlot(ch, live.currentClip[static_cast<std::size_t>(ch)]);
+    }
+}
+
+void GuiApp::drawNotesPanel(const LiveState& live) {
+    using Theme = PerformanceView::Theme;
+    const auto [a, b] = performance_.panelRect();
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const float em = ImGui::GetFontSize();
+    auto px = [em](float v) { return v * em / 16.0f; };
+    ImFont* bold = uiFonts_.bold ? uiFonts_.bold : ImGui::GetFont();
+    ImFont* medium = uiFonts_.medium ? uiFonts_.medium : ImGui::GetFont();
+    const int ch = std::clamp(live.channel, 0, kChannelCount - 1);
+    const auto c = static_cast<std::size_t>(ch);
+    constexpr auto kNotes = static_cast<std::size_t>(LoopSource::Notes);
+    const LoopStatus& st = live.loops[kNotes].status;
+    const bool has = st.state == LoopStatus::State::Playing && st.length > 1;
+    dl->AddRectFilled(a, b, Theme::kPanel, px(8));
+    dl->AddRect(a, b, Theme::kBorder, px(8), px(1));
+    // The title: what is edited.
+    const float hy = a.y + px(10), hh = px(30), cy = hy + hh * 0.5f;
+    float x = a.x + px(14);
+    auto label = [&](ImFont* f, float size, ImU32 col, const std::string& t) {
+        const ImVec2 sz = f->CalcTextSizeA(px(size), FLT_MAX, 0, t.c_str());
+        dl->AddText(f, px(size), ImVec2(x, cy - sz.y * 0.5f), col, t.c_str());
+        x += sz.x + px(12);
+    };
+    label(bold, 14, Theme::kText, "NOTES");
+    const std::string& chName = preset_.channelNames[c];
+    label(bold, 14, performance_.channelColor(ch), std::to_string(ch + 1) + (chName.empty() ? "" : " " + chName));
+    std::string what = clipName(ch, live.currentClip[c]);
+    if (has) {
+        char len[32];
+        if (st.beats > 0)
+            std::snprintf(len, sizeof len, "%g %s", st.beats / std::max(live.beatsPerBar, 1), st.beats == std::max(live.beatsPerBar, 1) ? "bar" : "bars");
+        else
+            std::snprintf(len, sizeof len, "%.1f s", static_cast<double>(st.length) / Engine::kLoopRateHz);
+        what += "  \xC2\xB7  " + std::string(len);
+    }
+    label(bold, 14, Theme::kLabel, what);
+    // Its settings, right-aligned: the rows (SCALE or CHROMATIC), the grid, QUANTIZE, playback, CLEAR, close.
+    const auto bit = static_cast<std::uint16_t>(1u << ch);
+    const bool chromatic = (preset_.chromaticChannels & bit) != 0;
+    LoopPlayback playback = preset_.forChannel(ch).loops[kNotes].playback;
+    static constexpr std::pair<int, const char*> kGrids[] = {{0, "No grid"}, {2, "1/8"}, {3, "1/8 T"}, {4, "1/16"}, {6, "1/16 T"}, {8, "1/32"}};
+    const char* gridName = "1/16";
+    for (const auto& [steps, name] : kGrids)
+        if (steps == performance_.editorGrid())
+            gridName = name;
+    const char* playName = playback == LoopPlayback::Reverse ? "REV" : playback == LoopPlayback::BackAndForth ? "B&F" : "FWD";
+    ImGui::PushFont(bold, 12.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(px(10), px(6)));
+    auto width = [&](const char* t) { return ImGui::CalcTextSize(t).x + px(20); };
+    const float gap = px(6);
+    const float total = width("SCALE") + width("CHROMATIC") + gap + width(gridName) + px(14) + gap + width("QUANTIZE") + gap + width(playName) + px(14) + gap +
+                        width("CLEAR") + gap + px(30);
+    float rx = std::max(b.x - px(12) - total, x + px(8));
+    auto at = [&](float w) {
+        ImGui::SetCursorScreenPos(ImVec2(rx, hy));
+        rx += w + gap;
+    };
+    auto toggle = [&](const char* t, bool on) {
+        ImGui::PushStyleColor(ImGuiCol_Button, on ? ImVec4(0.24f, 0.86f, 0.52f, 0.30f) : ImGui::ColorConvertU32ToFloat4(Theme::kControl));
+        ImGui::PushStyleColor(ImGuiCol_Border, ImGui::ColorConvertU32ToFloat4(on ? Theme::kGreen : Theme::kControlBorder));
+        ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(on ? Theme::kGreen : Theme::kLabel));
+        const bool clicked = ImGui::Button(t, ImVec2(width(t), hh));
+        ImGui::PopStyleColor(3);
+        return clicked;
+    };
+    at(width("SCALE"));
+    if (toggle("SCALE", !chromatic) && chromatic) {
+        preset_.chromaticChannels = static_cast<std::uint16_t>(preset_.chromaticChannels ^ bit);
+        edited();
+    }
+    ImGui::SetItemTooltip("Notes move on the tonality's degrees%s", settings_.key ? ("  (" + pitchName(settings_.key->root) + " " + std::string(settings_.key->type().label) + ")").c_str() : "");
+    rx -= gap - px(2);
+    at(width("CHROMATIC"));
+    if (toggle("CHROMATIC", chromatic) && !chromatic) {
+        preset_.chromaticChannels = static_cast<std::uint16_t>(preset_.chromaticChannels ^ bit);
+        edited();
+    }
+    ImGui::SetItemTooltip("Notes move by semitones, every row named (drums)");
+    // A chip with a little arrow: a menu of its choices.
+    auto chip = [&](const char* id, const char* t, ImU32 col) {
+        const float w = width(t) + px(14);
+        at(w);
+        const ImVec2 p = ImGui::GetCursorScreenPos();
+        ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(col));
+        const bool clicked = ImGui::Button((std::string(t) + "      ##" + id).c_str(), ImVec2(w, hh));
+        ImGui::PopStyleColor();
+        const float tx = p.x + w - px(14), ty = p.y + hh * 0.5f;
+        dl->AddTriangleFilled(ImVec2(tx - px(4), ty - px(2)), ImVec2(tx + px(4), ty - px(2)), ImVec2(tx, ty + px(3)), Theme::kLabel);
+        if (clicked)
+            ImGui::OpenPopup(id);
+        return ImGui::BeginPopup(id);
+    };
+    if (chip("##grid", gridName, Theme::kLabel)) {
+        for (const auto& [steps, name] : kGrids)
+            if (ImGui::Selectable(name, steps == performance_.editorGrid()))
+                performance_.setEditorGrid(steps);
+        ImGui::EndPopup();
+    }
+    ImGui::SetItemTooltip("The grid notes move, stretch, are added and quantized on");
+    at(width("QUANTIZE"));
+    ImGui::BeginDisabled(!has);
+    if (ImGui::Button("QUANTIZE", ImVec2(width("QUANTIZE"), hh)))
+        performance_.askQuantize();
+    ImGui::EndDisabled();
+    ImGui::SetItemTooltip("The selected notes, or all of them, on the grid (Q)");
+    if (chip("##playback", playName, Theme::kViolet)) {
+        static constexpr std::pair<LoopPlayback, const char*> kWays[] = {
+            {LoopPlayback::Forward, "Forward"}, {LoopPlayback::Reverse, "Reverse"}, {LoopPlayback::BackAndForth, "Back & forth"}};
+        for (const auto& [way, name] : kWays)
+            if (ImGui::Selectable(name, way == playback) && way != playback) {
+                // Channel 1 edits the base mapping; another channel's first change gives it its own.
+                auto& own = preset_.channels[c];
+                if (!own && ch != 0)
+                    own = preset_.base;
+                (own ? *own : preset_.base).loops[kNotes].playback = way;
+                edited();
+            }
+        ImGui::EndPopup();
+    }
+    ImGui::SetItemTooltip("How the note loop plays");
+    at(width("CLEAR"));
+    ImGui::BeginDisabled(!has && st.state == LoopStatus::State::Empty);
+    if (ImGui::Button("CLEAR", ImVec2(width("CLEAR"), hh))) {
+        rememberClips({{ch, live.currentClip[c]}}, "Note loop cleared");
+        runtime_->clearLoop(static_cast<int>(LoopSource::Notes), -1);
+    }
+    ImGui::EndDisabled();
+    ImGui::SetItemTooltip("Clears the note loop");
+    at(px(30));
+    const ImVec2 xp = ImGui::GetCursorScreenPos();
+    if (ImGui::InvisibleButton("##closenotes", ImVec2(px(30), hh)))
+        notesPanel_ = false;
+    const ImU32 xc = ImGui::IsItemHovered() ? Theme::kText : Theme::kLabel;
+    const ImVec2 xm(xp.x + px(15), xp.y + hh * 0.5f);
+    dl->AddLine(ImVec2(xm.x - px(6), xm.y - px(6)), ImVec2(xm.x + px(6), xm.y + px(6)), xc, px(2));
+    dl->AddLine(ImVec2(xm.x - px(6), xm.y + px(6)), ImVec2(xm.x + px(6), xm.y - px(6)), xc, px(2));
+    ImGui::SetItemTooltip("Close (Esc)");
+    ImGui::PopStyleVar();
+    ImGui::PopFont();
+    // The editor: the roll, its scrollbar and the velocity / chance lane.
+    const float ey = hy + hh + px(10);
+    ImGui::SetCursorScreenPos(ImVec2(a.x + px(10), ey));
+    performance_.setScaleMoves(!chromatic);
+    ImGui::PushFont(medium, 13.0f);
+    performance_.drawNoteEditor(preset_.forChannel(ch), live, b.x - a.x - px(20), b.y - ey - px(12));
+    ImGui::PopFont();
+    if (ImGui::IsKeyPressed(ImGuiKey_Escape, false) && !performance_.tookEscape() && !ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId) &&
+        !ImGui::GetIO().WantTextInput)
+        notesPanel_ = false;
+}
+
+void GuiApp::showView(int view, const LiveState& live) {
+    if (view == 0) {
+        if (sessionView_)
+            toggleSession(live);
+        else if (songView_)
+            toggleSong(live);
+        else if (editView_)
+            toggleEdit(live);
+    } else if (view == 1 && !sessionView_) {
+        toggleSession(live);
+    } else if (view == 2 && !songView_) {
+        toggleSong(live);
     }
 }
 
@@ -2079,6 +2304,10 @@ GuiApp::UndoStep GuiApp::currentState(const UndoStep& like) {
         now.chainNames = chainNames_[c];
         break;
     case UndoStep::Kind::Clips:
+        now.clipNames.clear();
+        for (const auto& [channel, slot] : like.clips)
+            now.clipNames.push_back(clipNames_[static_cast<std::size_t>(std::clamp(channel, 0, kChannelCount - 1))]
+                                              [static_cast<std::size_t>(std::clamp(slot, 0, Engine::kClipSlots - 1))]);
         now.loops.clear();
         if (const auto loops = runtime_->sessionLoops())
             for (const midipad::SessionLoop& l : *loops)
@@ -2109,6 +2338,11 @@ void GuiApp::applyState(const UndoStep& state) {
         chainNames_[c] = state.chainNames;
         break;
     case UndoStep::Kind::Clips:
+        for (std::size_t i = 0; i < state.clips.size() && i < state.clipNames.size(); ++i) {
+            const auto& [channel, slot] = state.clips[i];
+            if (channel >= 0 && channel < kChannelCount && slot >= 0 && slot < Engine::kClipSlots)
+                clipNames_[static_cast<std::size_t>(channel)][static_cast<std::size_t>(slot)] = state.clipNames[i];
+        }
         for (const auto& [channel, slot] : state.clips) {
             std::vector<midipad::SessionLoop> loops;
             for (const midipad::SessionLoop& l : state.loops)
@@ -2208,12 +2442,19 @@ void GuiApp::sessionDrop(const PerformanceView::SessionAction& a, const LiveStat
                         out.push_back(l);
                 return out;
             };
+            std::vector<std::string> names;  // their names go with them
+            for (const auto& from : sessionSel_)
+                names.push_back(clipNames_[static_cast<std::size_t>(from.first)][static_cast<std::size_t>(from.second)]);
             if (!a.copy)
                 for (const auto& from : sessionSel_)
-                    if (std::find(to.begin(), to.end(), from) == to.end())
+                    if (std::find(to.begin(), to.end(), from) == to.end()) {
                         runtime_->restoreClip(from.first, from.second, {});
-            for (std::size_t k = 0; k < to.size(); ++k)
+                        clipNames_[static_cast<std::size_t>(from.first)][static_cast<std::size_t>(from.second)].clear();
+                    }
+            for (std::size_t k = 0; k < to.size(); ++k) {
                 runtime_->restoreClip(to[k].first, to[k].second, loopsOf(sessionSel_[k]));
+                clipNames_[static_cast<std::size_t>(to[k].first)][static_cast<std::size_t>(to[k].second)] = names[k];
+            }
             sessionSel_ = to;
             moveSessionCursor(ch, a.slot, live);
             return;
@@ -2234,6 +2475,14 @@ void GuiApp::sessionDrop(const PerformanceView::SessionAction& a, const LiveStat
         runtime_->restoreClip(ch, a.slot, from);
         if (!a.copy)
             runtime_->restoreClip(a.fromChannel, a.fromSlot, to);
+        {  // the names go with them
+            std::string& fromName = clipNames_[static_cast<std::size_t>(a.fromChannel)][static_cast<std::size_t>(a.fromSlot)];
+            std::string& toName = clipNames_[static_cast<std::size_t>(ch)][static_cast<std::size_t>(a.slot)];
+            const std::string moved = fromName;
+            if (!a.copy)
+                fromName = to.empty() ? std::string() : toName;
+            toName = moved;
+        }
         moveSessionCursor(ch, a.slot, live);
         return;
     }
@@ -2532,7 +2781,8 @@ void GuiApp::songAction(const PerformanceView::SongAction& a, const LiveState& l
             renameSection_ = a.row;
             renameChain_ = -1;
             renameInput_ = song_.sections[static_cast<std::size_t>(a.row)].name;
-            openRename_ = true;
+            renameRow_ = renameClipChannel_ = renameClipSlot_ = -1;
+        openRename_ = true;
         }
         break;
     }
@@ -2644,7 +2894,7 @@ enum MenuId : int {
     kSongPlay, kSongStop, kSongLoop, kLoopSong, kSectionRename, kSectionFit, kSectionDuplicate, kSectionInsert, kSectionUp, kSectionDown, kSectionDelete,
     kCellEdit, kCellClear, kCellCopy, kCellPaste,
     kRestBarMore, kRestBarLess, kRestBeatMore, kRestBeatLess,
-    kItemChange, kItemGlue, kItemLeft, kItemRight, kItemLoop, kItemKind, kItemDuplicate, kItemDelete, kEditClipNotes, kExportClip,
+    kItemChange, kItemGlue, kItemLeft, kItemRight, kItemLoop, kItemKind, kItemDuplicate, kItemDelete, kEditClipNotes, kExportClip, kRenameClip, kRenameRow, kRowLaunch,
     kModPick, kModStop, kModSendCc, kModDepth, kModDirection, kCopyMapping,
     kPick = 1000,  // + the clip (0-7) or 8 + the chain: what a song item plays
     kModTarget = 2000  // + the movement track a loop modulates
@@ -2714,8 +2964,10 @@ void GuiApp::screenKeys(const LiveState& live) {
                 undoWhat_ = picked.size() > 1 ? "Clear (" + std::to_string(picked.size()) + " clips)" : "Clear (" + name + ")";
                 rememberClips(picked, "Clips cleared");
                 undoWhat_.clear();
-                for (const auto& [c2, s2] : picked)
+                for (const auto& [c2, s2] : picked) {
                     runtime_->clearClip(c2, s2);
+                    clipNames_[static_cast<std::size_t>(c2)][static_cast<std::size_t>(s2)].clear();
+                }
                 sessionSel_.clear();
             }
             if (has && duplicate && sessionSel_.size() <= 1)
@@ -2729,7 +2981,7 @@ void GuiApp::screenKeys(const LiveState& live) {
                     }
                     clipClipboard_.clear();
                     for (const auto& [c2, s2] : picked) {
-                        ClipCopy copied{c2 - c0, s2 - s0, {}};
+                        ClipCopy copied{c2 - c0, s2 - s0, {}, clipNames_[static_cast<std::size_t>(c2)][static_cast<std::size_t>(s2)]};
                         for (const midipad::SessionLoop& l : *loops)
                             if (l.channel == c2 && l.clip == s2)
                                 copied.loops.push_back(l);
@@ -2737,6 +2989,7 @@ void GuiApp::screenKeys(const LiveState& live) {
                     }
                     toast_ = picked.size() > 1 ? "Copied (" + std::to_string(picked.size()) + " clips)" : "Copied (" + name + ")";
                     toastUndone_ = false;
+                    toastPlain_ = true;
                     toastUntil_ = ImGui::GetTime() + 2.0;
                 }
             if (paste && !clipClipboard_.empty()) {  // from the cursor, as they were placed
@@ -2748,8 +3001,10 @@ void GuiApp::screenKeys(const LiveState& live) {
                 rememberClips(to, "Paste");
                 undoWhat_.clear();
                 for (const ClipCopy& copied : clipClipboard_)
-                    if (ch + copied.channels < kChannelCount && slot + copied.slots < Engine::kClipSlots)
+                    if (ch + copied.channels < kChannelCount && slot + copied.slots < Engine::kClipSlots) {
                         runtime_->restoreClip(ch + copied.channels, slot + copied.slots, copied.loops);
+                        clipNames_[static_cast<std::size_t>(ch + copied.channels)][static_cast<std::size_t>(slot + copied.slots)] = copied.name;
+                    }
                 sessionSel_ = to.size() > 1 ? to : std::vector<std::pair<int, int>>{};
             }
         } else if (sessionSlot_ == Engine::kClipSlots && chainCursor_ < Engine::kChainSteps && erase) {
@@ -2852,7 +3107,8 @@ void GuiApp::openMenu(const PerformanceView::MenuTarget& t, const LiveState& liv
             freeSlot = freeSlot || live.clips[c * Engine::kClipSlots + static_cast<std::size_t>(k)].sources == 0;
         for (int k = 0; k < Engine::kChainSteps; ++k)
             freeStep = freeStep || chain.clip[static_cast<std::size_t>(k)] < 0;
-        menu.title = "CLIP " + std::to_string(t.slot + 1) + "\nchannel " + std::to_string(t.channel + 1);
+        menu.title = (clipNames_[c][static_cast<std::size_t>(t.slot)].empty() ? "CLIP " + std::to_string(t.slot + 1) : clipNames_[c][static_cast<std::size_t>(t.slot)]) +
+                     "\nchannel " + std::to_string(t.channel + 1) + ", clip " + std::to_string(t.slot + 1);
         if (plays)
             add("Stop", kStop);
         else
@@ -2864,6 +3120,7 @@ void GuiApp::openMenu(const PerformanceView::MenuTarget& t, const LiveState& liv
         add("Move up", kClipUp, has && t.slot > 0);
         add("Move down", kClipDown, has && t.slot < Engine::kClipSlots - 1);
         add("Add to the chain", kAddToChain, has && freeStep);
+        add("Rename\xE2\x80\xA6", kRenameClip, has);
         add("Export as MIDI", kExportClip, has);
         add("Clear", kClearClip, has);
         break;
@@ -2897,6 +3154,21 @@ void GuiApp::openMenu(const PerformanceView::MenuTarget& t, const LiveState& liv
         else
             add("Chain " + PerformanceView::chainLetter(shown) + " on", kChainOn, !chain.empty());
         break;
+    case K::Row: {  // a row of the session screen: its clips on every channel
+        const std::string& n = rowNames_[static_cast<std::size_t>(std::clamp(t.slot, 0, Engine::kClipSlots - 1))];
+        menu.title = (n.empty() ? "ROW " + std::to_string(t.slot + 1) : n) + (n.empty() ? "" : "\nrow " + std::to_string(t.slot + 1));
+        bool any = false, all = true;
+        for (int k = 0; k < kChannelCount; ++k) {
+            const auto kc = static_cast<std::size_t>(k);
+            if (!live.clips[kc * Engine::kClipSlots + static_cast<std::size_t>(t.slot)].sources)
+                continue;
+            any = true;
+            all = all && ((((live.clipsPlaying >> k) & 1u) && live.currentClip[kc] == t.slot) || live.queuedClip[kc] == t.slot);
+        }
+        add(any && all ? "Stop the row" : "Launch the row", kRowLaunch, any);
+        add("Rename\xE2\x80\xA6", kRenameRow);
+        break;
+    }
     case K::Chain: {
         menu.title = chainName + "\nchannel " + std::to_string(t.channel + 1);
         if (runs)
@@ -3015,7 +3287,7 @@ void GuiApp::openMenu(const PerformanceView::MenuTarget& t, const LiveState& liv
         bool any = false;
         for (int k = 0; k < Engine::kClipSlots; ++k)
             if (const double b = live.clipBeats[c2][static_cast<std::size_t>(k)]; b > 0) {
-                add("Clip " + std::to_string(k + 1) + "   " + bars(b), kPick + k);
+                add(clipName(t.channel, k) + "   " + bars(b), kPick + k);
                 any = true;
             }
         for (int n = 0; n < Engine::kChains; ++n)
@@ -3204,6 +3476,10 @@ void GuiApp::runMenu(const PerformanceView::MenuTarget& t, int id, const LiveSta
     default: break;
     }
     auto openWindow = [&](const std::string& spec) {
+        if (spec == "notes") {  // the note editor: a panel of the main screen
+            openNotes(live);
+            return;
+        }
         overlayAppearing_ = overlaySpec_ != spec;
         overlaySpec_ = spec;
         optionsOpen_ = false;
@@ -3226,6 +3502,7 @@ void GuiApp::runMenu(const PerformanceView::MenuTarget& t, int id, const LiveSta
         for (int k = 0; k < Engine::kClipSlots; ++k)
             if (live.clips[c * Engine::kClipSlots + static_cast<std::size_t>(k)].sources == 0) {
                 runtime_->copyClip(ch, t.slot, k);
+                clipNames_[c][static_cast<std::size_t>(k)] = clipNames_[c][static_cast<std::size_t>(t.slot)];
                 break;
             }
         break;
@@ -3236,7 +3513,10 @@ void GuiApp::runMenu(const PerformanceView::MenuTarget& t, int id, const LiveSta
                 break;
             }
         break;
-    case kClearClip: runtime_->clearClip(ch, t.slot); break;
+    case kClearClip:
+        runtime_->clearClip(ch, t.slot);
+        clipNames_[c][static_cast<std::size_t>(t.slot)].clear();
+        break;
     case kStartHere: runtime_->chainGoTo(ch, shown, t.slot); break;
     case kRandom:
         setChainStep(ch, t.slot, Engine::kChainRandom, std::max<int>(chain.repeats[static_cast<std::size_t>(t.slot)], 0));
@@ -3288,6 +3568,7 @@ void GuiApp::runMenu(const PerformanceView::MenuTarget& t, int id, const LiveSta
         renameChain_ = shown;
         renameSection_ = -1;
         renameInput_ = chainNames_[c][static_cast<std::size_t>(shown)];
+        renameRow_ = renameClipChannel_ = renameClipSlot_ = -1;
         openRename_ = true;
         break;
     case kClearChain:
@@ -3343,11 +3624,28 @@ void GuiApp::runMenu(const PerformanceView::MenuTarget& t, int id, const LiveSta
         break;
     case kNextChannel: runtime_->setChannel((ch + 1) % kChannelCount); break;
     case kPrevChannel: runtime_->setChannel((ch + kChannelCount - 1) % kChannelCount); break;
+    case kRenameClip:
+        renameChannel_ = ch;
+        renameChain_ = renameSection_ = -1;
+        renameInput_ = clipNames_[c][static_cast<std::size_t>(std::clamp(t.slot, 0, Engine::kClipSlots - 1))];
+        renameRow_ = -1;
+        openRename_ = true;
+        renameClipChannel_ = ch;
+        renameClipSlot_ = std::clamp(t.slot, 0, Engine::kClipSlots - 1);
+        break;
+    case kRenameRow:
+        renameChain_ = renameSection_ = -1;
+        renameInput_ = rowNames_[static_cast<std::size_t>(std::clamp(t.slot, 0, Engine::kClipSlots - 1))];
+        openRename_ = true;
+        renameRow_ = std::clamp(t.slot, 0, Engine::kClipSlots - 1);
+        break;
+    case kRowLaunch: launchRow(t.slot, live); return;
     case kRename:
         renameChannel_ = ch;
         renameChain_ = -1;
         renameSection_ = -1;
         renameInput_ = preset_.channelNames[c];
+        renameRow_ = renameClipChannel_ = renameClipSlot_ = -1;
         openRename_ = true;
         break;
     case kColour:
@@ -3381,7 +3679,8 @@ void GuiApp::runMenu(const PerformanceView::MenuTarget& t, int id, const LiveSta
             renameSection_ = t.slot;
             renameChain_ = -1;
             renameInput_ = song_.sections[static_cast<std::size_t>(t.slot)].name;
-            openRename_ = true;
+            renameRow_ = renameClipChannel_ = renameClipSlot_ = -1;
+        openRename_ = true;
         }
         break;
     case kSectionFit:
@@ -3721,7 +4020,7 @@ void GuiApp::drawPerformance(const LiveState& live) {
     ImGui::PushStyleColor(ImGuiCol_PopupBg, color(Theme::kPanel));
     ImGui::PushStyleColor(ImGuiCol_ChildBg, color(Theme::kPanel));
     ImGui::PushStyleColor(ImGuiCol_Border, color(Theme::kControlBorder));
-    ImGui::PushStyleColor(ImGuiCol_CheckMark, color(Theme::kBlue));
+    ImGui::PushStyleColor(ImGuiCol_CheckMark, color(Theme::kGreen));
     constexpr int kColors = 13;
     ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, px(5));
     ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.0f);
@@ -3850,20 +4149,7 @@ void GuiApp::drawPerformance(const LiveState& live) {
             dl->AddTriangleFilled(ImVec2(cx - s, cy - s * 1.2f), ImVec2(cx - s, cy + s * 1.2f), ImVec2(cx + s, cy), col);
         return clicked;
     };
-
-    // Preset, Play / Stop, the clock, TAP and the session button: centred in
-    // the bar (the channel is chosen on the CHANNEL block).
-    {
-        const float groupW = medium->CalcTextSizeA(px(12), FLT_MAX, 0, "PRESET").x + px(8) + px(26) * 2 + px(180) + px(14) + px(32) +
-                             px(6) + px(32) + px(10) + px(166) + px(6) + px(44) + px(8) + px(36) + px(6) + px(36);
-        const float centered = winPos.x + (winW - groupW) * 0.5f;
-        ImGui::SameLine(0, 0);  // on the line of MIDIPAD
-        const ImVec2 at = ImGui::GetCursorScreenPos();
-        // The caption below starts with a gap of 16: start that much before the centre.
-        ImGui::SetCursorScreenPos(ImVec2(std::max(at.x, centered - px(16)), at.y));
-        ImGui::Dummy(ImVec2(0, px(32)));
-    }
-    auto caption = [&](const char* s) {
+    [[maybe_unused]] auto caption = [&](const char* s) {
         ImGui::SameLine(0, px(16));
         ImGui::PushFont(medium, 12.0f);
         ImGui::AlignTextToFramePadding();
@@ -3871,79 +4157,42 @@ void GuiApp::drawPerformance(const LiveState& live) {
         ImGui::PopFont();
         ImGui::SameLine(0, px(8));
     };
-    // Preset: arrows around a drop-down list, an orange dot when modified, SAVE next to it.
-    caption("PRESET");
+    // The screens, by name, in the Mode button's order: PLAY (EDIT while the
+    // controller's edit mode is on), SESSION, SONG. A click shows one.
     {
-        int index = -1;
-        for (std::size_t i = 0; i < presetNames_.size(); ++i)
-            if (hasFile_ && presetNames_[i] == preset_.name)
-                index = static_cast<int>(i);
-        const int count = static_cast<int>(presetNames_.size());
-        auto openAt = [&](int i) {
-            if (count == 0)
-                return;
-            const std::string name = presetNames_[static_cast<std::size_t>((i % count + count) % count)];
-            guard([this, name] { openPreset(name); });
-        };
-        const ImVec2 p = ImGui::GetCursorScreenPos();
-        const float h = px(32), arrowW = px(26), comboW = px(180);
-        const float w = arrowW * 2 + comboW;
-        dl->AddRectFilled(p, ImVec2(p.x + w, p.y + h), Theme::kControl, px(5));
-        dl->AddRect(p, ImVec2(p.x + w, p.y + h), Theme::kBlue, px(5));
-        if (arrow("##presetprev", p, arrowW, h, true))
-            openAt(index < 0 ? 0 : index - 1);
-        if (arrow("##presetnext", ImVec2(p.x + w - arrowW, p.y), arrowW, h, false))
-            openAt(index + 1);
-        dl->AddLine(ImVec2(p.x + w - arrowW, p.y + px(5)), ImVec2(p.x + w - arrowW, p.y + h - px(5)), Theme::kControlBorder);
-        ImGui::SetCursorScreenPos(ImVec2(p.x + arrowW, p.y));
-        ImGui::SetNextItemWidth(comboW);
-        ImGui::PushStyleColor(ImGuiCol_FrameBg, color(0));
-        ImGui::PushStyleColor(ImGuiCol_Border, color(0));
-        ImGui::PushStyleColor(ImGuiCol_Button, color(0));
-        ImGui::PushFont(bold, 15.0f);
-        const std::string current = hasFile_ ? preset_.name : std::string("Untitled");
-        const bool open = ImGui::BeginCombo("##presetcombo", current.c_str(), ImGuiComboFlags_HeightLarge);
-        ImGui::PopFont();
-        ImGui::PopStyleColor(3);
-        if (dirty_) {
-            const ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
-            dl->AddCircleFilled(ImVec2(b.x - ImGui::GetFrameHeight() - px(8), (a.y + b.y) * 0.5f), px(4), Theme::kOrange);
+        ImGui::SameLine(0, px(4));
+        const ImVec2 at = ImGui::GetCursorScreenPos();
+        static constexpr const char* kViews[] = {"PLAY", "SESSION", "SONG"};
+        static constexpr const char* kTips[] = {"The controller and its loops (Tab: the next screen)", "Session: the clips of every channel (Tab)",
+                                                "Song: the sections of the song, the clips and chains each channel plays in them (Tab)"};
+        const int shown = songView_ ? 2 : sessionView_ ? 1 : 0;
+        float x = at.x;
+        for (int v = 0; v < 3; ++v) {
+            const char* name = v == 0 && editView_ ? "EDIT" : kViews[v];
+            const float w = px(v == 1 ? 76 : 62), h = px(32);
+            ImGui::SetCursorScreenPos(ImVec2(x, at.y));
+            ImGui::PushID(v);
+            const bool clicked = ImGui::InvisibleButton("##view", ImVec2(w, h));
+            const bool hovered = ImGui::IsItemHovered();
+            ImGui::SetItemTooltip("%s", kTips[v]);
+            ImGui::PopID();
+            const bool on = v == shown;
+            const bool edit = v == 0 && editView_;
+            const ImU32 accent = edit ? Theme::kViolet : Theme::kGreen;
+            dl->AddRectFilled(ImVec2(x, at.y), ImVec2(x + w, at.y + h),
+                              on ? (accent & ~IM_COL32_A_MASK) | IM_COL32(0, 0, 0, 60) : hovered ? Theme::kControlBorder : Theme::kControl, px(5));
+            dl->AddRect(ImVec2(x, at.y), ImVec2(x + w, at.y + h), on ? accent : Theme::kControlBorder, px(5), px(on ? 1.3f : 1.0f));
+            const ImVec2 tsz = bold->CalcTextSizeA(px(12), FLT_MAX, 0, name);
+            dl->AddText(bold, px(12), ImVec2(x + (w - tsz.x) * 0.5f, at.y + (h - tsz.y) * 0.5f), on ? accent : Theme::kLabel, name);
+            if (clicked && !on)
+                showView(v, live);
+            x += w + px(4);
         }
-        if (open) {
-            ImGui::PushFont(medium, 14.0f);
-            if (presetNames_.empty())
-                ImGui::TextDisabled("No preset in this folder");
-            for (const auto& name : presetNames_) {
-                const bool selected = hasFile_ && name == preset_.name;
-                if (ImGui::Selectable(name.c_str(), selected) && !selected)
-                    guard([this, name] { openPreset(name); });
-                if (selected)
-                    ImGui::SetItemDefaultFocus();
-            }
-            // Managing presets.
-            ImGui::Separator();
-            if (ImGui::Selectable("New\u2026"))
-                guard([this] {
-                    nameDialog_ = NameDialog::New;
-                    nameInput_ = library_->uniqueName("New preset");
-                    nameError_.clear();
-                    openNameDialog_ = true;
-                });
-            if (ImGui::Selectable("Save as\u2026")) {
-                nameDialog_ = NameDialog::SaveAs;
-                nameInput_ = library_->uniqueName(hasFile_ ? preset_.name : "New preset");
-                nameError_.clear();
-                openNameDialog_ = true;
-            }
-            if (ImGui::Selectable("Delete\u2026", false, hasFile_ ? 0 : ImGuiSelectableFlags_Disabled))
-                openDeleteDialog_ = true;
-            ImGui::SetItemTooltip("Deletes the preset file");
-            ImGui::PopFont();
-            ImGui::EndCombo();
-        }
-        ImGui::SetCursorScreenPos(p);
-        ImGui::Dummy(ImVec2(w, h));
-
+        ImGui::SetCursorScreenPos(ImVec2(x - px(4), at.y));
+        ImGui::Dummy(ImVec2(0, px(32)));
+    }
+    float clockRight = 0, presetLeft = 0;
+    {
         // Play and Stop, the same for the song and the clips: Play plays the
         // song in the song screen, the clips elsewhere, and nothing while
         // something plays; Stop stops whatever plays. Play lit green while
@@ -3951,7 +4200,7 @@ void GuiApp::drawPerformance(const LiveState& live) {
         const bool anyLoop = live.loopChannels != 0 || live.song.playing;
         const bool loopsPlaying = (live.loopChannels != 0 && !live.loopsPaused) || live.song.playing;
         auto transport = [&](const char* id, bool play) {
-            ImGui::SameLine(0, play ? px(14) : px(6));
+            ImGui::SameLine(0, play ? px(12) : px(6));
             const ImVec2 q = ImGui::GetCursorScreenPos();
             const float side = px(32);
             const bool clicked = ImGui::InvisibleButton(id, ImVec2(side, side));
@@ -3986,7 +4235,30 @@ void GuiApp::drawPerformance(const LiveState& live) {
                 runtime_->allNotesOff();  // pressed again: every note off
         }
         ImGui::SetItemTooltip("Stops what plays: the song, or every channel's loops, keeping them; again: every note off");
-
+        // Where it is: the song's bar and beat while it plays, else the clock's; FREE: none.
+        {
+            ImGui::SameLine(0, px(10));
+            const ImVec2 q = ImGui::GetCursorScreenPos();
+            const float pw = px(70), ph = px(32);
+            ImGui::Dummy(ImVec2(pw, ph));
+            ImGui::SetItemTooltip(live.song.playing ? "Bar and beat of the song" : "Bar and beat of the clock");
+            dl->AddRectFilled(q, ImVec2(q.x + pw, q.y + ph), IM_COL32(0x10, 0x11, 0x13, 255), px(5));
+            dl->AddRect(q, ImVec2(q.x + pw, q.y + ph), Theme::kControlBorder, px(5), px(1));
+            const int bpb = std::max(live.beatsPerBar, 1);
+            std::string where = "\xE2\x80\x93";
+            if (live.song.playing || live.clock != ClockMode::Free) {
+                const double beat = std::max(live.song.playing ? live.song.beat : live.beat, 0.0);
+                const auto whole = static_cast<long long>(std::floor(beat));
+                long long before = 0;  // the song: the bars of the sections before the one playing
+                if (live.song.playing)
+                    for (int i = 0; i < std::min(live.song.section, static_cast<int>(song_.sections.size())); ++i)
+                        before += PerformanceView::songSectionBars(live, song_.sections[static_cast<std::size_t>(i)]);
+                where = std::to_string(before + whole / bpb + 1) + "." + std::to_string(whole % bpb + 1);
+            }
+            const ImVec2 wsz = bold->CalcTextSizeA(px(18), FLT_MAX, 0, where.c_str());
+            dl->AddText(bold, px(18), ImVec2(q.x + (pw - wsz.x) * 0.5f, q.y + (ph - wsz.y) * 0.5f),
+                        live.song.playing ? Theme::kGreen : Theme::kText, where.c_str());
+        }
         // The clock: FREE, or its tempo (the wheel turns it, a double-click
         // types it, TAP taps it) and the beats of the bar; a click elsewhere
         // on it turns it off or on again.
@@ -4013,6 +4285,8 @@ void GuiApp::drawPerformance(const LiveState& live) {
                 std::snprintf(info, sizeof info, "%s \xC2\xB7 %d", tempo, live.linkPeers);
             else
                 std::snprintf(info, sizeof info, "%s", on ? tempo : "FREE");
+            if (!on)
+                std::snprintf(info, sizeof info, "FREE \xC2\xB7 %.1f", settings_.tempo);
             const float tx = q.x + px(18) + lsz.x;
             const ImVec2 isz = medium->CalcTextSizeA(px(13), FLT_MAX, 0, info);
             const float tw = medium->CalcTextSizeA(px(13), FLT_MAX, 0, tempo).x;
@@ -4106,50 +4380,85 @@ void GuiApp::drawPerformance(const LiveState& live) {
                 if (const auto bpm = tap_.tap(SDL_GetTicksNS()))
                     applyTempo(*bpm);
             ImGui::SetItemTooltip(on ? "Tap tempo" : "Tap tempo, with a clock running");
-            // The session screen: a grid of four squares, lit while it shows.
-            const ImVec2 sp(q.x + lw + px(6) + tapW + px(8), q.y);
-            ImGui::SetCursorScreenPos(sp);
-            const float sw = px(36);
-            if (ImGui::InvisibleButton("##session", ImVec2(sw, lh)))
-                toggleSession(live);
-            const bool sessionHovered = ImGui::IsItemHovered();
-            dl->AddRectFilled(sp, ImVec2(sp.x + sw, sp.y + lh),
-                              sessionView_ ? (Theme::kGreen & ~IM_COL32_A_MASK) | IM_COL32(0, 0, 0, 60)
-                              : sessionHovered ? Theme::kControlBorder : Theme::kControl, px(5));
-            dl->AddRect(sp, ImVec2(sp.x + sw, sp.y + lh), sessionView_ ? Theme::kGreen : Theme::kControlBorder, px(5), px(1));
-            if (editView_) {  // edit mode: the button says so
-                constexpr ImU32 kViolet = Theme::kViolet;
-                dl->AddRectFilled(sp, ImVec2(sp.x + sw, sp.y + lh), IM_COL32(0x46, 0x38, 0x66, 255), px(5));
-                dl->AddRect(sp, ImVec2(sp.x + sw, sp.y + lh), kViolet, px(5), px(1));
-                const ImVec2 esz = bold->CalcTextSizeA(px(10.5f), FLT_MAX, 0, "EDIT");
-                dl->AddText(bold, px(10.5f), ImVec2(sp.x + (sw - esz.x) * 0.5f, cy - esz.y * 0.5f), Theme::kText, "EDIT");
-            }
-            for (int k = 0; k < 4 && !editView_; ++k) {
-                const float gx = sp.x + sw * 0.5f + (k % 2 ? px(1.5f) : -px(8.5f)), gy = cy + (k / 2 ? px(1.5f) : -px(8.5f));
-                dl->AddRectFilled(ImVec2(gx, gy), ImVec2(gx + px(7), gy + px(7)), sessionView_ ? Theme::kGreen : Theme::kLabel, px(1.5f));
-            }
-            ImGui::SetItemTooltip("Session: the clips of every channel (Tab)");
-            // The song screen: lanes of blocks, as an arrangement; lit while it shows.
-            const ImVec2 gp(sp.x + sw + px(6), q.y);
-            const float gw = px(36);
-            ImGui::SetCursorScreenPos(gp);
-            if (ImGui::InvisibleButton("##song", ImVec2(gw, lh)))
-                toggleSong(live);
-            const bool songHovered = ImGui::IsItemHovered();
-            ImGui::SetItemTooltip("Song: the sections of the song, the clips and chains each channel plays in them (Tab, from the session screen)");
-            dl->AddRectFilled(gp, ImVec2(gp.x + gw, gp.y + lh),
-                              songView_ ? (Theme::kGreen & ~IM_COL32_A_MASK) | IM_COL32(0, 0, 0, 60)
-                              : songHovered ? Theme::kControlBorder : Theme::kControl, px(5));
-            dl->AddRect(gp, ImVec2(gp.x + gw, gp.y + lh), songView_ ? Theme::kGreen : Theme::kControlBorder, px(5), px(1));
-            static constexpr float kLanes[4][3] = {{-8, 1, -7}, {-3, 8, -1.5f}, {-8, -1, 4}, {2, 8, 4}};  // x from, x to, y: a block each
-            const float gcx = gp.x + gw * 0.5f;
-            for (const auto& lane : kLanes)
-                dl->AddRectFilled(ImVec2(gcx + px(lane[0]), cy + px(lane[2])), ImVec2(gcx + px(lane[1]), cy + px(lane[2] + 3.5f)),
-                                  songView_ ? Theme::kGreen : Theme::kLabel, px(1.2f));
+            clockRight = q.x + lw + px(6) + tapW;
         }
-
+    }
+    {
+        const float presetFrom = clockRight + px(12);
+        int index = -1;
+        for (std::size_t i = 0; i < presetNames_.size(); ++i)
+            if (hasFile_ && presetNames_[i] == preset_.name)
+                index = static_cast<int>(i);
+        const int count = static_cast<int>(presetNames_.size());
+        auto openAt = [&](int i) {
+            if (count == 0)
+                return;
+            const std::string name = presetNames_[static_cast<std::size_t>((i % count + count) % count)];
+            guard([this, name] { openPreset(name); });
+        };
+        const float h = px(32), arrowW = px(22), comboW = px(150);
+        const float w = arrowW * 2 + comboW;
+        const ImVec2 p(std::max(presetFrom, winPos.x + winW - px(8) - w), winPos.y + px(9));
+        dl->AddRectFilled(p, ImVec2(p.x + w, p.y + h), Theme::kControl, px(5));
+        dl->AddRect(p, ImVec2(p.x + w, p.y + h), Theme::kBlue, px(5));
+        if (arrow("##presetprev", p, arrowW, h, true))
+            openAt(index < 0 ? 0 : index - 1);
+        if (arrow("##presetnext", ImVec2(p.x + w - arrowW, p.y), arrowW, h, false))
+            openAt(index + 1);
+        dl->AddLine(ImVec2(p.x + w - arrowW, p.y + px(5)), ImVec2(p.x + w - arrowW, p.y + h - px(5)), Theme::kControlBorder);
+        ImGui::SetCursorScreenPos(ImVec2(p.x + arrowW, p.y));
+        ImGui::SetNextItemWidth(comboW);
+        ImGui::PushStyleColor(ImGuiCol_FrameBg, color(0));
+        ImGui::PushStyleColor(ImGuiCol_Border, color(0));
+        ImGui::PushStyleColor(ImGuiCol_Button, color(0));
+        ImGui::PushFont(bold, 15.0f);
+        const std::string current = hasFile_ ? preset_.name : std::string("Untitled");
+        const bool open = ImGui::BeginCombo("##presetcombo", current.c_str(), ImGuiComboFlags_HeightLarge);
+        ImGui::PopFont();
+        ImGui::PopStyleColor(3);
         if (dirty_) {
-            ImGui::SameLine(0, px(8));
+            const ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
+            dl->AddCircleFilled(ImVec2(b.x - ImGui::GetFrameHeight() - px(8), (a.y + b.y) * 0.5f), px(4), Theme::kOrange);
+        }
+        if (open) {
+            ImGui::PushFont(medium, 14.0f);
+            if (presetNames_.empty())
+                ImGui::TextDisabled("No preset in this folder");
+            for (const auto& name : presetNames_) {
+                const bool selected = hasFile_ && name == preset_.name;
+                if (ImGui::Selectable(name.c_str(), selected) && !selected)
+                    guard([this, name] { openPreset(name); });
+                if (selected)
+                    ImGui::SetItemDefaultFocus();
+            }
+            // Managing presets.
+            ImGui::Separator();
+            if (ImGui::Selectable("New\u2026"))
+                guard([this] {
+                    nameDialog_ = NameDialog::New;
+                    nameInput_ = library_->uniqueName("New preset");
+                    nameError_.clear();
+                    openNameDialog_ = true;
+                });
+            if (ImGui::Selectable("Save as\u2026")) {
+                nameDialog_ = NameDialog::SaveAs;
+                nameInput_ = library_->uniqueName(hasFile_ ? preset_.name : "New preset");
+                nameError_.clear();
+                openNameDialog_ = true;
+            }
+            if (ImGui::Selectable("Delete\u2026", false, hasFile_ ? 0 : ImGuiSelectableFlags_Disabled))
+                openDeleteDialog_ = true;
+            ImGui::SetItemTooltip("Deletes the preset file");
+            ImGui::PopFont();
+            ImGui::EndCombo();
+        }
+        ImGui::SetItemTooltip("Preset");
+        ImGui::SetCursorScreenPos(p);
+        ImGui::Dummy(ImVec2(w, h));
+        presetLeft = p.x;
+        if (dirty_) {  // SAVE, left of it
+            const ImVec2 sz = bold->CalcTextSizeA(13.0f * em / 16.0f, FLT_MAX, 0, "SAVE");
+            ImGui::SetCursorScreenPos(ImVec2(presetLeft - px(8) - sz.x - px(24), winPos.y + px(9)));
             ImGui::PushStyleColor(ImGuiCol_Text, color(Theme::kOrange));
             ImGui::PushStyleColor(ImGuiCol_Border, color(Theme::kOrange));
             if (ImGui::Button("SAVE"))
@@ -4161,6 +4470,78 @@ void GuiApp::drawPerformance(const LiveState& live) {
 
     ImGui::PopFont();
     ImGui::SetCursorScreenPos(ImVec2(winPos.x + px(8), winPos.y + barH + px(8)));
+
+    // The main screen: a rail of the sixteen channels under the bar, each its
+    // colour, name and state (playing, recording, muted, solo). A click
+    // chooses one, a double-click renames it, a right-click opens its menu,
+    // the wheel goes through them.
+    if (!sessionView_ && !songView_) {
+        performance_.setChannelColors(preset_.channelColors);
+        const ImGuiIO& io = ImGui::GetIO();
+        const ImVec2 r0 = ImGui::GetCursorScreenPos();
+        const float gap = px(4), chipH = px(24), chipW = (winW - px(16) - gap * (kChannelCount - 1)) / kChannelCount;
+        bool overRail = false;
+        for (int ch = 0; ch < kChannelCount; ++ch) {
+            const auto c = static_cast<std::size_t>(ch);
+            const ImVec2 a(r0.x + static_cast<float>(ch) * (chipW + gap), r0.y), b(a.x + chipW, a.y + chipH);
+            ImGui::SetCursorScreenPos(a);
+            ImGui::PushID(2000 + ch);
+            const bool clicked = ImGui::InvisibleButton("##rail", ImVec2(chipW, chipH), ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight);
+            const bool hovered = ImGui::IsItemHovered();
+            ImGui::PopID();
+            overRail = overRail || hovered;
+            const std::string& name = preset_.channelNames[c];
+            if (hovered)
+                ImGui::SetTooltip("%s", (std::to_string(ch + 1) + (name.empty() ? "" : "  " + name)).c_str());
+            if (hovered && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+                renameChannel_ = ch;
+                renameChain_ = -1;
+                renameSection_ = -1;
+                renameInput_ = name;
+                renameRow_ = renameClipChannel_ = renameClipSlot_ = -1;
+        openRename_ = true;
+            } else if (clicked && ImGui::IsMouseReleased(ImGuiMouseButton_Right)) {
+                openMenu(PerformanceView::MenuTarget(PerformanceView::MenuTarget::Kind::Channel, ch), live, false, io.MousePos);
+            } else if (clicked && ch != live.channel) {
+                runtime_->setChannel(ch);
+            }
+            bool used = !name.empty() || ((live.loopChannels >> ch) & 1u) != 0, recording = false;
+            for (int k = 0; k < Engine::kClipSlots; ++k) {
+                const LiveState::Clip& clip = live.clips[c * Engine::kClipSlots + static_cast<std::size_t>(k)];
+                used = used || clip.sources != 0;
+                recording = recording || clip.recording;
+            }
+            const bool active = ch == live.channel, muted = ((live.muted >> ch) & 1u) != 0, soloed = ((live.soloed >> ch) & 1u) != 0;
+            const bool plays = ((live.clipsPlaying >> ch) & 1u) != 0;
+            const ImU32 col = performance_.channelColor(ch);
+            dl->AddRectFilled(a, b, active ? (col & ~IM_COL32_A_MASK) | IM_COL32(0, 0, 0, 48) : hovered ? IM_COL32(0x2C, 0x30, 0x36, 255)
+                                                                                                         : IM_COL32(0x22, 0x24, 0x28, 255), px(4));
+            dl->AddRect(a, b, active ? col : IM_COL32(0x30, 0x34, 0x3A, 255), px(4), px(active ? 1.4f : 1.0f));
+            dl->AddRectFilled(ImVec2(a.x + px(2), a.y + px(5)), ImVec2(a.x + px(4.5f), b.y - px(5)), used ? col : IM_COL32(0x3A, 0x3E, 0x45, 255), px(1));
+            // Its state on the right: a dot (recording red, playing green), M, S.
+            float right = b.x - px(6);
+            if (recording || plays) {
+                dl->AddCircleFilled(ImVec2(right - px(3), (a.y + b.y) * 0.5f), px(3), recording ? Theme::kRed : Theme::kGreen);
+                right -= px(10);
+            }
+            for (const auto& [on, letter, lc] : {std::tuple{soloed, "S", Theme::kBlue}, std::tuple{muted, "M", Theme::kOrange}})
+                if (on) {
+                    const ImVec2 lsz = bold->CalcTextSizeA(px(10), FLT_MAX, 0, letter);
+                    dl->AddText(bold, px(10), ImVec2(right - lsz.x, (a.y + b.y - lsz.y) * 0.5f), lc, letter);
+                    right -= lsz.x + px(4);
+                }
+            std::string label = std::to_string(ch + 1) + (name.empty() ? "" : " " + name);
+            const float room = right - (a.x + px(9)) - px(2);
+            while (label.size() > 1 && bold->CalcTextSizeA(px(10.5f), FLT_MAX, 0, label.c_str()).x > room)
+                label.pop_back();
+            const ImVec2 lsz = bold->CalcTextSizeA(px(10.5f), FLT_MAX, 0, label.c_str());
+            dl->AddText(bold, px(10.5f), ImVec2(a.x + px(9), (a.y + b.y - lsz.y) * 0.5f),
+                        muted ? Theme::kDim : active ? Theme::kText : used ? Theme::kLabel : IM_COL32(0x55, 0x5A, 0x62, 255), label.c_str());
+        }
+        if (overRail && io.MouseWheel != 0.0f)
+            runtime_->setChannel((live.channel + (io.MouseWheel < 0 ? 1 : kChannelCount - 1)) % kChannelCount);
+        ImGui::SetCursorScreenPos(ImVec2(r0.x, r0.y + chipH + px(6)));
+    }
 
     // Right: the animated modules.
     const float statusH = px(26);
@@ -4183,6 +4564,13 @@ void GuiApp::drawPerformance(const LiveState& live) {
     runtime_->setSessionValues(sessionView_ || editView_ || songView_);
     performance_.setChannelNames(preset_.channelNames);
     performance_.setChannelColors(preset_.channelColors);
+    for (std::size_t i = 0; i < clipSeen_.size(); ++i) {  // a clip emptied (cleared, moved away) loses its name
+        const bool holds = live.clips[i].sources != 0 || live.clips[i].recording;
+        if (clipSeen_[i] && !holds)
+            clipNames_[i / Engine::kClipSlots][i % Engine::kClipSlots].clear();
+        clipSeen_[i] = holds ? 1 : 0;
+    }
+    performance_.setNames(rowNames_, clipNames_);
     performance_.setChains(shownChain_, chainNames_);
     performance_.setEditMode(editView_ && !overlaySpec_ && !optionsOpen_);
     if (sessionView_) {
@@ -4262,7 +4650,10 @@ void GuiApp::drawPerformance(const LiveState& live) {
         if (act)
             songAction(*act, live);
     } else {
+        performance_.setNotesPanel(notesPanel_);
         clicked = performance_.draw(withChannelOneControls(preset_.forChannel(live.channel), preset_.base), live, settings_.key);
+        if (notesPanel_)
+            drawNotesPanel(live);
     }
     if (auto ask = performance_.takeNoteValueAsk()) {  // a stem double-clicked: its value typed
         valueAsk_ = ValueAsk{ask->chance ? ValueAsk::Kind::NoteChance : ValueAsk::Kind::NoteVelocity, 0, 0, 0, ask->value};
@@ -4304,6 +4695,7 @@ void GuiApp::drawPerformance(const LiveState& live) {
         renameChain_ = -1;
         renameSection_ = -1;
         renameInput_ = preset_.channelNames[static_cast<std::size_t>(*renamed)];
+        renameRow_ = renameClipChannel_ = renameClipSlot_ = -1;
         openRename_ = true;
     }
     if (const auto clear = performance_.takeClearRequest())  // the x of a lane
@@ -4327,6 +4719,8 @@ void GuiApp::drawPerformance(const LiveState& live) {
     // in a panel over the view.
     if (clicked && *clicked == "scale") {
         ImGui::OpenPopup("##keymenu");
+    } else if (clicked && *clicked == "notes") {
+        openNotes(live);
     } else if (clicked) {
         overlayAppearing_ = overlaySpec_ != clicked;
         overlaySpec_ = clicked;
@@ -5029,8 +5423,11 @@ void GuiApp::drawMappingOverlay(const LiveState& live) {
     pushWindowLook();
     ImGui::PushStyleColor(ImGuiCol_FrameBg, ImGui::ColorConvertU32ToFloat4(0xFF4A4642));
     ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, ImGui::ColorConvertU32ToFloat4(0xFF57524D));
-    ImGui::PushStyleColor(ImGuiCol_PlotHistogram, ImGui::ColorConvertU32ToFloat4(Theme::kBlue));
-    ImGui::PushStyleColor(ImGuiCol_SliderGrab, ImGui::ColorConvertU32ToFloat4(Theme::kBlue));
+    // The channel edited gives the accent, as on the screen.
+    const ImU32 accent = performance_.channelColor(live.channel);
+    ImGui::PushStyleColor(ImGuiCol_PlotHistogram, ImGui::ColorConvertU32ToFloat4(accent));
+    ImGui::PushStyleColor(ImGuiCol_SliderGrab, ImGui::ColorConvertU32ToFloat4(accent));
+    ImGui::PushStyleColor(ImGuiCol_CheckMark, ImGui::ColorConvertU32ToFloat4(accent));
     bool open = true;
     const std::string title = MappingEditor::controlTitle(spec) + "###mappingoverlay";
     ImGui::PushFont(uiFonts_.bold ? uiFonts_.bold : ImGui::GetFont(), 16.0f);
@@ -5224,7 +5621,7 @@ void GuiApp::drawMappingOverlay(const LiveState& live) {
         }
     }
     ImGui::End();
-    ImGui::PopStyleColor(4);
+    ImGui::PopStyleColor(5);
     popWindowLook();
     if (!open)
         overlaySpec_.reset();
@@ -5375,6 +5772,13 @@ void GuiApp::openSession(const std::string& name) {
     }
     runtime_->loadSessionChains(std::move(session.chains));
     runtime_->setMuteSolo(session.muted, session.soloed);
+    rowNames_ = session.rowNames;
+    for (auto& names : clipNames_)
+        names.fill({});
+    for (const Session::ClipName& c : session.clipNames)
+        if (c.channel >= 0 && c.channel < kChannelCount && c.clip >= 0 && c.clip < Engine::kClipSlots)
+            clipNames_[static_cast<std::size_t>(c.channel)][static_cast<std::size_t>(c.clip)] = c.name;
+    clipSeen_.fill(0);
     runtime_->stopSong();
     song_ = std::move(session.song);
     songCursor_ = {};
@@ -5394,6 +5798,10 @@ void GuiApp::newSong() {
     shownChain_.fill(0);
     for (auto& names : chainNames_)
         names.fill({});
+    rowNames_.fill({});
+    for (auto& names : clipNames_)
+        names.fill({});
+    clipSeen_.fill(0);
     song_ = {};
     songCursor_ = {};
     songEdited();
@@ -5428,7 +5836,8 @@ void GuiApp::exportMidi(int channel, int slot) {
         name = o.title + " - song";
     } else {
         const std::string& chName = preset_.channelNames[static_cast<std::size_t>(channel)];
-        name = o.title + " - " + (chName.empty() ? "channel " + std::to_string(channel + 1) : chName) + " - clip " + std::to_string(slot + 1);
+        const std::string& clip = clipNames_[static_cast<std::size_t>(channel)][static_cast<std::size_t>(slot)];
+        name = o.title + " - " + (chName.empty() ? "channel " + std::to_string(channel + 1) : chName) + " - " + (clip.empty() ? "clip " + std::to_string(slot + 1) : clip);
         o.title = name;
         bytes = midipad::exportClipMidi(*session, o, channel, slot);
     }
@@ -5480,6 +5889,11 @@ std::optional<Session> GuiApp::collectSession() {
     session.song = song_;
     session.muted = now.muted;
     session.soloed = now.soloed;
+    session.rowNames = rowNames_;
+    for (int ch = 0; ch < kChannelCount; ++ch)
+        for (int k = 0; k < Engine::kClipSlots; ++k)
+            if (const std::string& n = clipNames_[static_cast<std::size_t>(ch)][static_cast<std::size_t>(k)]; !n.empty())
+                session.clipNames.push_back({ch, k, n});
     for (int ch = 0; ch < kChannelCount; ++ch) {  // the chains that hold something, or are shown
         const auto c = static_cast<std::size_t>(ch);
         for (int n = 0; n < Engine::kChains; ++n) {
@@ -5722,9 +6136,15 @@ void GuiApp::drawRenameDialog() {
     }
     if (!beginDialog(kTitle))
         return;
-    const bool section = renameSection_ >= 0 && renameSection_ < static_cast<int>(song_.sections.size());
-    const bool chain = !section && renameChain_ >= 0 && renameChain_ < Engine::kChains;
-    if (section)
+    const bool row = renameRow_ >= 0 && renameRow_ < Engine::kClipSlots;
+    const bool clip = !row && renameClipChannel_ >= 0 && renameClipChannel_ < kChannelCount && renameClipSlot_ >= 0 && renameClipSlot_ < Engine::kClipSlots;
+    const bool section = !row && !clip && renameSection_ >= 0 && renameSection_ < static_cast<int>(song_.sections.size());
+    const bool chain = !row && !clip && !section && renameChain_ >= 0 && renameChain_ < Engine::kChains;
+    if (row)
+        ImGui::Text("Row %d", renameRow_ + 1);
+    else if (clip)
+        ImGui::Text("Clip %d  \xC2\xB7  channel %d", renameClipSlot_ + 1, renameClipChannel_ + 1);
+    else if (section)
         ImGui::Text("Section %d", renameSection_ + 1);
     else if (chain)
         ImGui::Text("Chain %s  \xC2\xB7  channel %d", PerformanceView::chainLetter(renameChain_).c_str(), renameChannel_ + 1);
@@ -5733,16 +6153,22 @@ void GuiApp::drawRenameDialog() {
     if (ImGui::IsWindowAppearing())
         ImGui::SetKeyboardFocusHere();
     ImGui::SetNextItemWidth(ImGui::GetFontSize() * 16);
-    const bool enter = ImGui::InputTextWithHint("##channelname", chain || section ? "VERSE, CHORUS, BREAK\xE2\x80\xA6" : "BASS, PADS, DRUMS\xE2\x80\xA6",
+    const bool inSession = chain || section || row || clip;
+    const bool enter = ImGui::InputTextWithHint("##channelname", clip ? "GROOVE, FILL, RISER\xE2\x80\xA6" : inSession ? "VERSE, CHORUS, BREAK\xE2\x80\xA6" : "BASS, PADS, DRUMS\xE2\x80\xA6",
                                                 &renameInput_, ImGuiInputTextFlags_EnterReturnsTrue);
-    ImGui::TextDisabled(chain || section ? "Kept in the session. Empty: no name." : "Kept in the preset. Empty: no name.");
+    ImGui::TextDisabled(inSession ? "Kept in the session. Empty: no name." : "Kept in the preset. Empty: no name.");
     const int button = dialogButtons({"OK", "Cancel"});
     if (button == 0 || enter) {
-        if (section || (renameChannel_ >= 0 && renameChannel_ < kChannelCount)) {
+        if (row || clip || section || (renameChannel_ >= 0 && renameChannel_ < kChannelCount)) {
             std::string name = truncateUtf8(renameInput_, 24);
             while (!name.empty() && name.back() == ' ')
                 name.pop_back();
-            if (section) {
+            if (row) {
+                rowNames_[static_cast<std::size_t>(renameRow_)] = name;
+            } else if (clip) {
+                rememberClips({{renameClipChannel_, renameClipSlot_}}, "Clip renamed");
+                clipNames_[static_cast<std::size_t>(renameClipChannel_)][static_cast<std::size_t>(renameClipSlot_)] = name;
+            } else if (section) {
                 song_.sections[static_cast<std::size_t>(renameSection_)].name = name;
                 songEdited();
             } else if (chain) {
