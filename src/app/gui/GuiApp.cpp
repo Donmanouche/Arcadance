@@ -4159,8 +4159,16 @@ void GuiApp::drawPerformance(const LiveState& live) {
     };
     // The screens, by name, in the Mode button's order: PLAY (EDIT while the
     // controller's edit mode is on), SESSION, SONG. A click shows one.
+    // From the screens to the preset, a group centred in the bar (never over the logo);
+    // SAVE, when the preset changed, at the right end.
     {
         ImGui::SameLine(0, px(4));
+        const float groupW = px(62 + 4 + 76 + 4 + 62) + px(12) + px(32 + 6 + 32) + (songView_ ? px(10 + 70) : 0.0f) + px(10 + 166 + 6 + 44) + px(12) +
+                             px(22 * 2 + 150);
+        const ImVec2 after = ImGui::GetCursorScreenPos();
+        ImGui::SetCursorScreenPos(ImVec2(std::max(after.x, winPos.x + (winW - groupW) * 0.5f), after.y));
+    }
+    {
         const ImVec2 at = ImGui::GetCursorScreenPos();
         static constexpr const char* kViews[] = {"PLAY", "SESSION", "SONG"};
         static constexpr const char* kTips[] = {"The controller and its loops (Tab: the next screen)", "Session: the clips of every channel (Tab)",
@@ -4191,7 +4199,7 @@ void GuiApp::drawPerformance(const LiveState& live) {
         ImGui::SetCursorScreenPos(ImVec2(x - px(4), at.y));
         ImGui::Dummy(ImVec2(0, px(32)));
     }
-    float clockRight = 0, presetLeft = 0;
+    float clockRight = 0, presetRight = 0;
     {
         // Play and Stop, the same for the song and the clips: Play plays the
         // song in the song screen, the clips elsewhere, and nothing while
@@ -4235,29 +4243,27 @@ void GuiApp::drawPerformance(const LiveState& live) {
                 runtime_->allNotesOff();  // pressed again: every note off
         }
         ImGui::SetItemTooltip("Stops what plays: the song, or every channel's loops, keeping them; again: every note off");
-        // Where it is: the song's bar and beat while it plays, else the clock's; FREE: none.
-        {
+        // The song screen: where the song is, its bar and beat (stopped, a dash).
+        if (songView_) {
             ImGui::SameLine(0, px(10));
             const ImVec2 q = ImGui::GetCursorScreenPos();
             const float pw = px(70), ph = px(32);
             ImGui::Dummy(ImVec2(pw, ph));
-            ImGui::SetItemTooltip(live.song.playing ? "Bar and beat of the song" : "Bar and beat of the clock");
+            ImGui::SetItemTooltip("Bar and beat of the song");
             dl->AddRectFilled(q, ImVec2(q.x + pw, q.y + ph), IM_COL32(0x10, 0x11, 0x13, 255), px(5));
             dl->AddRect(q, ImVec2(q.x + pw, q.y + ph), Theme::kControlBorder, px(5), px(1));
             const int bpb = std::max(live.beatsPerBar, 1);
             std::string where = "\xE2\x80\x93";
-            if (live.song.playing || live.clock != ClockMode::Free) {
-                const double beat = std::max(live.song.playing ? live.song.beat : live.beat, 0.0);
-                const auto whole = static_cast<long long>(std::floor(beat));
-                long long before = 0;  // the song: the bars of the sections before the one playing
-                if (live.song.playing)
-                    for (int i = 0; i < std::min(live.song.section, static_cast<int>(song_.sections.size())); ++i)
-                        before += PerformanceView::songSectionBars(live, song_.sections[static_cast<std::size_t>(i)]);
+            if (live.song.playing) {
+                const auto whole = static_cast<long long>(std::floor(std::max(live.song.beat, 0.0)));
+                long long before = 0;  // the bars of the sections before the one playing
+                for (int i = 0; i < std::min(live.song.section, static_cast<int>(song_.sections.size())); ++i)
+                    before += PerformanceView::songSectionBars(live, song_.sections[static_cast<std::size_t>(i)]);
                 where = std::to_string(before + whole / bpb + 1) + "." + std::to_string(whole % bpb + 1);
             }
             const ImVec2 wsz = bold->CalcTextSizeA(px(18), FLT_MAX, 0, where.c_str());
-            dl->AddText(bold, px(18), ImVec2(q.x + (pw - wsz.x) * 0.5f, q.y + (ph - wsz.y) * 0.5f),
-                        live.song.playing ? Theme::kGreen : Theme::kText, where.c_str());
+            dl->AddText(bold, px(18), ImVec2(q.x + (pw - wsz.x) * 0.5f, q.y + (ph - wsz.y) * 0.5f), live.song.playing ? Theme::kGreen : Theme::kDim,
+                        where.c_str());
         }
         // The clock: FREE, or its tempo (the wheel turns it, a double-click
         // types it, TAP taps it) and the beats of the bar; a click elsewhere
@@ -4396,9 +4402,12 @@ void GuiApp::drawPerformance(const LiveState& live) {
             const std::string name = presetNames_[static_cast<std::size_t>((i % count + count) % count)];
             guard([this, name] { openPreset(name); });
         };
-        const float h = px(32), arrowW = px(22), comboW = px(150);
+        // Narrower when the bar lacks room (SAVE showing at its end).
+        const float saveRoom = dirty_ ? bold->CalcTextSizeA(13.0f * em / 16.0f, FLT_MAX, 0, "SAVE").x + px(24) + px(8) : 0.0f;
+        const float h = px(32), arrowW = px(22);
+        const float comboW = std::clamp(winPos.x + winW - px(8) - saveRoom - presetFrom - arrowW * 2, px(90), px(150));
         const float w = arrowW * 2 + comboW;
-        const ImVec2 p(std::max(presetFrom, winPos.x + winW - px(8) - w), winPos.y + px(9));
+        const ImVec2 p(presetFrom, winPos.y + px(9));
         dl->AddRectFilled(p, ImVec2(p.x + w, p.y + h), Theme::kControl, px(5));
         dl->AddRect(p, ImVec2(p.x + w, p.y + h), Theme::kBlue, px(5));
         if (arrow("##presetprev", p, arrowW, h, true))
@@ -4412,7 +4421,20 @@ void GuiApp::drawPerformance(const LiveState& live) {
         ImGui::PushStyleColor(ImGuiCol_Border, color(0));
         ImGui::PushStyleColor(ImGuiCol_Button, color(0));
         ImGui::PushFont(bold, 15.0f);
-        const std::string current = hasFile_ ? preset_.name : std::string("Untitled");
+        std::string current = hasFile_ ? preset_.name : std::string("Untitled");
+        {  // shortened with an ellipsis when the list is narrow
+            const float room = comboW - ImGui::GetFrameHeight() - ImGui::GetStyle().FramePadding.x * 2 - px(10);
+            if (ImGui::CalcTextSize(current.c_str()).x > room) {
+                while (!current.empty() && ImGui::CalcTextSize((current + "\xE2\x80\xA6").c_str()).x > room) {
+                    current.pop_back();
+                    while (!current.empty() && (static_cast<unsigned char>(current.back()) & 0xC0) == 0x80)  // a whole UTF-8 character
+                        current.pop_back();
+                    if (!current.empty() && static_cast<unsigned char>(current.back()) >= 0xC0)
+                        current.pop_back();
+                }
+                current += "\xE2\x80\xA6";
+            }
+        }
         const bool open = ImGui::BeginCombo("##presetcombo", current.c_str(), ImGuiComboFlags_HeightLarge);
         ImGui::PopFont();
         ImGui::PopStyleColor(3);
@@ -4455,10 +4477,10 @@ void GuiApp::drawPerformance(const LiveState& live) {
         ImGui::SetItemTooltip("Preset");
         ImGui::SetCursorScreenPos(p);
         ImGui::Dummy(ImVec2(w, h));
-        presetLeft = p.x;
-        if (dirty_) {  // SAVE, left of it
+        presetRight = p.x + w;
+        if (dirty_) {  // SAVE, at the right end of the bar
             const ImVec2 sz = bold->CalcTextSizeA(13.0f * em / 16.0f, FLT_MAX, 0, "SAVE");
-            ImGui::SetCursorScreenPos(ImVec2(presetLeft - px(8) - sz.x - px(24), winPos.y + px(9)));
+            ImGui::SetCursorScreenPos(ImVec2(std::max(winPos.x + winW - px(8) - sz.x - px(24), presetRight + px(8)), winPos.y + px(9)));
             ImGui::PushStyleColor(ImGuiCol_Text, color(Theme::kOrange));
             ImGui::PushStyleColor(ImGuiCol_Border, color(Theme::kOrange));
             if (ImGui::Button("SAVE"))
