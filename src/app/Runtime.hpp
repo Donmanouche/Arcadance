@@ -7,6 +7,7 @@
 #include "midipad/SpscRing.hpp"
 
 #include <array>
+#include <bitset>
 #include <atomic>
 #include <cstdint>
 #include <functional>
@@ -146,7 +147,9 @@ struct LiveState {
         bool playing = false, loop = false;
         int section = -1;
         double beat = 0;
+        int pass = 0;  // the section's repeat playing, from 0
     } song;
+    std::array<std::bitset<128>, midipad::kChannelCount> soundingNotes{};  // Engine::soundingNotes
     std::array<std::array<float, midipad::Engine::kClipSlots>, midipad::kChannelCount> clipBeats{};
     std::array<std::array<float, midipad::Engine::kChains>, midipad::kChannelCount> chainBeats{};
     std::array<std::uint8_t, midipad::kChannelCount> chainOpen{};
@@ -212,6 +215,7 @@ public:
     // Clips (Engine::launchClip, stopClip, setRecordSlot), on any channel.
     void launchClip(int channel, int slot);
     void selectClip(int channel, int slot);  // Engine::selectClip
+    void copyTracks(int channel, int from, int to, std::uint16_t tracks);  // Engine::copyTracks
     void stopClip(int channel) { launchClip(channel, midipad::Engine::kClipSlots); }
     void setRecordSlot(int channel, int slot);
     // The session screen from the controller (Engine::setSessionMode); what
@@ -251,7 +255,8 @@ public:
     void loadSessionChains(std::vector<midipad::SessionChain> chains);  // Engine::loadSessionChains
     // The song (Engine::setSong, playSong, stopSong, setSongLoop).
     void setSong(midipad::Song song);
-    void playSong(int section);
+    void playSong(int section, int offsetBeats = 0);
+    void setSongLoopRange(int fromBeat, int toBeat);  // Engine::setSongLoopRange, in beats of the whole song
     void stopSong();
     void setSongLoop(bool on);
     void setMuted(int channel, bool on);  // Engine::setMuted
@@ -269,9 +274,12 @@ public:
     // The transport (Engine::transportPlay, transportStop): Play the song
     // from `section` (>= 0) or the clips (-1). setTransportSong: what the
     // Play of a Link session starting plays (the song screen's section, -1 the clips).
-    void transportPlay(int section);
+    void transportPlay(int section, int offsetBeats = 0);
     void transportStop();
-    void setTransportSong(int section) { transportSong_.store(section, std::memory_order_relaxed); }
+    void setTransportSong(int section, int offsetBeats = 0) {
+        transportSong_.store(section, std::memory_order_relaxed);
+        transportOffset_.store(offsetBeats, std::memory_order_relaxed);
+    }
     void setDpadSettle(int pressMs, int releaseMs) {
         dpadSettlePress_.store(pressMs, std::memory_order_relaxed);
         dpadSettleRelease_.store(releaseMs, std::memory_order_relaxed);
@@ -312,8 +320,8 @@ private:
     class Tap;
     struct Command {
         enum class Kind : std::uint8_t {
-            SetChannel, Panic, ClearLoop, ToggleLock, ChainStep, ChainThen, ChainGo, ChainStop, ClearClip, CopyClip, ResetShape, LaunchClip, SelectClip, RecordSlot, StretchLoop, AmplifyLoop, AxisLength, PauseLoops, PlayLoops,
-            SaveLoops, LoadLoops, RestoreClip, LoadChains, LoadSong, SongPlay, SongStop, SongLoop, Mute, Solo, MuteSolo, Modulation, ModulationCc, OffsetLoop, EditNotes, RecenterTilt
+            SetChannel, Panic, ClearLoop, ToggleLock, ChainStep, ChainThen, ChainGo, ChainStop, ClearClip, CopyClip, ResetShape, LaunchClip, SelectClip, CopyTracks, RecordSlot, StretchLoop, AmplifyLoop, AxisLength, PauseLoops, PlayLoops,
+            SaveLoops, LoadLoops, RestoreClip, LoadChains, LoadSong, SongPlay, SongStop, SongLoop, SongLoopRange, Mute, Solo, MuteSolo, Modulation, ModulationCc, OffsetLoop, EditNotes, RecenterTilt
         } kind;
         int channel = 0;
         int value = 0;
@@ -353,7 +361,7 @@ private:
     std::vector<midipad::SessionLoop> loopsToLoad_;
     std::vector<std::vector<midipad::SessionLoop>> clipsToRestore_;  // one per RestoreClip command waiting
     std::vector<midipad::SessionChain> chainsToLoad_;
-    std::atomic<int> transportSong_{-1};
+    std::atomic<int> transportSong_{-1}, transportOffset_{0};
     std::optional<midipad::Song> songToLoad_;
     struct NoteEdit {
         std::vector<midipad::LoopNoteRef> notes;
@@ -406,6 +414,7 @@ private:
     std::array<float, midipad::kChannelCount> clipProgress_{};
     std::array<LiveState::Chains, midipad::kChannelCount> chains_{};
     LiveState::Song song_{};
+    std::array<std::bitset<128>, midipad::kChannelCount> soundingNotes_{};
     std::array<std::array<float, midipad::Engine::kClipSlots>, midipad::kChannelCount> clipBeats_{};
     std::array<std::array<float, midipad::Engine::kChains>, midipad::kChannelCount> chainBeats_{};
     std::array<std::uint8_t, midipad::kChannelCount> chainOpen_{};

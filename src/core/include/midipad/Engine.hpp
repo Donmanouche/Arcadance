@@ -260,7 +260,14 @@ public:
     // again. With setSongLoop, the section playing plays again and again.
     // stopSong stops the song and the channels in it; PANIC stops it too.
     void setSong(const Song& song);  // playing, the section playing goes on (gone: the song stops)
-    void playSong(int section);
+    void playSong(int section, double offsetBeats = 0);  // offsetBeats: into the section (its repeats counted), from its start
+    // A part of the song played again and again: from beat `from` to beat `to`
+    // of the whole song (its sections and their repeats in a row; from < 0 or
+    // to <= from: none). Reaching `to`, the song goes on from `from`.
+    void setSongLoopRange(double from, double to) {
+        songLoopFrom_ = from;
+        songLoopTo_ = to;
+    }
     void stopSong();
     void setSongLoop(bool on) { songLoop_ = on; }
     bool songLoop() const { return songLoop_; }
@@ -294,6 +301,7 @@ public:
     }
     bool songPlaying() const { return songOn_; }
     int songSection() const { return songOn_ ? songSection_ : -1; }
+    int songPass() const { return songOn_ ? songPass_ : 0; }  // the section playing's repeat, from 0
     double songBeat() const;  // in the section playing, beats; below 0 while waiting for its bar
     // A turn of a clip, in beats (0: empty), at the clock's tempo for free
     // loops; a pass of a chain (`open`: it has a forever step, counted once;
@@ -312,6 +320,12 @@ public:
     // (false when there is nothing to copy). Chain steps on an empty clip are skipped.
     void clearClip(int channel, int slot);
     bool copyClip(int channel, int from, int to);
+    // Some loops of a clip copied into another clip of the channel, as they are
+    // (stretch, amplitude, offset, modulation): a bit per track (Engine::trackOf;
+    // kNoteTrack: the note loop). False when none of them holds anything.
+    bool copyTracks(int channel, int from, int to, std::uint16_t tracks);
+    // The notes sounding on a channel now (what the engine sent, loops included).
+    const std::bitset<128>& soundingNotes(int channel) const { return soundingNotes_[static_cast<std::size_t>(std::clamp(channel, 0, kChannelCount - 1))]; }
     int recordSlot(int channel) const { return recordSlot_[static_cast<std::size_t>(std::clamp(channel, 0, kChannelCount - 1))]; }
     // The session screen, from the controller. A SessionScreen binding (channel
     // 1's works on every channel; without one in the preset, PS / Guide) asks
@@ -485,7 +499,7 @@ public:
     // from `section` (>= 0, every channel from silence), or the clips (-1:
     // every channel's current clip from its start, those the song played or
     // stopped too). Stop stops whatever plays: the song, and the loops paused.
-    bool transportPlay(int section);
+    bool transportPlay(int section, double offsetBeats = 0);
     void transportStop();
     bool playing() const;  // the song, or a clip, plays
     // Session files. The loops of every channel that play, as they are (their
@@ -757,6 +771,11 @@ private:
     std::array<bool, kChannelCount> clipPlaying_{};
     std::array<int, kChannelCount> queued_ = [] { std::array<int, kChannelCount> a{}; a.fill(-1); return a; }();
     std::array<long long, kChannelCount> turnMark_{};
+    double songLoopFrom_ = -1, songLoopTo_ = -1;
+    double songLastBeat_ = -1;  // the song's beat at the last tick (the loop's end crossed)
+    double songSectionStart(int section) const;  // its first beat in the whole song
+    void songJump(double beat);                   // the song from that beat of it, at once
+    double songHold_ = -1e18;  // the song waits for this time (songNow) before playing: its bar
     std::array<std::array<std::array<ChainStep, kChainSteps>, kChains>, kChannelCount> chains_{};
     std::array<std::array<int, kChains>, kChannelCount> chainThen_ = [] {
         std::array<std::array<int, kChains>, kChannelCount> a{};
@@ -797,6 +816,7 @@ private:
     std::array<std::bitset<128>, 16> loopSounding_{};  // the loops' notes sent and not yet ended, per channel
     void releaseSilenced();
     int songSection_ = 0;
+    int songPass_ = 0;
     double songStart_ = 0;  // where the section playing starts, on songNow()
     std::vector<SongEvent> songEvents_;
     std::size_t songNext_ = 0;

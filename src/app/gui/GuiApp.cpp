@@ -594,6 +594,24 @@ private:
     bool toastUndone_ = false;
     bool toastPlain_ = false;  // a message alone: no Undo
     bool notesPanel_ = false;  // the note editor, in the main screen's modules' place
+    int songLoopFrom_ = -1, songLoopTo_ = -1;  // the part of the song looped, in beats of the whole song (-1: none)
+    int songStartBar_ = -1;                     // where Play starts in the song, a bar (-1: the cursor's section)
+    // Where Play starts: the marker's section and beats into it, or the cursor's section.
+    std::pair<int, int> songStart(const LiveState& live) const {
+        if (song_.sections.empty())
+            return {-1, 0};
+        if (songStartBar_ < 0)
+            return {std::clamp(songCursor_.row, 0, static_cast<int>(song_.sections.size()) - 1), 0};
+        int bar = 0;
+        for (int i = 0; i < static_cast<int>(song_.sections.size()); ++i) {
+            const auto& sec = song_.sections[static_cast<std::size_t>(i)];
+            const int length = PerformanceView::songSectionBars(live, sec) * std::clamp(sec.repeats, 1, midipad::kMaxSectionRepeats);
+            if (songStartBar_ < bar + length)
+                return {i, (songStartBar_ - bar) * std::max(live.beatsPerBar, 1)};
+            bar += length;
+        }
+        return {0, 0};
+    }
     double toastUntil_ = 0;
     void pushUndo(UndoStep step);
     void songUndo();
@@ -614,6 +632,7 @@ private:
     void sessionDrop(const PerformanceView::SessionAction& a, const LiveState& live);
     // A row of the session screen: its clips launched on every channel with one there (the others play on).
     void launchRow(int slot, const LiveState& live);
+    void captureRow(const LiveState& live);  // the clips playing, copied into the first empty row
     // Clips copied (Ctrl+C), for Ctrl+V: each where it was from the first (channels, slots) and its loops.
     struct ClipCopy {
         int channels = 0, slots = 0;
@@ -770,7 +789,7 @@ private:
     // A value typed after a double-click: a chain step's repeats (0: forever; row: the step, item: its
     // clip), a song item's repeats or a silence's beats (col, row, item), a section's bars (row).
     struct ValueAsk {
-        enum class Kind : std::uint8_t { ChainRepeats, ItemRepeats, RestBeats, SectionBars, NoteVelocity, NoteChance } kind = Kind::ItemRepeats;
+        enum class Kind : std::uint8_t { ChainRepeats, ItemRepeats, RestBeats, SectionBars, NoteVelocity, NoteChance, SectionRepeats } kind = Kind::ItemRepeats;
         int col = 0, row = 0, item = 0, value = 0;
     };
     std::vector<midipad::LoopNoteRef> valueAskNotes_;  // NoteVelocity, NoteChance: the notes set
@@ -800,7 +819,7 @@ private:
     std::optional<Session> collectSession();
     // What a session holds of the work (loops, clips, chains, song, mute and
     // solo), as text: not the preset, tonality, tempo or active channel.
-    static std::string sessionPrint(Session session);
+    static std::string sessionPrint(Session session, bool withMapping = false);
     // Quitting: when the session changed since it was saved, opened or
     // started, asks to save it first.
     void quitAsked();
@@ -858,7 +877,19 @@ private:
 
     Preset preset_;
     bool hasFile_ = false;  // false: "Untitled", never saved
-    bool dirty_ = false;
+    bool dirty_ = false;  // the mapping changed since saved (no song saved yet: it is the mapping's)
+    // Once a song is saved (or opened), the mapping is its own: changes go to it
+    // (songMappingDirty_), saved with it; the mapping files are left alone.
+    bool songOwnsMapping() const { return sessionName_.has_value(); }
+    void mappingChanged() {
+        if (songOwnsMapping())
+            songMappingDirty_ = true;
+        else
+            dirty_ = true;
+    }
+    bool saveShown();  // SAVE, Ctrl+S: the song once saved, the mapping before
+    bool songMappingDirty_ = false;
+    Preset songMapping_;  // the song's mapping as saved or opened (Revert)
     std::optional<fs::file_time_type> presetTime_;
     std::chrono::steady_clock::time_point nextFileCheck_{};
 
@@ -1258,7 +1289,7 @@ void GuiApp::update() {
     finishVirMidiJob();
     if (sessionPrintIn_ > 0 && --sessionPrintIn_ == 0)  // the session as opened or started
         if (const auto session = collectSession())
-            sessionPrint_ = sessionPrint(*session);
+            sessionPrint_ = sessionPrint(*session, songOwnsMapping());
     runtime_->setKey(settings_.key);
     if (const auto clear = editor_.takeClearLoopRequest())
         runtime_->clearLoop(clear->source, clear->axis);
@@ -1303,7 +1334,7 @@ void GuiApp::update() {
 
     // Follow edits made to the preset file by another program.
     const auto now = std::chrono::steady_clock::now();
-    if (hasFile_ && now >= nextFileCheck_) {
+    if (hasFile_ && !songOwnsMapping() && now >= nextFileCheck_) {
         nextFileCheck_ = now + std::chrono::milliseconds(500);
         const auto time = modificationTime(library_->pathFor(preset_.name));
         if (time && time != presetTime_) {
@@ -1322,7 +1353,8 @@ void GuiApp::update() {
         }
     }
 
-    std::string title = "Arcadance - " + (hasFile_ ? preset_.name : std::string("Untitled")) + (dirty_ ? " *" : "");
+    std::string title = songOwnsMapping() ? "Arcadance - " + *sessionName_ + (songMappingDirty_ ? " *" : "")
+                                          : "Arcadance - " + (hasFile_ ? preset_.name : std::string("Untitled")) + (dirty_ ? " *" : "");
     if (title != SDL_GetWindowTitle(window_))
         SDL_SetWindowTitle(window_, title.c_str());
 }
@@ -1335,7 +1367,7 @@ void GuiApp::openPreset(const std::string& name) {
     try {
         preset_ = library_->load(name);
     } catch (const PresetError& e) {
-        showError(std::string("Cannot open the preset:\n") + e.what());
+        showError(std::string("Cannot open the mapping:\n") + e.what());
         return;
     }
     hasFile_ = true;
@@ -1374,7 +1406,7 @@ void GuiApp::startUntitled() {
 bool GuiApp::saveCurrent() {
     if (!hasFile_) {
         nameDialog_ = NameDialog::SaveAs;
-        nameInput_ = library_->uniqueName("New preset");
+        nameInput_ = library_->uniqueName("New mapping");
         nameError_.clear();
         openNameDialog_ = true;
         return false;
@@ -1408,8 +1440,14 @@ bool GuiApp::saveAs(const std::string& name) {
 }
 
 void GuiApp::edited() {
-    dirty_ = true;
+    mappingChanged();
     pushToEngine();
+}
+
+bool GuiApp::saveShown() {
+    if (songOwnsMapping())
+        return saveSessionAs(*sessionName_);
+    return saveCurrent();
 }
 
 void GuiApp::pushToEngine() {
@@ -1631,10 +1669,12 @@ void GuiApp::draw() {
     // (Theme::kBackground), so its pixels are not drawn twice.
     ImGui::Begin("Arcadance", nullptr,
                  ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
-                     ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoBackground);
+                     ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse |
+                     ImGuiWindowFlags_NoBackground);
+    ImGui::SetScrollY(0.0f);  // the page never scrolls: a wheel turned over a value moves nothing else
 
     if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_S, ImGuiInputFlags_RouteGlobal))
-        saveCurrent();
+        saveShown();
     if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_Q, ImGuiInputFlags_RouteGlobal))
         guard([this] { quitAsked(); });
     if (ImGui::Shortcut(ImGuiKey_F11, ImGuiInputFlags_RouteGlobal))
@@ -2340,8 +2380,9 @@ void GuiApp::applyState(const UndoStep& state) {
     case UndoStep::Kind::Clips:
         for (std::size_t i = 0; i < state.clips.size() && i < state.clipNames.size(); ++i) {
             const auto& [channel, slot] = state.clips[i];
-            if (channel >= 0 && channel < kChannelCount && slot >= 0 && slot < Engine::kClipSlots)
-                clipNames_[static_cast<std::size_t>(channel)][static_cast<std::size_t>(slot)] = state.clipNames[i];
+            if (channel < 0 || channel >= kChannelCount || slot < 0 || slot >= Engine::kClipSlots)
+                continue;
+            clipNames_[static_cast<std::size_t>(channel)][static_cast<std::size_t>(slot)] = state.clipNames[i];
         }
         for (const auto& [channel, slot] : state.clips) {
             std::vector<midipad::SessionLoop> loops;
@@ -2400,6 +2441,42 @@ void GuiApp::launchRow(int slot, const LiveState& live) {
         } else if (busy) {
             runtime_->stopClip(ch);
         }
+    }
+}
+
+void GuiApp::captureRow(const LiveState& live) {
+    // What plays: a clip per channel (stopped, nothing).
+    std::vector<std::pair<int, int>> playing;
+    for (int ch = 0; ch < kChannelCount; ++ch)
+        if (((live.clipsPlaying >> ch) & 1u) && !live.loopsPaused)
+            playing.push_back({ch, live.currentClip[static_cast<std::size_t>(ch)]});
+    auto toast = [&](const char* what) {
+        toast_ = what;
+        toastUndone_ = false;
+        toastPlain_ = true;
+        toastUntil_ = ImGui::GetTime() + 2.5;
+    };
+    if (playing.empty())
+        return toast("Nothing plays to capture");
+    int row = -1;  // the first row with no clip on any channel
+    for (int k = 0; k < Engine::kClipSlots && row < 0; ++k) {
+        bool empty = true;
+        for (int ch = 0; ch < kChannelCount && empty; ++ch)
+            empty = live.clips[static_cast<std::size_t>(ch * Engine::kClipSlots + k)].sources == 0;
+        if (empty)
+            row = k;
+    }
+    if (row < 0)
+        return toast("No empty row to capture into");
+    std::vector<std::pair<int, int>> into;
+    for (const auto& [ch, slot] : playing)
+        into.push_back({ch, row});
+    undoWhat_ = "Capture (row " + std::to_string(row + 1) + ")";
+    rememberClips(into, "Capture");
+    undoWhat_.clear();
+    for (const auto& [ch, slot] : playing) {
+        runtime_->copyClip(ch, slot, row);
+        clipNames_[static_cast<std::size_t>(ch)][static_cast<std::size_t>(row)] = clipNames_[static_cast<std::size_t>(ch)][static_cast<std::size_t>(slot)];
     }
 }
 
@@ -2566,6 +2643,49 @@ void GuiApp::songAction(const PerformanceView::SongAction& a, const LiveState& l
         songEdited();
         break;
     case K::AddSection: addSongSection(static_cast<int>(song_.sections.size())); break;
+    case K::AddFromRow: {  // a section playing a row of the session screen: its clips, as long as the longest
+        addSongSection(static_cast<int>(song_.sections.size()));
+        midipad::SongSection& sec = song_.sections.back();
+        const int row = std::clamp(a.value, 0, Engine::kClipSlots - 1);
+        if (!rowNames_[static_cast<std::size_t>(row)].empty())
+            sec.name = rowNames_[static_cast<std::size_t>(row)];
+        sec.fit = true;
+        for (int ch = 0; ch < kChannelCount; ++ch)
+            if (live.clips[static_cast<std::size_t>(ch * Engine::kClipSlots + row)].sources != 0) {
+                midipad::SongItem item;
+                item.kind = midipad::SongItem::Kind::Clip;
+                item.index = row;
+                sec.cells[static_cast<std::size_t>(ch)].push_back(item);
+            }
+        undoWhat_ = "Section from row " + std::to_string(row + 1);
+        songEdited();
+        break;
+    }
+    case K::LoopRange:
+        songLoopFrom_ = a.row;
+        songLoopTo_ = a.row < 0 ? -1 : a.value;
+        runtime_->setSongLoopRange(songLoopFrom_, songLoopTo_);
+        if (songLoopFrom_ >= 0 && live.song.loop)  // one loop at a time
+            runtime_->setSongLoop(false);
+        break;
+    case K::StartAt: songStartBar_ = a.value; break;
+    case K::Times:  // the times a section plays in a row
+        if (a.row >= 0 && a.row < static_cast<int>(song_.sections.size())) {
+            auto& sec = song_.sections[static_cast<std::size_t>(a.row)];
+            const int times = std::clamp(std::max(sec.repeats, 1) + a.value, 1, midipad::kMaxSectionRepeats);
+            if (times != sec.repeats) {
+                sec.repeats = times;
+                undoWhat_ = "Times played (section " + std::to_string(a.row + 1) + ")";
+                songEdited();
+            }
+        }
+        break;
+    case K::TimesAsk:
+        if (a.row >= 0 && a.row < static_cast<int>(song_.sections.size())) {
+            valueAsk_ = ValueAsk{ValueAsk::Kind::SectionRepeats, -1, a.row, 0, std::max(song_.sections[static_cast<std::size_t>(a.row)].repeats, 1)};
+            openValueAsk_ = true;
+        }
+        break;
     case K::EditCell:
         c.row = a.row;
         c.col = a.col;
@@ -2852,17 +2972,20 @@ void GuiApp::songEvent(Engine::SessionEvent e, const LiveState& live) {
             c.col = -1;
             break;
         }
+        // In order: the name (-1), the times (-2), the channels; round again.
         const auto it = std::find(shown.begin(), shown.end(), c.col);
         const int at = it == shown.end() ? -1 : static_cast<int>(it - shown.begin()), last = static_cast<int>(shown.size()) - 1;
         if (e == E::Left)
-            c.col = at <= 0 ? shown.back() : shown[static_cast<std::size_t>(at - 1)];
+            c.col = c.col == -1 ? shown.back() : c.col == -2 ? -1 : at <= 0 ? -2 : shown[static_cast<std::size_t>(at - 1)];
         else
-            c.col = at < 0 ? shown.front() : at == last ? -1 : shown[static_cast<std::size_t>(at + 1)];
+            c.col = c.col == -1 ? -2 : c.col == -2 ? shown.front() : at == last ? -1 : shown[static_cast<std::size_t>(at + 1)];
         break;
     }
     case E::Press:
         if (c.row == sections)
             addSongSection(sections);
+        else if (c.col == -2)
+            songAction({A::Kind::TimesAsk, c.row}, live);
         else if (c.col < 0)
             songAction(live.song.playing && live.song.section == c.row ? A{A::Kind::Stop} : A{A::Kind::Play, c.row}, live);
         else
@@ -2876,7 +2999,9 @@ void GuiApp::songEvent(Engine::SessionEvent e, const LiveState& live) {
     case E::ValueDown:
     case E::ValueLeft:
     case E::ValueRight:
-        if (c.row < sections && c.col < 0)  // the section's length: a bar up / down, four left / right
+        if (c.row < sections && c.col == -2)  // the times it plays: one more up or right, one fewer down or left
+            songAction({A::Kind::Times, c.row, -2, 0, e == E::ValueUp || e == E::ValueRight ? 1 : -1}, live);
+        else if (c.row < sections && c.col < 0)  // the section's length: a bar up / down, four left / right
             songAction({A::Kind::Bars, c.row, -1, 0, e == E::ValueUp ? 1 : e == E::ValueDown ? -1 : e == E::ValueRight ? 4 : -4}, live);
         break;
     default: break;
@@ -2891,11 +3016,12 @@ enum MenuId : int {
     kChannelStop, kChannelMute, kChannelSolo, kChainOn, kChainOff, kThenLoop, kThenStop, kThenNext, kPrevChain, kNextChain, kDuplicateChain, kRenameChain, kClearChain,
     kLock, kUnlock, kClearLoop, kResetShape, kSettings, kEditNotes, kPrevChannel, kNextChannel, kRename, kColour, kUndo,
     kClipUp, kClipDown, kStepLeft, kStepRight, kLaunchRow,
-    kSongPlay, kSongStop, kSongLoop, kLoopSong, kSectionRename, kSectionFit, kSectionDuplicate, kSectionInsert, kSectionUp, kSectionDown, kSectionDelete,
+    kSongPlay, kSongStop, kSongLoop, kLoopSong, kSectionRename, kSectionFit, kSectionRepeats, kSectionDuplicate, kSectionInsert, kSectionUp, kSectionDown, kSectionDelete,
     kCellEdit, kCellClear, kCellCopy, kCellPaste,
     kRestBarMore, kRestBarLess, kRestBeatMore, kRestBeatLess,
-    kItemChange, kItemGlue, kItemLeft, kItemRight, kItemLoop, kItemKind, kItemDuplicate, kItemDelete, kEditClipNotes, kExportClip, kRenameClip, kRenameRow, kRowLaunch,
+    kItemChange, kItemGlue, kItemLeft, kItemRight, kItemLoop, kItemKind, kItemDuplicate, kItemDelete, kEditClipNotes, kItemEditNotes, kExportClip, kRenameClip, kRenameRow, kRowLaunch,
     kModPick, kModStop, kModSendCc, kModDepth, kModDirection, kCopyMapping,
+    kCopyFromClip = 900,  // + the clip (0-7) a loop is copied from, into the current one
     kPick = 1000,  // + the clip (0-7) or 8 + the chain: what a song item plays
     kModTarget = 2000  // + the movement track a loop modulates
 };
@@ -3089,6 +3215,13 @@ void GuiApp::openMenu(const PerformanceView::MenuTarget& t, const LiveState& liv
     menu.fromController = fromController;
     menu.at = at;
     auto add = [&](std::string label, int id, bool enabled = true) { menu.items.push_back({std::move(label), id, enabled}); };
+    // The same loop from another clip of the channel, into the current one (as it is: stretch, amplitude...).
+    auto addCopyFrom = [&](int loopSource) {
+        const auto lc = static_cast<std::size_t>(std::clamp(live.channel, 0, kChannelCount - 1));
+        for (int k = 0; k < Engine::kClipSlots; ++k)
+            if (k != live.currentClip[lc] && ((live.clips[lc * Engine::kClipSlots + static_cast<std::size_t>(k)].sources >> loopSource) & 1u))
+                add("Copy from " + clipName(live.channel, k), kCopyFromClip + k);
+    };
     const auto c = static_cast<std::size_t>(std::clamp(t.channel, 0, kChannelCount - 1));
     const LiveState::Chains& chains = live.chains[c];
     const int shown = t.kind == K::Chain ? std::clamp(t.slot, 0, Engine::kChains - 1) : shownChain(t.channel);
@@ -3207,6 +3340,7 @@ void GuiApp::openMenu(const PerformanceView::MenuTarget& t, const LiveState& liv
             add("Lock", kLock, plays);
         add(lane ? "Clear" + axis : "Clear", kClearLoop, st.state != LoopStatus::State::Empty);
         add("Back to 1x \xC2\xB7 100%", kResetShape, plays);
+        addCopyFrom(source);
         if (lane && source != static_cast<int>(LoopSource::Notes)) {  // modulating another loop's amplitude
             add("Modulate the amplitude of\xE2\x80\xA6", kModPick, plays);
             add("Stop modulating", kModStop, st.modTargets != 0);
@@ -3226,6 +3360,7 @@ void GuiApp::openMenu(const PerformanceView::MenuTarget& t, const LiveState& liv
         else
             add("Lock", kLock, st.state == LoopStatus::State::Playing);
         add("Edit the notes\xE2\x80\xA6", kEditNotes);
+        addCopyFrom(static_cast<int>(LoopSource::Notes));
         add("Clear", kClearLoop, st.state != LoopStatus::State::Empty);
         break;
     }
@@ -3255,6 +3390,7 @@ void GuiApp::openMenu(const PerformanceView::MenuTarget& t, const LiveState& liv
         add(song_.loop ? "Loop song: off" : "Loop song: on", kLoopSong);
         add("Rename\xE2\x80\xA6", kSectionRename);
         add(sec.fit ? "Length: fixed" : "Length: = longest channel", kSectionFit);
+        add("Times played: " + std::to_string(std::max(sec.repeats, 1)) + "\xE2\x80\xA6", kSectionRepeats);
         add("Duplicate", kSectionDuplicate);
         add("Insert a section above", kSectionInsert);
         add("Move up", kSectionUp, t.slot > 0);
@@ -3325,6 +3461,10 @@ void GuiApp::openMenu(const PerformanceView::MenuTarget& t, const LiveState& liv
             add("Start right after the one before", kItemGlue, t.axis > 0);
         add("Move a bar left", kItemLeft, start > 1e-6);
         add("Move a bar right", kItemRight, start < midipad::kMaxSectionBars - 1);
+        if (it.kind == midipad::SongItem::Kind::Clip)  // its notes, in the editor, as from the session screen
+            add("Edit the notes\xE2\x80\xA6", kItemEditNotes,
+                ((live.clips[static_cast<std::size_t>(t.channel * Engine::kClipSlots + std::clamp(it.index, 0, Engine::kClipSlots - 1))].sources >>
+                  static_cast<int>(LoopSource::Notes)) & 1u) != 0);
         if (!rest) {
             add(it.loop ? "After its repeats: silence" : "After its repeats: loop on", kItemLoop);
             add(it.kind == midipad::SongItem::Kind::Clip ? "Make it a chain" : "Make it a clip", kItemKind);
@@ -3407,6 +3547,23 @@ void GuiApp::changeModulation(int id, int step, const LiveState& live) {
 
 void GuiApp::runMenu(const PerformanceView::MenuTarget& t, int id, const LiveState& live) {
     using K = PerformanceView::MenuTarget::Kind;
+    if (id >= kCopyFromClip && id < kCopyFromClip + Engine::kClipSlots &&
+        (t.kind == K::Lane || t.kind == K::Panel || t.kind == K::NoteLoop)) {  // a loop copied from another clip of the channel
+        const int ch = live.channel, from = id - kCopyFromClip, to = live.currentClip[static_cast<std::size_t>(ch)];
+        const int source = t.kind == K::NoteLoop ? static_cast<int>(LoopSource::Notes) : std::clamp(t.source, 0, kLoopSourceCount - 1);
+        std::uint16_t tracks = 0;
+        if (source == static_cast<int>(LoopSource::Notes))
+            tracks = static_cast<std::uint16_t>(1u << Engine::kNoteTrack);
+        else
+            for (int a = 0; a < 2; ++a)
+                if (t.kind == K::Panel || (t.axis & 1) == a)
+                    tracks = static_cast<std::uint16_t>(tracks | (1u << Engine::trackOf(source, a)));
+        undoWhat_ = "Loop copied from " + clipName(ch, from);
+        rememberClips({{ch, to}}, "Loop copied");
+        undoWhat_.clear();
+        runtime_->copyTracks(ch, from, to, tracks);
+        return;
+    }
     if (t.kind == K::SongPick && id >= kPick) {  // what a song item plays: a new one, or this one's
         const int pick = id - kPick, bpb = std::max(live.beatsPerBar, 1);
         const auto kind = pick < 8 ? midipad::SongItem::Kind::Clip : pick < 16 ? midipad::SongItem::Kind::Chain : midipad::SongItem::Kind::Rest;
@@ -3654,15 +3811,26 @@ void GuiApp::runMenu(const PerformanceView::MenuTarget& t, int id, const LiveSta
         break;
     case kExportClip: exportMidi(ch, t.slot); break;
     case kEditClipNotes:  // the clip made the channel's current one (played, if another plays), then its notes
-        moveSessionCursor(ch, t.slot, live);
-        if (live.currentClip[c] != t.slot || live.queuedClip[c] >= 0) {
+    case kItemEditNotes: {
+        int slot = t.slot;
+        if (id == kItemEditNotes) {  // a song item: its clip
+            const auto* items = songCell(t.slot, t.channel);
+            if (!items || t.axis < 0 || t.axis >= static_cast<int>(items->size()))
+                break;
+            slot = std::clamp((*items)[static_cast<std::size_t>(t.axis)].index, 0, Engine::kClipSlots - 1);
+            runtime_->setChannel(ch);
+        } else {
+            moveSessionCursor(ch, slot, live);
+        }
+        if (live.currentClip[c] != slot || live.queuedClip[c] >= 0) {
             if ((live.clipsPlaying >> ch) & 1u)
-                runtime_->launchClip(ch, t.slot);
+                runtime_->launchClip(ch, slot);
             else
-                runtime_->selectClip(ch, t.slot);
+                runtime_->selectClip(ch, slot);
         }
         openWindow("notes");
         break;
+    }
     case kItemChange: openSongPick(t.slot, t.channel, t.axis, live, menuFromController_, menuAt_); break;
     case kSongPlay:
         songCursor_.row = t.slot;
@@ -3681,6 +3849,12 @@ void GuiApp::runMenu(const PerformanceView::MenuTarget& t, int id, const LiveSta
             renameInput_ = song_.sections[static_cast<std::size_t>(t.slot)].name;
             renameRow_ = renameClipChannel_ = renameClipSlot_ = -1;
         openRename_ = true;
+        }
+        break;
+    case kSectionRepeats:
+        if (t.slot >= 0 && t.slot < static_cast<int>(song_.sections.size())) {
+            valueAsk_ = ValueAsk{ValueAsk::Kind::SectionRepeats, -1, t.slot, 0, std::max(song_.sections[static_cast<std::size_t>(t.slot)].repeats, 1)};
+            openValueAsk_ = true;
         }
         break;
     case kSectionFit:
@@ -3998,6 +4172,7 @@ void GuiApp::drawPerformance(const LiveState& live) {
     using Theme = PerformanceView::Theme;
     liveChains_ = live.chains;
     undoWhat_.clear();
+    performance_.syncSounding(live.soundingNotes, ImGui::GetTime());
     if (sessionView_ || songView_)
         screenKeys(live);
     else
@@ -4157,41 +4332,65 @@ void GuiApp::drawPerformance(const LiveState& live) {
         ImGui::PopFont();
         ImGui::SameLine(0, px(8));
     };
-    // The screens, by name, in the Mode button's order: PLAY (EDIT while the
-    // controller's edit mode is on), SESSION, SONG. A click shows one.
+    // The screens, in the Mode button's order, as icons: a controller (the main
+    // screen; violet in the controller's edit mode), four squares (the session),
+    // lanes of blocks (the song). A click shows one.
     // From the screens to the preset, a group centred in the bar (never over the logo);
     // SAVE, when the preset changed, at the right end.
     {
         ImGui::SameLine(0, px(4));
-        const float groupW = px(62 + 4 + 76 + 4 + 62) + px(12) + px(32 + 6 + 32) + (songView_ ? px(10 + 70) : 0.0f) + px(10 + 166 + 6 + 44) + px(12) +
-                             px(22 * 2 + 150);
+        const float groupW = px(36 * 3 + 4 * 2) + px(12) + px(32 + 6 + 32) + (songView_ ? px(10 + 70) : 0.0f) + px(10 + 166 + 6 + 44) + px(12) +
+                             px(22 * 2 + 186);
         const ImVec2 after = ImGui::GetCursorScreenPos();
         ImGui::SetCursorScreenPos(ImVec2(std::max(after.x, winPos.x + (winW - groupW) * 0.5f), after.y));
     }
     {
         const ImVec2 at = ImGui::GetCursorScreenPos();
-        static constexpr const char* kViews[] = {"PLAY", "SESSION", "SONG"};
-        static constexpr const char* kTips[] = {"The controller and its loops (Tab: the next screen)", "Session: the clips of every channel (Tab)",
+        static constexpr const char* kTips[] = {"Play: the controller and its loops (Tab)", "Session: the clips of every channel (Tab)",
                                                 "Song: the sections of the song, the clips and chains each channel plays in them (Tab)"};
         const int shown = songView_ ? 2 : sessionView_ ? 1 : 0;
         float x = at.x;
         for (int v = 0; v < 3; ++v) {
-            const char* name = v == 0 && editView_ ? "EDIT" : kViews[v];
-            const float w = px(v == 1 ? 76 : 62), h = px(32);
+            const float w = px(36), h = px(32);
             ImGui::SetCursorScreenPos(ImVec2(x, at.y));
             ImGui::PushID(v);
             const bool clicked = ImGui::InvisibleButton("##view", ImVec2(w, h));
             const bool hovered = ImGui::IsItemHovered();
-            ImGui::SetItemTooltip("%s", kTips[v]);
+            ImGui::SetItemTooltip("%s", v == 0 && editView_ ? "Edit mode: the controller moves a cursor on the screen (Back: leave it)" : kTips[v]);
             ImGui::PopID();
             const bool on = v == shown;
-            const bool edit = v == 0 && editView_;
-            const ImU32 accent = edit ? Theme::kViolet : Theme::kGreen;
-            dl->AddRectFilled(ImVec2(x, at.y), ImVec2(x + w, at.y + h),
-                              on ? (accent & ~IM_COL32_A_MASK) | IM_COL32(0, 0, 0, 60) : hovered ? Theme::kControlBorder : Theme::kControl, px(5));
-            dl->AddRect(ImVec2(x, at.y), ImVec2(x + w, at.y + h), on ? accent : Theme::kControlBorder, px(5), px(on ? 1.3f : 1.0f));
-            const ImVec2 tsz = bold->CalcTextSizeA(px(12), FLT_MAX, 0, name);
-            dl->AddText(bold, px(12), ImVec2(x + (w - tsz.x) * 0.5f, at.y + (h - tsz.y) * 0.5f), on ? accent : Theme::kLabel, name);
+            const ImU32 accent = v == 0 && editView_ ? Theme::kViolet : Theme::kGreen;
+            // Its background, as drawn (lit: the accent faint over the bar), for the holes in the controller.
+            auto blend = [](ImU32 under, ImU32 over, float a) {
+                auto ch = [&](int shift) {
+                    const float u = static_cast<float>((under >> shift) & 0xFF), o = static_cast<float>((over >> shift) & 0xFF);
+                    return static_cast<ImU32>(std::lround(u + (o - u) * a)) << shift;
+                };
+                return ch(IM_COL32_R_SHIFT) | ch(IM_COL32_G_SHIFT) | ch(IM_COL32_B_SHIFT) | IM_COL32_A_MASK;
+            };
+            const ImU32 fill = on ? blend(Theme::kTopBar, accent, 60.0f / 255.0f) : hovered ? Theme::kControlBorder : Theme::kControl;
+            dl->AddRectFilled(ImVec2(x, at.y), ImVec2(x + w, at.y + h), fill, px(5));
+            dl->AddRect(ImVec2(x, at.y), ImVec2(x + w, at.y + h), on || (v == 0 && editView_) ? accent : Theme::kControlBorder, px(5), px(on ? 1.3f : 1.0f));
+            const ImU32 ink = on || (v == 0 && editView_) ? accent : Theme::kLabel;
+            const float cx = x + w * 0.5f, cy = at.y + h * 0.5f;
+            if (v == 0) {  // a controller: its body and grips filled, its cross and four buttons cut out
+                dl->AddRectFilled(ImVec2(cx - px(11), cy - px(6)), ImVec2(cx + px(11), cy + px(2)), ink, px(4));
+                dl->AddEllipseFilled(ImVec2(cx - px(8.5f), cy + px(2.5f)), ImVec2(px(4.5f), px(5.5f)), ink);
+                dl->AddEllipseFilled(ImVec2(cx + px(8.5f), cy + px(2.5f)), ImVec2(px(4.5f), px(5.5f)), ink);
+                dl->AddRectFilled(ImVec2(cx - px(9), cy - px(2.6f)), ImVec2(cx - px(5), cy - px(1.4f)), fill);
+                dl->AddRectFilled(ImVec2(cx - px(7.6f), cy - px(4)), ImVec2(cx - px(6.4f), cy), fill);
+                for (const auto& [dx, dy] : {std::pair{0.0f, -2.2f}, {2.2f, 0.0f}, {0.0f, 2.2f}, {-2.2f, 0.0f}})
+                    dl->AddCircleFilled(ImVec2(cx + px(7.0f + dx), cy + px(-2.0f + dy)), px(0.9f), fill);
+            } else if (v == 1) {  // four squares
+                for (int k = 0; k < 4; ++k) {
+                    const float gx = cx + (k % 2 ? px(1.5f) : -px(8.5f)), gy = cy + (k / 2 ? px(1.5f) : -px(8.5f));
+                    dl->AddRectFilled(ImVec2(gx, gy), ImVec2(gx + px(7), gy + px(7)), ink, px(1.5f));
+                }
+            } else {  // lanes of blocks, as an arrangement
+                static constexpr float kLanes[4][3] = {{-8, 1, -7}, {-3, 8, -1.5f}, {-8, -1, 4}, {2, 8, 4}};  // x from, x to, y: a block each
+                for (const auto& lane : kLanes)
+                    dl->AddRectFilled(ImVec2(cx + px(lane[0]), cy + px(lane[2])), ImVec2(cx + px(lane[1]), cy + px(lane[2] + 3.5f)), ink, px(1.2f));
+            }
             if (clicked && !on)
                 showView(v, live);
             x += w + px(4);
@@ -4230,10 +4429,10 @@ void GuiApp::drawPerformance(const LiveState& live) {
             }
             return clicked;
         };
-        const int songSection = songView_ && !song_.sections.empty() ? std::clamp(songCursor_.row, 0, static_cast<int>(song_.sections.size()) - 1) : -1;
-        runtime_->setTransportSong(songSection);  // for a Link session starting
+        const auto [songSection, songOffset] = songView_ ? songStart(live) : std::pair<int, int>{-1, 0};
+        runtime_->setTransportSong(songSection, songOffset);  // for a Link session starting
         if (transport("##loopsplay", true))
-            runtime_->transportPlay(songSection);
+            runtime_->transportPlay(songSection, songOffset);
         ImGui::SetItemTooltip(songView_ ? "Plays the song from the section under the cursor (nothing while something plays)"
                                         : "Plays every channel's clips again, from their start (nothing while something plays)");
         if (transport("##loopsstop", false)) {
@@ -4258,7 +4457,10 @@ void GuiApp::drawPerformance(const LiveState& live) {
                 const auto whole = static_cast<long long>(std::floor(std::max(live.song.beat, 0.0)));
                 long long before = 0;  // the bars of the sections before the one playing
                 for (int i = 0; i < std::min(live.song.section, static_cast<int>(song_.sections.size())); ++i)
-                    before += PerformanceView::songSectionBars(live, song_.sections[static_cast<std::size_t>(i)]);
+                    before += PerformanceView::songSectionBars(live, song_.sections[static_cast<std::size_t>(i)]) *
+                              std::clamp(song_.sections[static_cast<std::size_t>(i)].repeats, 1, midipad::kMaxSectionRepeats);
+                if (live.song.section >= 0 && live.song.section < static_cast<int>(song_.sections.size()))  // its times played before this one
+                    before += static_cast<long long>(live.song.pass) * PerformanceView::songSectionBars(live, song_.sections[static_cast<std::size_t>(live.song.section)]);
                 where = std::to_string(before + whole / bpb + 1) + "." + std::to_string(whole % bpb + 1);
             }
             const ImVec2 wsz = bold->CalcTextSizeA(px(18), FLT_MAX, 0, where.c_str());
@@ -4391,6 +4593,11 @@ void GuiApp::drawPerformance(const LiveState& live) {
     }
     {
         const float presetFrom = clockRight + px(12);
+        // The mapping: before a song is saved, the mappings to choose from
+        // (arrows, a list), its changes its own; once the song is saved, the
+        // song's name, its mapping the song's (its list: save it as a mapping).
+        const bool song = songOwnsMapping();
+        const bool changed = song ? songMappingDirty_ : dirty_;
         int index = -1;
         for (std::size_t i = 0; i < presetNames_.size(); ++i)
             if (hasFile_ && presetNames_[i] == preset_.name)
@@ -4403,90 +4610,111 @@ void GuiApp::drawPerformance(const LiveState& live) {
             guard([this, name] { openPreset(name); });
         };
         // Narrower when the bar lacks room (SAVE showing at its end).
-        const float saveRoom = dirty_ ? bold->CalcTextSizeA(13.0f * em / 16.0f, FLT_MAX, 0, "SAVE").x + px(24) + px(8) : 0.0f;
-        const float h = px(32), arrowW = px(22);
-        const float comboW = std::clamp(winPos.x + winW - px(8) - saveRoom - presetFrom - arrowW * 2, px(90), px(150));
-        const float w = arrowW * 2 + comboW;
+        const float saveRoom = changed ? bold->CalcTextSizeA(13.0f * em / 16.0f, FLT_MAX, 0, "SAVE").x + px(24) + px(8) : 0.0f;
+        const float h = px(32), arrowW = song ? 0.0f : px(22);
+        const float boxW = std::clamp(winPos.x + winW - px(8) - saveRoom - presetFrom - arrowW * 2, px(110), px(186));
+        const float w = arrowW * 2 + boxW;
         const ImVec2 p(presetFrom, winPos.y + px(9));
         dl->AddRectFilled(p, ImVec2(p.x + w, p.y + h), Theme::kControl, px(5));
-        dl->AddRect(p, ImVec2(p.x + w, p.y + h), Theme::kBlue, px(5));
-        if (arrow("##presetprev", p, arrowW, h, true))
-            openAt(index < 0 ? 0 : index - 1);
-        if (arrow("##presetnext", ImVec2(p.x + w - arrowW, p.y), arrowW, h, false))
-            openAt(index + 1);
-        dl->AddLine(ImVec2(p.x + w - arrowW, p.y + px(5)), ImVec2(p.x + w - arrowW, p.y + h - px(5)), Theme::kControlBorder);
-        ImGui::SetCursorScreenPos(ImVec2(p.x + arrowW, p.y));
-        ImGui::SetNextItemWidth(comboW);
-        ImGui::PushStyleColor(ImGuiCol_FrameBg, color(0));
-        ImGui::PushStyleColor(ImGuiCol_Border, color(0));
-        ImGui::PushStyleColor(ImGuiCol_Button, color(0));
-        ImGui::PushFont(bold, 15.0f);
-        std::string current = hasFile_ ? preset_.name : std::string("Untitled");
-        {  // shortened with an ellipsis when the list is narrow
-            const float room = comboW - ImGui::GetFrameHeight() - ImGui::GetStyle().FramePadding.x;  // as the list clips it
-            if (ImGui::CalcTextSize(current.c_str()).x > room) {
-                while (!current.empty() && ImGui::CalcTextSize((current + "\xE2\x80\xA6").c_str()).x > room) {
-                    current.pop_back();
-                    while (!current.empty() && (static_cast<unsigned char>(current.back()) & 0xC0) == 0x80)  // a whole UTF-8 character
-                        current.pop_back();
-                    if (!current.empty() && static_cast<unsigned char>(current.back()) >= 0xC0)
-                        current.pop_back();
-                }
-                current += "\xE2\x80\xA6";
+        if (!song) {
+            if (arrow("##presetprev", p, arrowW, h, true))
+                openAt(index < 0 ? 0 : index - 1);
+            if (arrow("##presetnext", ImVec2(p.x + w - arrowW, p.y), arrowW, h, false))
+                openAt(index + 1);
+            dl->AddLine(ImVec2(p.x + arrowW, p.y + px(5)), ImVec2(p.x + arrowW, p.y + h - px(5)), Theme::kControlBorder);
+            dl->AddLine(ImVec2(p.x + w - arrowW, p.y + px(5)), ImVec2(p.x + w - arrowW, p.y + h - px(5)), Theme::kControlBorder);
+        }
+        // Its middle: what it is; a click opens its list, under it.
+        const ImVec2 ma(p.x + arrowW, p.y);
+        ImGui::SetCursorScreenPos(ma);
+        if (ImGui::InvisibleButton("##mappingbox", ImVec2(boxW, h)))
+            ImGui::OpenPopup("##mappingmenu");
+        const bool boxHovered = ImGui::IsItemHovered();
+        ImGui::SetItemTooltip(song ? "The song's mapping: its changes are saved with the song" : "The mapping: its changes are saved in it");
+        if (boxHovered)
+            dl->AddRectFilled(ma, ImVec2(ma.x + boxW, p.y + h), IM_COL32(255, 255, 255, 14), px(4));
+        dl->AddRect(p, ImVec2(p.x + w, p.y + h), song ? Theme::kGreen : Theme::kBlue, px(5));
+        auto shorten = [&](std::string t, float size, float room) {  // with an ellipsis, whole UTF-8 characters
+            if (bold->CalcTextSizeA(px(size), FLT_MAX, 0, t.c_str()).x <= room)
+                return t;
+            while (!t.empty() && bold->CalcTextSizeA(px(size), FLT_MAX, 0, (t + "\xE2\x80\xA6").c_str()).x > room) {
+                t.pop_back();
+                while (!t.empty() && (static_cast<unsigned char>(t.back()) & 0xC0) == 0x80)
+                    t.pop_back();
+                if (!t.empty() && static_cast<unsigned char>(t.back()) >= 0xC0)
+                    t.pop_back();
             }
+            return t + "\xE2\x80\xA6";
+        };
+        const float tx = ma.x + px(9), room = boxW - px(9) - px(26) - (changed ? px(14) : 0.0f);
+        if (song) {
+            const std::string name = shorten(*sessionName_, 15, room);
+            const ImVec2 nsz = bold->CalcTextSizeA(px(15), FLT_MAX, 0, name.c_str());
+            dl->AddText(bold, px(15), ImVec2(tx, p.y + (h - nsz.y) * 0.5f), Theme::kText, name.c_str());
+        } else {
+            dl->AddText(bold, px(9), ImVec2(tx, p.y + px(2)), Theme::kDim, "MAPPING");
+            const std::string name = shorten(hasFile_ ? preset_.name : std::string("Untitled"), 14, room);
+            dl->AddText(bold, px(14), ImVec2(tx, p.y + px(13)), Theme::kText, name.c_str());
         }
-        const bool open = ImGui::BeginCombo("##presetcombo", current.c_str(), ImGuiComboFlags_HeightLarge);
-        ImGui::PopFont();
-        ImGui::PopStyleColor(3);
-        if (dirty_) {
-            const ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
-            dl->AddCircleFilled(ImVec2(b.x - ImGui::GetFrameHeight() - px(8), (a.y + b.y) * 0.5f), px(4), Theme::kOrange);
-        }
-        if (open) {
+        const float ax = ma.x + boxW - px(14), ay = p.y + h * 0.5f + px(1);
+        dl->AddTriangleFilled(ImVec2(ax - px(4.5f), ay - px(2.5f)), ImVec2(ax + px(4.5f), ay - px(2.5f)), ImVec2(ax, ay + px(3)), Theme::kText);
+        if (changed)
+            dl->AddCircleFilled(ImVec2(ax - px(16), ay), px(4), Theme::kOrange);
+        ImGui::SetNextWindowPos(ImVec2(p.x, p.y + h + px(3)));
+        ImGui::SetNextWindowSizeConstraints(ImVec2(std::max(w, px(220)), 0), ImVec2(FLT_MAX, FLT_MAX));
+        if (ImGui::BeginPopup("##mappingmenu")) {
             ImGui::PushFont(medium, 14.0f);
-            if (presetNames_.empty())
-                ImGui::TextDisabled("No preset in this folder");
-            for (const auto& name : presetNames_) {
-                const bool selected = hasFile_ && name == preset_.name;
-                if (ImGui::Selectable(name.c_str(), selected) && !selected)
-                    guard([this, name] { openPreset(name); });
-                if (selected)
-                    ImGui::SetItemDefaultFocus();
-            }
-            // Managing presets.
-            ImGui::Separator();
-            if (ImGui::Selectable("New\u2026"))
-                guard([this] {
-                    nameDialog_ = NameDialog::New;
-                    nameInput_ = library_->uniqueName("New preset");
+            if (song) {
+                if (ImGui::Selectable("Save it as a mapping\u2026")) {
+                    nameDialog_ = NameDialog::SaveAs;
+                    nameInput_ = library_->uniqueName(preset_.name.empty() ? *sessionName_ : preset_.name);
                     nameError_.clear();
                     openNameDialog_ = true;
-                });
-            if (ImGui::Selectable("Save as\u2026")) {
-                nameDialog_ = NameDialog::SaveAs;
-                nameInput_ = library_->uniqueName(hasFile_ ? preset_.name : "New preset");
-                nameError_.clear();
-                openNameDialog_ = true;
+                }
+            } else {
+                if (presetNames_.empty())
+                    ImGui::TextDisabled("No mapping in this folder");
+                for (const auto& name : presetNames_) {
+                    const bool selected = hasFile_ && name == preset_.name;
+                    if (ImGui::Selectable(name.c_str(), selected) && !selected)
+                        guard([this, name] { openPreset(name); });
+                    if (selected)
+                        ImGui::SetItemDefaultFocus();
+                }
+                // Managing mappings.
+                ImGui::Separator();
+                if (ImGui::Selectable("New\u2026"))
+                    guard([this] {
+                        nameDialog_ = NameDialog::New;
+                        nameInput_ = library_->uniqueName("New mapping");
+                        nameError_.clear();
+                        openNameDialog_ = true;
+                    });
+                if (ImGui::Selectable("Save as\u2026")) {
+                    nameDialog_ = NameDialog::SaveAs;
+                    nameInput_ = library_->uniqueName(hasFile_ ? preset_.name : "New mapping");
+                    nameError_.clear();
+                    openNameDialog_ = true;
+                }
+                if (ImGui::Selectable("Delete\u2026", false, hasFile_ ? 0 : ImGuiSelectableFlags_Disabled))
+                    openDeleteDialog_ = true;
+                ImGui::SetItemTooltip("Deletes the mapping file");
             }
-            if (ImGui::Selectable("Delete\u2026", false, hasFile_ ? 0 : ImGuiSelectableFlags_Disabled))
-                openDeleteDialog_ = true;
-            ImGui::SetItemTooltip("Deletes the preset file");
             ImGui::PopFont();
-            ImGui::EndCombo();
+            ImGui::EndPopup();
         }
-        ImGui::SetItemTooltip("Preset");
         ImGui::SetCursorScreenPos(p);
         ImGui::Dummy(ImVec2(w, h));
         presetRight = p.x + w;
-        if (dirty_) {  // SAVE, at the right end of the bar
+        if (changed) {  // SAVE, at the right end of the bar: the song once saved, the mapping before
             const ImVec2 sz = bold->CalcTextSizeA(13.0f * em / 16.0f, FLT_MAX, 0, "SAVE");
             ImGui::SetCursorScreenPos(ImVec2(std::max(winPos.x + winW - px(8) - sz.x - px(24), presetRight + px(8)), winPos.y + px(9)));
             ImGui::PushStyleColor(ImGuiCol_Text, color(Theme::kOrange));
             ImGui::PushStyleColor(ImGuiCol_Border, color(Theme::kOrange));
             if (ImGui::Button("SAVE"))
-                saveCurrent();
+                saveShown();
             ImGui::PopStyleColor(2);
-            ImGui::SetItemTooltip("Ctrl+S");
+            ImGui::SetItemTooltip(song ? "Saves the song (Ctrl+S)" : "Saves the mapping (Ctrl+S)");
         }
     }
 
@@ -4645,6 +4873,8 @@ void GuiApp::drawPerformance(const LiveState& live) {
                 moveSessionCursor(act->channel, act->slot, live);
             } else if (act->kind == Kind::LaunchRow) {
                 launchRow(act->slot, live);
+            } else if (act->kind == Kind::CaptureRow) {
+                captureRow(live);
             } else if (act->kind == Kind::ClipDrop || act->kind == Kind::StepDrop || act->kind == Kind::ClipInsert) {
                 sessionDrop(*act, live);
             } else if (act->kind == Kind::RepeatsAsk) {
@@ -4659,6 +4889,19 @@ void GuiApp::drawPerformance(const LiveState& live) {
     } else if (songView_) {
         const bool selHere = songSelRow_ == songCursor_.row && songSelCol_ == songCursor_.col;
         performance_.setSelections({}, selHere ? songSel_ : std::vector<int>{});
+        if (songLoopFrom_ >= 0) {  // the loop past the song's end (sections shortened or gone): none
+            int beats = 0;
+            for (const auto& sec : song_.sections)
+                beats += PerformanceView::songSectionBars(live, sec) * std::clamp(sec.repeats, 1, midipad::kMaxSectionRepeats) * std::max(live.beatsPerBar, 1);
+            if (songLoopFrom_ >= beats) {
+                songLoopFrom_ = songLoopTo_ = -1;
+                runtime_->setSongLoopRange(-1, -1);
+            } else if (songLoopTo_ > beats) {
+                songLoopTo_ = beats;
+                runtime_->setSongLoopRange(songLoopFrom_, songLoopTo_);
+            }
+        }
+        performance_.setSongMarks(songLoopFrom_, songLoopTo_, songStartBar_);
         const auto act = performance_.drawSong(live, song_, songCursor_);
         if (auto band = performance_.takeItemBand()) {
             songSel_ = std::move(*band);
@@ -5217,7 +5460,7 @@ void GuiApp::drawOptionsOverlay(const LiveState& live) {
         endCard();
 
         // Presets: the folder.
-        beginCard("##cardpresets", "PRESETS", Theme::kOrange);
+        beginCard("##cardpresets", "MAPPINGS", Theme::kOrange);
         ImGui::PushFont(medium, 13.0f);
         ImGui::AlignTextToFramePadding();
         ImGui::TextColored(color(Theme::kLabel), "Folder");
@@ -5609,19 +5852,21 @@ void GuiApp::drawMappingOverlay(const LiveState& live) {
         // At the bottom right, as in Settings.
         const ImGuiStyle& style = ImGui::GetStyle();
         float buttonsW = style.ItemSpacing.x * 2;
-        for (const char* label : {"Save preset", "Revert", "Close"})
+        const bool song = songOwnsMapping();
+        const char* saveLabel = song ? "Save song" : "Save mapping";
+        for (const char* label : {saveLabel, "Revert", "Close"})
             buttonsW += ImGui::CalcTextSize(label).x + style.FramePadding.x * 2;
         ImGui::Spacing();
         ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.0f, ImGui::GetContentRegionAvail().x - buttonsW));
-        ImGui::BeginDisabled(hasFile_ && !dirty_);
-        if (ImGui::Button("Save preset"))
-            saveCurrent();
+        ImGui::BeginDisabled(song ? !songMappingDirty_ : hasFile_ && !dirty_);
+        if (ImGui::Button(saveLabel))
+            saveShown();
         ImGui::EndDisabled();
         ImGui::SetItemTooltip("Ctrl+S");
         ImGui::SameLine();
-        ImGui::BeginDisabled(!hasFile_ || !dirty_);
+        ImGui::BeginDisabled(song ? !songMappingDirty_ : !hasFile_ || !dirty_);
         if (ImGui::Button("Revert"))
-            ImGui::OpenPopup("Revert the preset");
+            ImGui::OpenPopup("Revert the mapping");
         ImGui::EndDisabled();
         ImGui::SameLine();
         if (ImGui::Button("Close") || (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) &&
@@ -5629,12 +5874,18 @@ void GuiApp::drawMappingOverlay(const LiveState& live) {
                                        !editor_.tookEscape()))
             open = false;
         ImGui::PopFont();
-        // Revert loses every change since the preset was saved, on every channel: asked first.
-        if (beginDialog("Revert the preset")) {
-            ImGui::Text("Every change to \"%s\" since it was saved is lost.", preset_.name.c_str());
+        // Revert loses every change since the mapping (or the song) was saved, on every channel: asked first.
+        if (beginDialog("Revert the mapping")) {
+            ImGui::Text("Every change to the mapping of \"%s\" since it was saved is lost.", song ? sessionName_->c_str() : preset_.name.c_str());
             const int button = dialogButtons({"Revert", "Cancel"});
             if (button == 0) {
-                openPreset(preset_.name);
+                if (song) {  // the song's mapping, as saved
+                    preset_ = songMapping_;
+                    songMappingDirty_ = false;
+                    pushToEngine();
+                } else {
+                    openPreset(preset_.name);
+                }
                 ImGui::CloseCurrentPopup();
             }
             if (button == 1 || ImGui::IsKeyPressed(ImGuiKey_Escape))
@@ -5753,18 +6004,13 @@ void GuiApp::openSession(const std::string& name) {
     }
     // Its preset, as it was: the one of that name if unchanged, otherwise a
     // changed copy to save (or not).
+    // Its mapping, as it was: the song's own (the mapping files are left alone).
     preset_ = session.preset;
-    hasFile_ = !PresetLibrary::nameError(preset_.name).has_value();
-    dirty_ = true;
+    hasFile_ = !PresetLibrary::nameError(preset_.name).has_value() && library_->contains(preset_.name);
+    dirty_ = false;
     presetTime_.reset();
-    if (hasFile_ && library_->contains(preset_.name)) {
-        try {
-            dirty_ = presetToJson(library_->load(preset_.name)) != presetToJson(preset_);
-        } catch (const std::exception&) {
-        }
-        presetTime_ = modificationTime(library_->pathFor(preset_.name));
-        settings_.lastPreset = preset_.name;
-    }
+    songMapping_ = preset_;
+    songMappingDirty_ = false;
     settings_.key = session.key;
     // Its tempo: for the internal clock, or for a Link session Arcadance is
     // alone in (another app's tempo is never changed by opening a session).
@@ -5803,6 +6049,8 @@ void GuiApp::openSession(const std::string& name) {
     clipSeen_.fill(0);
     runtime_->stopSong();
     song_ = std::move(session.song);
+    songLoopFrom_ = songLoopTo_ = songStartBar_ = -1;
+    runtime_->setSongLoopRange(-1, -1);
     songCursor_ = {};
     songEdited();
     resetUndo();
@@ -5829,6 +6077,13 @@ void GuiApp::newSong() {
     songEdited();
     resetUndo();
     sessionName_.reset();
+    songMappingDirty_ = false;
+    songLoopFrom_ = songLoopTo_ = songStartBar_ = -1;
+    runtime_->setSongLoopRange(-1, -1);
+    if (library_->contains(preset_.name))  // the mapping again, as its file has it
+        openPreset(preset_.name);
+    else
+        dirty_ = false;
     sessionPrintIn_ = 10;
     log("New song.");
 }
@@ -5935,8 +6190,9 @@ std::optional<Session> GuiApp::collectSession() {
     return session;
 }
 
-std::string GuiApp::sessionPrint(Session session) {
-    session.preset = {};
+std::string GuiApp::sessionPrint(Session session, bool withMapping) {
+    if (!withMapping)
+        session.preset = {};
     session.key.reset();
     session.channel = 0;
     session.tempo = 0;
@@ -5957,7 +6213,10 @@ bool GuiApp::saveSessionAs(const std::string& name) {
         return false;
     }
     sessionName_ = name;
-    sessionPrint_ = sessionPrint(session);
+    sessionPrint_ = sessionPrint(session, true);
+    songMapping_ = preset_;
+    songMappingDirty_ = false;
+    dirty_ = false;
     log("Session \"" + name + "\" saved (" + std::to_string(session.loops.size()) + " loops).");
     return true;
 }
@@ -5965,9 +6224,9 @@ bool GuiApp::saveSessionAs(const std::string& name) {
 void GuiApp::quitAsked() {
     std::optional<Session> now = collectSession();
     if (now && sessionPrintIn_ > 0)  // just opened or started: nothing changed since
-        sessionPrint_ = sessionPrint(*now);
+        sessionPrint_ = sessionPrint(*now, songOwnsMapping());
     sessionPrintIn_ = 0;
-    if (now && sessionPrint_ && sessionPrint(*now) == *sessionPrint_)
+    if (now && sessionPrint_ && sessionPrint(*now, songOwnsMapping()) == *sessionPrint_)
         quit_ = true;
     else
         openQuitDialog_ = true;
@@ -6032,7 +6291,7 @@ void GuiApp::drawOpenSessionDialog() {
             }
         }
         ImGui::EndChild();
-        ImGui::TextColored(kHintColor, "Opening one replaces every loop, the preset and the tonality.");
+        ImGui::TextColored(kHintColor, "Opening one replaces every loop, the mapping and the tonality.");
     }
     const int button = dialogButtons({"Open", "Cancel"}, sessionChoice_ < 0 ? 0 : -1);  // Open: once one is chosen
     if ((button == 0 || open) && sessionChoice_ >= 0) {
@@ -6178,7 +6437,7 @@ void GuiApp::drawRenameDialog() {
     const bool inSession = chain || section || row || clip;
     const bool enter = ImGui::InputTextWithHint("##channelname", clip ? "GROOVE, FILL, RISER\xE2\x80\xA6" : inSession ? "VERSE, CHORUS, BREAK\xE2\x80\xA6" : "BASS, PADS, DRUMS\xE2\x80\xA6",
                                                 &renameInput_, ImGuiInputTextFlags_EnterReturnsTrue);
-    ImGui::TextDisabled(inSession ? "Kept in the session. Empty: no name." : "Kept in the preset. Empty: no name.");
+    ImGui::TextDisabled(inSession ? "Kept in the session. Empty: no name." : "Kept in the mapping. Empty: no name.");
     const int button = dialogButtons({"OK", "Cancel"});
     if (button == 0 || enter) {
         if (row || clip || section || (renameChannel_ >= 0 && renameChannel_ < kChannelCount)) {
@@ -6235,7 +6494,7 @@ GuiApp::NavConflict GuiApp::navConflict(int button) const {
 
 void GuiApp::drawNameDialog() {
     const bool session = nameDialog_ == NameDialog::SessionSaveAs;
-    const char* title = nameDialog_ == NameDialog::New ? "New preset" : session ? "Save session as" : "Save as";
+    const char* title = nameDialog_ == NameDialog::New ? "New mapping" : session ? "Save session as" : songOwnsMapping() ? "Save as a mapping" : "Save as";
     if (openNameDialog_) {
         ImGui::OpenPopup(title);
         openNameDialog_ = false;
@@ -6246,7 +6505,7 @@ void GuiApp::drawNameDialog() {
             afterSave_ = nullptr;
         return;
     }
-    ImGui::TextUnformatted(session ? "Session name" : "Preset name");
+    ImGui::TextUnformatted(session ? "Session name" : "Mapping name");
     if (ImGui::IsWindowAppearing())
         ImGui::SetKeyboardFocusHere();
     ImGui::SetNextItemWidth(ImGui::GetFontSize() * 20);
@@ -6271,7 +6530,7 @@ void GuiApp::drawNameDialog() {
                     std::exchange(afterSave_, nullptr)();
             }
         } else if (library_->contains(nameInput_)) {
-            nameError_ = "A preset already has this name.";
+            nameError_ = "A mapping already has this name.";
         } else if (nameDialog_ == NameDialog::New) {
             preset_ = newPreset();
             preset_.name = nameInput_;
@@ -6284,6 +6543,17 @@ void GuiApp::drawNameDialog() {
                 refreshPresetList();
             }
             ImGui::CloseCurrentPopup();
+        } else if (songOwnsMapping()) {  // the song's mapping, copied into a mapping file: the song keeps its own
+            Preset copy = preset_;
+            copy.name = nameInput_;
+            try {
+                library_->save(copy);
+                refreshPresetList();
+                log("Mapping \"" + copy.name + "\" saved from the song.");
+                ImGui::CloseCurrentPopup();
+            } catch (const std::exception& e) {
+                nameError_ = std::string("Cannot save: ") + e.what();
+            }
         } else if (saveAs(nameInput_)) {
             ImGui::CloseCurrentPopup();
             if (afterSave_)
@@ -6313,7 +6583,7 @@ void GuiApp::drawColourDialog() {
         if (colour == own)
             return;
         own = colour;
-        dirty_ = true;  // the preset changed; the engine has no use for it
+        mappingChanged();  // the mapping changed; the engine has no use for it
     };
     ImGui::TextUnformatted(channelLabel(colourChannel_).c_str());
     ImGui::Spacing();
@@ -6370,7 +6640,7 @@ void GuiApp::drawValueAsk() {
         return;
     using K = ValueAsk::Kind;
     ValueAsk& v = *valueAsk_;
-    static constexpr const char* kNames[] = {"Repeats", "Repeats", "Beats", "Bars", "Velocity", "Chance %"};
+    static constexpr const char* kNames[] = {"Repeats", "Repeats", "Beats", "Bars", "Velocity", "Chance %", "Times"};
     ImGui::TextUnformatted(kNames[static_cast<int>(v.kind)]);
     ImGui::SameLine();
     if (ImGui::IsWindowAppearing())
@@ -6413,6 +6683,13 @@ void GuiApp::drawValueAsk() {
                 runtime_->setLoopNoteValues(valueAskNotes_, set, keep);
             break;
         }
+        case K::SectionRepeats:
+            if (v.row >= 0 && v.row < static_cast<int>(song_.sections.size())) {
+                song_.sections[static_cast<std::size_t>(v.row)].repeats = std::clamp(v.value, 1, midipad::kMaxSectionRepeats);
+                undoWhat_ = "Times played (section " + std::to_string(v.row + 1) + ")";
+                songEdited();
+            }
+            break;
         case K::SectionBars:
             if (v.row >= 0 && v.row < static_cast<int>(song_.sections.size())) {
                 auto& sec = song_.sections[static_cast<std::size_t>(v.row)];
@@ -6480,7 +6757,7 @@ void GuiApp::drawNewSongDialog() {
     if (!beginDialog(kTitle))
         return;
     ImGui::Text("Save the session \"%s\" before starting a new song?", sessionName_.value_or("Untitled").c_str());
-    ImGui::TextColored(kHintColor, "The new song starts empty: no clip, chain or section.\nThe preset and the tonality stay.");
+    ImGui::TextColored(kHintColor, "The new song starts empty: no clip, chain or section.\nIts mapping is the mapping the song started from, as saved; the tonality stays.");
     const int button = dialogButtons({"Save", "Don't save", "Cancel"});
     if (button == 0) {
         ImGui::CloseCurrentPopup();
@@ -6512,7 +6789,7 @@ void GuiApp::drawUnsavedDialog() {
             pendingAction_ = nullptr;
         return;
     }
-    ImGui::Text("The preset \"%s\" was changed.", hasFile_ ? preset_.name.c_str() : "Untitled");
+    ImGui::Text("The mapping \"%s\" was changed.", hasFile_ ? preset_.name.c_str() : "Untitled");
     const int button = dialogButtons({"Save", "Don't save", "Cancel"});
     if (button == 0) {
         ImGui::CloseCurrentPopup();
@@ -6538,14 +6815,14 @@ void GuiApp::drawUnsavedDialog() {
 }
 
 void GuiApp::drawDeleteDialog() {
-    constexpr const char* kTitle = "Delete preset";
+    constexpr const char* kTitle = "Delete mapping";
     if (openDeleteDialog_) {
         ImGui::OpenPopup(kTitle);
         openDeleteDialog_ = false;
     }
     if (!beginDialog(kTitle))
         return;
-    ImGui::Text("Delete the preset \"%s\"?", preset_.name.c_str());
+    ImGui::Text("Delete the mapping \"%s\"?", preset_.name.c_str());
     ImGui::TextColored(kHintColor, "The file is deleted for good.");
     const int button = dialogButtons({"Delete", "Cancel"});
     if (button == 0) {

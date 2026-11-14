@@ -38,7 +38,7 @@ public:
         static constexpr ImU32 kRowBorder = IM_COL32(0x4E, 0x55, 0x60, 255);
         static constexpr ImU32 kText = IM_COL32(0xF4, 0xF5, 0xF7, 255);
         static constexpr ImU32 kLabel = IM_COL32(0xBF, 0xC4, 0xCB, 255);
-        static constexpr ImU32 kDim = IM_COL32(0x7E, 0x84, 0x8C, 255);
+        static constexpr ImU32 kDim = IM_COL32(0x9A, 0xA0, 0xA8, 255);  // secondary text: readable on the panels
         static constexpr ImU32 kBlue = IM_COL32(0x4D, 0xB2, 0xFF, 255);
         static constexpr ImU32 kOrange = IM_COL32(0xFF, 0xB0, 0x20, 255);
         static constexpr ImU32 kPink = IM_COL32(0xFF, 0x4F, 0x8B, 255);
@@ -74,6 +74,9 @@ public:
     // A note the engine sent (velocity 0: released), at `time` (ImGui::GetTime()),
     // for the piano roll.
     void addNote(int channel, int note, int velocity, bool fromLoop, double time);
+    // The notes the engine has on (LiveState::soundingNotes): one the roll still
+    // shows on, though its release was missed, ends now.
+    void syncSounding(const std::array<std::bitset<128>, midipad::kChannelCount>& sounding, double time);
 
     // Draws into the remaining space of the current window. Returns the
     // control clicked, as a MappingEditor::drawControl() spec ("button:south",
@@ -116,7 +119,8 @@ public:
         enum class Kind : std::uint8_t {
             Launch, Stop, Mute, Solo, Channel, ChainSet, ChainCursor, ChainGo, ChainStop, ChainShow, Select, RepeatsAsk, ClipDrop, StepDrop, ClipInsert,
             LaunchRow,  // slot: the row, launched on every channel with a clip there
-            SelectToggle  // a Shift+click: the clip added to the selection, or taken out
+            SelectToggle,  // a Shift+click: the clip added to the selection, or taken out
+            CaptureRow     // the clips playing, copied into the first empty row
         } kind = Kind::Launch;
         int channel = 0, slot = 0;  // ChainSet / ChainCursor / ChainGo: slot is the step; ChainShow: the chain
         int clip = -1, repeats = 1;  // ChainSet
@@ -133,7 +137,7 @@ public:
     // the bars of the section. The cursor: a row, a column (-1: the
     // section's name), and in the editor (`editing`) an item (its count: the
     // "+" after the last). What a click, a drag or the wheel asks for, if anything.
-    struct SongCursor {
+    struct SongCursor {  // col: a channel, or -1 the section's name, -2 the times it plays
         int row = 0, col = -1, item = 0;
         bool editing = false;
     };
@@ -149,13 +153,24 @@ public:
             Cursor, Play, Stop, Loop, LoopSong, AddSection, EditCell, Bars, ItemSelect, ItemMove, ItemContent, ItemRepeats, AddItem, RepeatsAsk, BarsAsk, Rename,
             DropNew, DropItem, RepeatsTo, SectionMove,
             ItemToggle,  // a Shift+click on an item of the editor: added to the selection, or taken out
-            BeatsTo      // a silence's length set to `value` beats (its right edge dragged)
+            BeatsTo,     // a silence's length set to `value` beats (its right edge dragged)
+            LoopRange,   // the sections looped: from `row` to `value` (row -1: none), dragged on the ruler
+            StartAt,     // Play starts at bar `value` of the song (-1: at the cursor's section), clicked on the ruler
+            AddFromRow,  // a new section at `row`, the clips of the session screen's row `value` in it
+            Times,       // the times section `row` plays in a row, changed by `value`
+            TimesAsk     // a double-click on them: typed
         } kind = Kind::Cursor;
         int row = 0, col = -1, item = 0, value = 0;
         int fromRow = -1;
         bool copy = false;
     };
     std::optional<SongAction> drawSong(const LiveState& live, const midipad::Song& song, const SongCursor& cursor);
+    // The song's loop over sections (-1: none) and where Play starts (a bar; -1: the cursor's section).
+    void setSongMarks(int loopFrom, int loopTo, int startBar) {
+        songLoopFrom_ = loopFrom;
+        songLoopTo_ = loopTo;
+        songStartBar_ = startBar;
+    }
     // The channels the song screen shows, in order: those with a clip or a chain, or something in the song.
     static std::vector<int> songChannels(const LiveState& live, const midipad::Song& song);
     // An item's length in beats (`open`: it has a forever step), and a section's in bars, from what the engine says.
@@ -416,7 +431,17 @@ private:
     int editorGrid_ = 4;
     bool notesPanel_ = false;
     ImVec2 panelA_{}, panelB_{};
-    bool songGridFolded_ = false;  // the song screen's rows folded away
+    bool songGridFolded_ = false;
+    bool songFollow_ = true;          // the rows follow the section playing
+    int songFollowSeen_ = -1;         // (the section last followed)
+    int songLoopFrom_ = -1, songLoopTo_ = -1, songStartBar_ = -1;
+    int rulerGrab_ = -1;              // a drag on the ruler: the section it started on
+    float rulerGrabX_ = 0;
+    float songLoopShownA_ = -1, songLoopShownB_ = -1;  // the part looped, on screen
+    int songCursorSeen_ = -1;
+    float songFadeY_ = -1;
+    int songVisible_ = 0;   // the song's rows shown, last frame
+    int timesNotches_ = 0;  // a times cell dragged: the notches so far  // the song's rows: where the fade (more below) ends  // the song screen's rows folded away
     ImU32 accent_ = Theme::kBlue;  // the active channel's colour: the modules' accent (draw)
     bool editing_ = false;     // drawing the note loop editor, not the view's piano roll
     // The editor's lane under the roll: the notes' velocities (0) or chances (1), each a stem.

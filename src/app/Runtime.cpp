@@ -180,6 +180,9 @@ void Runtime::resetLoopShape(int source, int axis) { commands_.push({Command::Ki
 void Runtime::toggleLoopLock(int source, int axis) { commands_.push({Command::Kind::ToggleLock, source, 0, axis}); }
 void Runtime::launchClip(int channel, int slot) { commands_.push({Command::Kind::LaunchClip, channel, slot}); }
 void Runtime::selectClip(int channel, int slot) { commands_.push({Command::Kind::SelectClip, channel, slot}); }
+void Runtime::copyTracks(int channel, int from, int to, std::uint16_t tracks) {
+    commands_.push({Command::Kind::CopyTracks, channel, from, to, static_cast<int>(tracks)});
+}
 void Runtime::setRecordSlot(int channel, int slot) { commands_.push({Command::Kind::RecordSlot, channel, slot}); }
 
 void Runtime::stretchLoop(int source, int axis, int steps) { commands_.push({Command::Kind::StretchLoop, source, steps, axis}); }
@@ -237,7 +240,8 @@ void Runtime::setSong(midipad::Song song) {
     }
     commands_.push({Command::Kind::LoadSong});
 }
-void Runtime::playSong(int section) { commands_.push({Command::Kind::SongPlay, 0, section}); }
+void Runtime::playSong(int section, int offsetBeats) { commands_.push({Command::Kind::SongPlay, 0, section, -1, offsetBeats}); }
+void Runtime::setSongLoopRange(int from, int to) { commands_.push({Command::Kind::SongLoopRange, 0, from, to}); }
 void Runtime::stopSong() { commands_.push({Command::Kind::SongStop}); }
 void Runtime::setSongLoop(bool on) { commands_.push({Command::Kind::SongLoop, 0, on ? 1 : 0}); }
 void Runtime::setMuted(int channel, bool on) { commands_.push({Command::Kind::Mute, channel, on ? 1 : 0}); }
@@ -321,7 +325,7 @@ void Runtime::setNoteLoopLength(int samples) {
 
 void Runtime::transportStop() { commands_.push({Command::Kind::PauseLoops}); }
 
-void Runtime::transportPlay(int section) { commands_.push({Command::Kind::PlayLoops, 0, section}); }
+void Runtime::transportPlay(int section, int offsetBeats) { commands_.push({Command::Kind::PlayLoops, 0, section, -1, offsetBeats}); }
 
 LiveState Runtime::live() const {
     LiveState s;
@@ -373,6 +377,7 @@ LiveState Runtime::live() const {
         s.clipProgress = clipProgress_;
         s.chains = chains_;
         s.song = song_;
+        s.soundingNotes = soundingNotes_;
         s.clipBeats = clipBeats_;
         s.chainBeats = chainBeats_;
         s.chainOpen = chainOpen_;
@@ -504,7 +509,9 @@ void Runtime::publish(const GamepadInput& gamepad, const Engine& engine, std::ui
     }
     noteLoopCount_ = engine.noteLoopIntervals(channel, noteLoop_.data(), LiveState::kMaxNoteLoopNotes);
 
-    song_ = {engine.songPlaying(), engine.songLoop(), engine.songSection(), engine.songBeat()};
+    song_ = {engine.songPlaying(), engine.songLoop(), engine.songSection(), engine.songBeat(), engine.songPass()};
+    for (int c = 0; c < kChannelCount; ++c)
+        soundingNotes_[static_cast<std::size_t>(c)] = engine.soundingNotes(c);
     // The clips: their state every poll, their sketches 20 times a second.
     clipsPlaying_ = 0;
     // Stopped: the clips that come back on Play show as stopped till then.
@@ -666,7 +673,7 @@ void Runtime::run(std::stop_token stop, Options options, std::shared_ptr<const P
         }
         // Play (`section`: the song from there, -1: the clips) or Stop, for the
         // engine, the devices on the MIDI clock and the Link session.
-        auto transport = [&](bool play, int section) {
+        auto transport = [&](bool play, int section, int offsetBeats = 0) {
             const bool internal = clock_.load(std::memory_order_relaxed) == ClockMode::Internal;
             if (play && internal) {
                 // The internal clock starts again from beat 0, before what plays
@@ -677,7 +684,7 @@ void Runtime::run(std::stop_token stop, Options options, std::shared_ptr<const P
                 engine.setBeatClock({true, internalTempo_.load(std::memory_order_relaxed), 0});
             }
             if (play)
-                engine.transportPlay(section);
+                engine.transportPlay(section, offsetBeats);
             else
                 engine.transportStop();
             if (internal && midiClockOut_.load(std::memory_order_relaxed))  // external devices: Start from the beat's start, or Stop
@@ -733,6 +740,8 @@ void Runtime::run(std::stop_token stop, Options options, std::shared_ptr<const P
                 if (command->value < Engine::kClipSlots)
                     wake();
                 engine.launchClip(command->channel, command->value);
+            } else if (command->kind == Command::Kind::CopyTracks) {
+                engine.copyTracks(command->channel, command->value, command->axis, static_cast<std::uint16_t>(command->extra));
             } else if (command->kind == Command::Kind::SelectClip) {
                 engine.selectClip(command->channel, command->value);
             } else if (command->kind == Command::Kind::RecordSlot) {
@@ -793,7 +802,9 @@ void Runtime::run(std::stop_token stop, Options options, std::shared_ptr<const P
                     engine.setSong(*songToLoad_);
                 songToLoad_.reset();
             } else if (command->kind == Command::Kind::SongPlay) {
-                engine.playSong(command->value);
+                engine.playSong(command->value, command->extra);
+            } else if (command->kind == Command::Kind::SongLoopRange) {
+                engine.setSongLoopRange(command->value, command->axis);
             } else if (command->kind == Command::Kind::SongStop) {
                 engine.stopSong();
             } else if (command->kind == Command::Kind::SongLoop) {
@@ -824,7 +835,7 @@ void Runtime::run(std::stop_token stop, Options options, std::shared_ptr<const P
                 // something plays does nothing, for the devices and Link either.
                 if (play && engine.playing())
                     continue;
-                transport(play, command->value);
+                transport(play, command->value, command->extra);
             } else {  // Panic
                 engine.allNotesOff();
             }
@@ -854,7 +865,7 @@ void Runtime::run(std::stop_token stop, Options options, std::shared_ptr<const P
             const bool playing = state.isPlaying();
             if (startStopSync_.load(std::memory_order_relaxed) && linkPlayingKnown && playing != linkPlaying) {
                 if (playing)
-                    engine.transportPlay(transportSong_.load(std::memory_order_relaxed));
+                    engine.transportPlay(transportSong_.load(std::memory_order_relaxed), transportOffset_.load(std::memory_order_relaxed));
                 else
                     engine.transportStop();
             }

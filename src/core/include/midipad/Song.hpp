@@ -35,11 +35,13 @@ inline constexpr int kMaxSongRepeats = 64;
 inline constexpr int kMaxSectionBars = 256;
 inline constexpr int kMaxSongItems = 32;  // per channel and section
 inline constexpr int kMaxRestBeats = 1024;
+inline constexpr int kMaxSectionRepeats = 32;
 
 struct SongSection {
     std::string name;
     int bars = 8;
     bool fit = false;
+    int repeats = 1;  // played that many times in a row (1 to kMaxSectionRepeats)
     std::array<std::vector<SongItem>, kChannelCount> cells;  // each in playing order
     friend bool operator==(const SongSection&, const SongSection&) = default;
 };

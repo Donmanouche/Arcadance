@@ -163,6 +163,8 @@ Json sessionToJson(const Session& session) {
             o["bars"] = sec.bars;
             if (sec.fit)
                 o["fit"] = true;
+            if (sec.repeats > 1)
+                o["repeats"] = sec.repeats;
             Json channels = Json::object();
             for (int ch = 0; ch < kChannelCount; ++ch) {
                 const auto& items = sec.cells[static_cast<std::size_t>(ch)];
@@ -438,6 +440,8 @@ Session sessionFromJson(const Json& j) {
                     fail(where + ".fit", "expected true or false");
                 sec.fit = o["fit"].get<bool>();
             }
+            if (o.contains("repeats"))
+                sec.repeats = readInt(o, "repeats", 1, kMaxSectionRepeats, 1, where);
             if (o.contains("channels")) {
                 if (!o["channels"].is_object())
                     fail(where + ".channels", "expected an object");

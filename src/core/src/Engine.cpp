@@ -2759,15 +2759,26 @@ void Engine::clearClip(int channel, int slot) {
 }
 
 bool Engine::copyClip(int channel, int from, int to) {
+    return copyTracks(channel, from, to, static_cast<std::uint16_t>((1u << kTrackCount) - 1));
+}
+
+bool Engine::copyTracks(int channel, int from, int to, std::uint16_t tracks) {
     channel = std::clamp(channel, 0, kChannelCount - 1);
     from = std::clamp(from, 0, kClipSlots - 1);
     to = std::clamp(to, 0, kClipSlots - 1);
-    if (from == to || !clipHasLoops(channel, from))
+    bool any = false;
+    for (int track = 0; track < kTrackCount; ++track)
+        any = any || (((tracks >> track) & 1u) && loops_[slotIndex(channel, from, track)].state == LoopStatus::State::Playing);
+    if (from == to || !any)
         return false;
     const auto c = static_cast<std::size_t>(channel);
     for (int track = 0; track < kTrackCount; ++track) {
+        if (!((tracks >> track) & 1u))
+            continue;
         const std::size_t si = slotIndex(channel, from, track), di = slotIndex(channel, to, track);
+        fromLoop_ = true;
         silenceLoop(di);
+        fromLoop_ = false;
         Loop& src = loops_[si];
         Loop& dst = loops_[di];
         // Everything but the samples, then the samples into the buffer it has (no allocation).
@@ -2788,9 +2799,11 @@ bool Engine::copyClip(int channel, int from, int to) {
         dst.nextAt = now_;
         dst.sentX = -1;
     }
-    noteEvents_[c * kClipSlots + static_cast<std::size_t>(to)] = noteEvents_[c * kClipSlots + static_cast<std::size_t>(from)];
-    if (loops_[slotIndex(channel, to, kNoteTrack)].state == LoopStatus::State::Empty)
-        noteEvents_[c * kClipSlots + static_cast<std::size_t>(to)].clear();
+    if ((tracks >> kNoteTrack) & 1u) {
+        noteEvents_[c * kClipSlots + static_cast<std::size_t>(to)] = noteEvents_[c * kClipSlots + static_cast<std::size_t>(from)];
+        if (loops_[slotIndex(channel, to, kNoteTrack)].state == LoopStatus::State::Empty)
+            noteEvents_[c * kClipSlots + static_cast<std::size_t>(to)].clear();
+    }
     if (to == currentSlot_[c] && clipPlaying_[c])
         startClipLoops(channel);
     return true;
@@ -2847,7 +2860,7 @@ bool Engine::playing() const {
     return std::any_of(clipPlaying_.begin(), clipPlaying_.end(), [](bool on) { return on; });
 }
 
-bool Engine::transportPlay(int section) {
+bool Engine::transportPlay(int section, double offsetBeats) {
     if (playing())
         return false;
     if (section >= 0 && !song_.sections.empty()) {
@@ -2858,7 +2871,7 @@ bool Engine::transportPlay(int section) {
             restCcs(ch, -1, kClipSlots);  // every CC its loops move, from its rest: the song starts the same each time
         }
         loopsPaused_ = false;
-        playSong(section);
+        playSong(section, offsetBeats);
         return true;
     }
     for (int ch = 0; ch < kChannelCount; ++ch)
@@ -3518,7 +3531,7 @@ void Engine::setSong(const Song& song) {
     song_ = song;
 }
 
-double Engine::songBeat() const { return songOn_ ? songNow() - songStart_ : 0; }
+double Engine::songBeat() const { return !songOn_ ? 0 : songNow() < songHold_ ? songNow() - songHold_ : songNow() - songStart_; }
 
 void Engine::songStopChannel(int channel) {
     stopChain(channel);
@@ -3526,10 +3539,61 @@ void Engine::songStopChannel(int channel) {
         switchClip(channel, kClipSlots);
 }
 
-void Engine::playSong(int section) {
+double Engine::songSectionStart(int section) const {
+    double beats = 0;
+    for (int i = 0; i < section && i < static_cast<int>(song_.sections.size()); ++i) {
+        const SongSection& sec = song_.sections[static_cast<std::size_t>(i)];
+        beats += sectionBars(sec) * static_cast<double>(beatsPerBar_) * std::clamp(sec.repeats, 1, kMaxSectionRepeats);
+    }
+    return beats;
+}
+
+void Engine::songJump(double beat) {
+    // Where that beat is: a section, which time it plays, how far into it.
+    int section = 0;
+    double from = 0;
+    for (int i = 0; i < static_cast<int>(song_.sections.size()); ++i) {
+        const SongSection& sec = song_.sections[static_cast<std::size_t>(i)];
+        const double length = sectionBars(sec) * static_cast<double>(beatsPerBar_) * std::clamp(sec.repeats, 1, kMaxSectionRepeats);
+        section = i;
+        if (beat < from + length)
+            break;
+        from += length;
+    }
+    const SongSection& to = song_.sections[static_cast<std::size_t>(section)];
+    const double sectionBeats = std::max(1.0, sectionBars(to) * static_cast<double>(beatsPerBar_));
+    const double into = std::max(0.0, beat - from);
+    const int pass = std::min(static_cast<int>(into / sectionBeats), std::clamp(to.repeats, 1, kMaxSectionRepeats) - 1);
+    const double offset = into - pass * sectionBeats;
+    // The channels that play nothing there yet stop; the others take what plays there.
+    const SongSection& was = song_.sections[static_cast<std::size_t>(songSection_)];
+    for (int ch = 0; ch < kChannelCount; ++ch) {
+        if (was.cells[static_cast<std::size_t>(ch)].empty())
+            continue;
+        const auto& items = to.cells[static_cast<std::size_t>(ch)];
+        const auto starts = songItemStarts(items, beatsPerBar_, [&](const SongItem& it) {
+            bool open = false;
+            return songItemBeats(ch, it, open);
+        });
+        if (starts.empty() || starts.front() > offset + 1e-9)
+            songStopChannel(ch);
+    }
+    songPass_ = pass;
+    songHold_ = -1e18;
+    enterSection(section, songNow() - offset);
+    songLastBeat_ = beat;
+}
+
+void Engine::playSong(int section, double offsetBeats) {
     if (song_.sections.empty())
         return;
     section = std::clamp(section, 0, static_cast<int>(song_.sections.size()) - 1);
+    // Into the section: which time it plays (repeated), and where in it.
+    const SongSection& at = song_.sections[static_cast<std::size_t>(section)];
+    const double sectionBeats = std::max(1.0, sectionBars(at) * static_cast<double>(beatsPerBar_));
+    offsetBeats = std::max(0.0, offsetBeats);
+    const int pass = std::min(static_cast<int>(offsetBeats / sectionBeats), std::clamp(at.repeats, 1, kMaxSectionRepeats) - 1);
+    offsetBeats = std::min(offsetBeats - pass * sectionBeats, sectionBeats - 1e-6);
     double start = songNow();
     if (clock_.on)  // on the next bar
         start = std::ceil(start / beatsPerBar_ - 1e-9) * beatsPerBar_;
@@ -3542,7 +3606,10 @@ void Engine::playSong(int section) {
                     break;
                 }
     songOn_ = true;
-    enterSection(section, start);
+    songPass_ = pass;
+    songHold_ = start;
+    songLastBeat_ = -1;
+    enterSection(section, start - offsetBeats);
 }
 
 void Engine::stopSong() {
@@ -3594,9 +3661,22 @@ void Engine::runSong() {
     if (!songOn_)
         return;
     for (int guard = 0; guard < 4 && songOn_; ++guard) {
+        if (songNow() < songHold_)
+            return;  // waiting for its bar
         const double pos = songNow() - songStart_;
         if (pos < 0)
-            return;  // waiting for its bar
+            return;
+        // The part looped: its end crossed, its start again.
+        {
+            const SongSection& here = song_.sections[static_cast<std::size_t>(songSection_)];
+            const double whole = songSectionStart(songSection_) + songPass_ * sectionBars(here) * static_cast<double>(beatsPerBar_) + pos;
+            const bool crossed = songLastBeat_ >= 0 && songLastBeat_ < songLoopTo_ - 1e-9 && whole >= songLoopTo_ - 1e-9;
+            songLastBeat_ = whole;
+            if (!songLoop_ && songLoopFrom_ >= 0 && songLoopTo_ > songLoopFrom_ && crossed) {
+                songJump(songLoopFrom_);
+                continue;
+            }
+        }
         const SongSection& sec = song_.sections[static_cast<std::size_t>(songSection_)];
         if (now_ >= songLengthNext_) {
             songLength_ = sectionBars(sec) * static_cast<double>(beatsPerBar_);
@@ -3618,7 +3698,9 @@ void Engine::runSong() {
         if (pos < length)
             return;
         // Its end: the next section (or this one again), the channels it played stopped unless that one starts them on its first bar.
-        int next = songLoop_ ? songSection_ : songSection_ + 1;
+        // (A section played several times: itself again, until its last time.)
+        const bool again = !songLoop_ && songPass_ + 1 < std::clamp(sec.repeats, 1, kMaxSectionRepeats);
+        int next = songLoop_ || again ? songSection_ : songSection_ + 1;
         if (next >= static_cast<int>(song_.sections.size()) && song_.loop)  // the song loops: its first section again
             next = 0;
         const bool more = next < static_cast<int>(song_.sections.size());
@@ -3633,6 +3715,7 @@ void Engine::runSong() {
             songOn_ = false;
             return;
         }
+        songPass_ = again ? songPass_ + 1 : 0;
         enterSection(next, songStart_ + length);
     }
 }
