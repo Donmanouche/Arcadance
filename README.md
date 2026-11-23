@@ -35,13 +35,14 @@ had: a looper, clips, chains and a song arranger you drive with your thumbs.
 - **Draw your automation by hand.** A stick is two CCs, a trigger one more, a
   finger on the touchpad two more, the tilt of the controller two more. Sweep a
   cutoff, ride a send, open a reverb, all at once, with a range and a direction
-  you choose for each.
+  you choose for each. Or send aftertouch: press a trigger and the pad swells.
 - **Loop as you go.** Hold Record, play, let go: notes and gestures loop
   straight away, in time. Or set Record to toggle, on any channel: press once,
   play a drum groove with both hands, press again. A filter sweep becomes a
   hand-drawn LFO on the very CC you swept, and the stick takes over again the
   moment you touch it; each axis has its own loop and its own length, so
-  polyrhythms come by themselves.
+  polyrhythms come by themselves. The D-pad loops too: its CC directions,
+  pressed again in time.
 - **Loops that keep moving.** Stretch a loop up to 100 times slower or 20 times
   faster, widen or narrow its swing, move it up or down, play it in steps like
   a sequencer, let one loop modulate the depth of others. All while it plays,
@@ -72,10 +73,12 @@ had: a looper, clips, chains and a song arranger you drive with your thumbs.
 3. **Arrange the song.** The song screen lays out sections (intro, drop,
    break…), and in each one what every channel plays and when. Drag clips and
    chains in on the bar or the beat, stretch a silence to the length you want,
-   play from any section, loop one while you jam over it, or loop the whole
-   song, and watch the playhead run across the track.
-4. **Save the session.** Clips, chains, song, preset, key and tempo in one file.
-   Quitting asks before losing anything.
+   play from any section, repeat a section, loop any stretch of bars from the
+   ruler while you jam over it, or loop the whole song, and watch the playhead
+   run across the track.
+4. **Save the session.** Clips, chains, song, mapping, key and tempo in one file.
+   Start a song from a mapping; once saved, the song keeps its own. Quitting
+   asks before losing anything.
 5. **Take it to your DAW.** Export a clip or the whole song as a MIDI file, a
    track per channel with its notes and CCs, and drag it into Bitwig, Live or
    any other DAW. The song always starts the same: when a loop stops, its CC
@@ -116,7 +119,8 @@ can be undone.
 - One Play / Stop for every clip or the whole song; Stop again silences
   everything. Launch a clip while stopped and it starts playing.
 - Set everything up from the controller: an edit mode puts a cursor on the
-  screen, and small menus open on any clip, loop or chain. Hold the Mode button
+  screen, and small menus open on any clip, loop or chain, always in the same
+  order, with their keyboard shortcuts. Hold the Mode button
   for a reminder of the controls of the screen you are on.
 - A Shift layer doubles every button, and Shift with a stick reshapes your loops
   live.
