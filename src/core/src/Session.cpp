@@ -58,7 +58,7 @@ std::vector<std::uint16_t> readSamples(const Json& loop, const char* key, int le
 }
 
 // The movement tracks (Engine::trackOf), as a modulation names its target.
-constexpr const char* kTrackNames[] = {"left_x", "left_y", "right_x", "right_y", "finger1_x", "finger1_y", "finger2_x", "finger2_y", "l2", "r2", "tilt_x", "tilt_y"};
+constexpr const char* kTrackNames[] = {"left_x", "left_y", "right_x", "right_y", "finger1_x", "finger1_y", "finger2_x", "finger2_y", "l2", "r2", "tilt_x", "tilt_y", "dpad_x", "dpad_y"};
 static_assert(std::size(kTrackNames) == Engine::kNoteTrack, "a name per movement track");
 
 }  // namespace

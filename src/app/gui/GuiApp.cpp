@@ -244,6 +244,13 @@ bool copyControl(const Mapping& from, Mapping& to, const std::string& spec) {
         to.loops[static_cast<std::size_t>(LoopSource::Notes)] = from.loops[static_cast<std::size_t>(LoopSource::Notes)];
         return true;
     }
+    if (p.size() == 2 && p[0] == "loop") {  // a movement loop's settings alone
+        const int source = std::atoi(p[1].c_str());
+        if (source < 0 || source >= static_cast<int>(LoopSource::Notes))
+            return false;
+        to.loops[static_cast<std::size_t>(source)] = from.loops[static_cast<std::size_t>(source)];
+        return true;
+    }
     if (p.size() == 1 && p[0] == "tilt") {
         to.tilt = from.tilt;
         to.loops[static_cast<std::size_t>(LoopSource::Tilt)] = from.loops[static_cast<std::size_t>(LoopSource::Tilt)];
@@ -679,6 +686,10 @@ private:
         int id = 0;
         bool enabled = true;
         bool checked = false;  // a check mark after it
+        std::string shortcut;  // its key, dimmed on the right
+        bool separator = false;  // a line between groups, not an entry
+        bool danger = false;     // what clears or deletes: red, last
+        std::vector<MenuEntry> sub;  // a submenu: chosen, its entries take the menu's place
     };
     struct ContextMenu {
         PerformanceView::MenuTarget target;
@@ -687,6 +698,7 @@ private:
         bool fromController = false, opened = false;  // opened by the controller: beside its cursor
         bool above = false;  // above it (pivot on its bottom)
         int selected = 0;
+        std::vector<std::pair<std::string, std::vector<MenuEntry>>> parents;  // in a submenu: the menus above (title, entries)
         ImVec2 at;
     };
     std::optional<ContextMenu> menu_;
@@ -729,6 +741,7 @@ private:
     void fillModMenu(ContextMenu& menu, const LiveState& live) const;
     void changeModulation(int id, int step, const LiveState& live);
     void runMenu(const PerformanceView::MenuTarget& target, int id, const LiveState& live);
+    void enterSubmenu(int entry);  // the open menu's entry `entry` (a submenu): its entries in its place
     void menuEvent(Engine::SessionEvent e, const LiveState& live);
     void editEvent(Engine::SessionEvent e, const LiveState& live);
     void drawContextMenu(const LiveState& live);
@@ -764,6 +777,10 @@ private:
     // playing stops (one waiting to start, or a stop waiting, is called off);
     // another one is launched; an empty slot is only chosen.
     void pressClip(int channel, int slot, const LiveState& live);
+    // The clips picked (channel, slot), into the clipboard; pasted from (channel, slot), as they were placed.
+    void copyClips(const std::vector<std::pair<int, int>>& picked, const std::string& name);
+    void pasteClips(int channel, int slot, const std::string& name);
+    void clearClips(const std::vector<std::pair<int, int>>& picked, const std::string& what);
     // Every window over the view looks like the Settings panel.
     void pushWindowLook();
     void popWindowLook();
@@ -1672,6 +1689,11 @@ void GuiApp::draw() {
                      ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse |
                      ImGuiWindowFlags_NoBackground);
     ImGui::SetScrollY(0.0f);  // the page never scrolls: a wheel turned over a value moves nothing else
+    // Escape closes what is open first (a menu, a window, the note editor, a
+    // selection); with nothing, it leaves fullscreen.
+    const bool escapeFree = !ImGui::GetIO().WantTextInput && !overlaySpec_ && !optionsOpen_ && !menu_ && !notesPanel_ && !editingTempo_ &&
+                            !ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId) && !ImGui::IsAnyItemActive() && sessionSel_.empty() &&
+                            songSel_.empty() && !performance_.escapeBusy();
 
     if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_S, ImGuiInputFlags_RouteGlobal))
         saveShown();
@@ -1692,6 +1714,8 @@ void GuiApp::draw() {
     }
 
     drawPerformance(live);
+    if (escapeFree && ImGui::IsKeyPressed(ImGuiKey_Escape, false) && (SDL_GetWindowFlags(window_) & SDL_WINDOW_FULLSCREEN))
+        toggleFullscreen();
     ImGui::End();
 }
 
@@ -1764,6 +1788,58 @@ void GuiApp::pressClip(int channel, int slot, const LiveState& live) {
     } else if (live.clips[c * Engine::kClipSlots + static_cast<std::size_t>(slot)].sources) {
         runtime_->launchClip(channel, slot);
     }
+}
+
+void GuiApp::copyClips(const std::vector<std::pair<int, int>>& picked, const std::string& name) {
+    const auto loops = runtime_->sessionLoops();
+    if (!loops || picked.empty())
+        return;
+    int c0 = kChannelCount, s0 = Engine::kClipSlots;
+    for (const auto& [c2, s2] : picked) {
+        c0 = std::min(c0, c2);
+        s0 = std::min(s0, s2);
+    }
+    clipClipboard_.clear();
+    for (const auto& [c2, s2] : picked) {
+        ClipCopy copied{c2 - c0, s2 - s0, {}, clipNames_[static_cast<std::size_t>(c2)][static_cast<std::size_t>(s2)]};
+        for (const midipad::SessionLoop& l : *loops)
+            if (l.channel == c2 && l.clip == s2)
+                copied.loops.push_back(l);
+        clipClipboard_.push_back(std::move(copied));
+    }
+    toast_ = picked.size() > 1 ? "Copied (" + std::to_string(picked.size()) + " clips)" : "Copied (" + name + ")";
+    toastUndone_ = false;
+    toastPlain_ = true;
+    toastUntil_ = ImGui::GetTime() + 2.0;
+}
+
+void GuiApp::clearClips(const std::vector<std::pair<int, int>>& picked, const std::string& what) {
+    undoWhat_ = what;
+    rememberClips(picked, "Clips cleared");
+    undoWhat_.clear();
+    for (const auto& [c2, s2] : picked) {
+        runtime_->clearClip(c2, s2);
+        clipNames_[static_cast<std::size_t>(c2)][static_cast<std::size_t>(s2)].clear();
+    }
+    sessionSel_.clear();
+}
+
+void GuiApp::pasteClips(int ch, int slot, const std::string& name) {
+    std::vector<std::pair<int, int>> to;
+    for (const ClipCopy& copied : clipClipboard_)
+        if (ch + copied.channels < kChannelCount && slot + copied.slots < Engine::kClipSlots)
+            to.push_back({ch + copied.channels, slot + copied.slots});
+    if (to.empty())
+        return;
+    undoWhat_ = to.size() > 1 ? "Paste (" + std::to_string(to.size()) + " clips)" : "Paste (" + name + ")";
+    rememberClips(to, "Paste");
+    undoWhat_.clear();
+    for (const ClipCopy& copied : clipClipboard_)
+        if (ch + copied.channels < kChannelCount && slot + copied.slots < Engine::kClipSlots) {
+            runtime_->restoreClip(ch + copied.channels, slot + copied.slots, copied.loops);
+            clipNames_[static_cast<std::size_t>(ch + copied.channels)][static_cast<std::size_t>(slot + copied.slots)] = copied.name;
+        }
+    sessionSel_ = to.size() > 1 ? to : std::vector<std::pair<int, int>>{};
 }
 
 void GuiApp::sessionEvent(Engine::SessionEvent e, const LiveState& live) {
@@ -2037,7 +2113,7 @@ void GuiApp::toggleSession(const LiveState& live) {
     runtime_->setSessionMode(sessionView_ || editView_ || songView_);
     if (sessionView_) {
         sessionChannel_ = live.channel;
-        sessionSlot_ = live.currentClip[static_cast<std::size_t>(live.channel)];
+        sessionSlot_ = live.recordClip[static_cast<std::size_t>(live.channel)];
     } else {
         for (int ch = 0; ch < kChannelCount; ++ch)
             runtime_->setRecordSlot(ch, live.currentClip[static_cast<std::size_t>(ch)]);
@@ -3011,16 +3087,17 @@ void GuiApp::songEvent(Engine::SessionEvent e, const LiveState& live) {
 namespace {
 
 enum MenuId : int {
-    kLaunch, kStop, kRecordHere, kDuplicate, kAddToChain, kClearClip,
+    kLaunch, kStop, kDuplicate, kAddToChain, kClearClip,
     kStartHere, kRandom, kSilence, kInsertStep, kDeleteStep, kEmptyStep,
     kChannelStop, kChannelMute, kChannelSolo, kChainOn, kChainOff, kThenLoop, kThenStop, kThenNext, kPrevChain, kNextChain, kDuplicateChain, kRenameChain, kClearChain,
-    kLock, kUnlock, kClearLoop, kResetShape, kSettings, kEditNotes, kPrevChannel, kNextChannel, kRename, kColour, kUndo,
-    kClipUp, kClipDown, kStepLeft, kStepRight, kLaunchRow,
-    kSongPlay, kSongStop, kSongLoop, kLoopSong, kSectionRename, kSectionFit, kSectionRepeats, kSectionDuplicate, kSectionInsert, kSectionUp, kSectionDown, kSectionDelete,
+    kLock, kUnlock, kClearLoop, kResetShape, kSettings, kEditNotes, kRename, kColour, kUndo,
+    kClipUp, kClipDown, kStepLeft, kStepRight,
+    kSongPlay, kSongStop, kSongLoop, kSectionRename, kSectionFit, kSectionRepeats, kSectionDuplicate, kSectionInsert, kSectionUp, kSectionDown, kSectionDelete,
     kCellEdit, kCellClear, kCellCopy, kCellPaste,
     kRestBarMore, kRestBarLess, kRestBeatMore, kRestBeatLess,
     kItemChange, kItemGlue, kItemLeft, kItemRight, kItemLoop, kItemKind, kItemDuplicate, kItemDelete, kEditClipNotes, kItemEditNotes, kExportClip, kRenameClip, kRenameRow, kRowLaunch,
-    kModPick, kModStop, kModSendCc, kModDepth, kModDirection, kCopyMapping,
+    kModPick, kModStop, kModSendCc, kModDepth, kModDirection, kCopyMapping, kNewClip, kNewClipCopy,
+    kClipCopy, kClipPaste,
     kCopyFromClip = 900,  // + the clip (0-7) a loop is copied from, into the current one
     kPick = 1000,  // + the clip (0-7) or 8 + the chain: what a song item plays
     kModTarget = 2000  // + the movement track a loop modulates
@@ -3086,53 +3163,15 @@ void GuiApp::screenKeys(const LiveState& live) {
             std::vector<std::pair<int, int>> picked = sessionSel_.size() > 1 ? sessionSel_ : std::vector<std::pair<int, int>>{};
             if (picked.empty() && has)
                 picked = {{ch, slot}};
-            if (erase && !picked.empty()) {
-                undoWhat_ = picked.size() > 1 ? "Clear (" + std::to_string(picked.size()) + " clips)" : "Clear (" + name + ")";
-                rememberClips(picked, "Clips cleared");
-                undoWhat_.clear();
-                for (const auto& [c2, s2] : picked) {
-                    runtime_->clearClip(c2, s2);
-                    clipNames_[static_cast<std::size_t>(c2)][static_cast<std::size_t>(s2)].clear();
-                }
-                sessionSel_.clear();
-            }
+            const bool cut = pressed(ImGuiKey_X, true);
+            if ((copy || cut) && !picked.empty())
+                copyClips(picked, name);
+            if ((erase || cut) && !picked.empty())
+                clearClips(picked, std::string(cut ? "Cut " : "Clear ") + (picked.size() > 1 ? "(" + std::to_string(picked.size()) + " clips)" : "(" + name + ")"));
             if (has && duplicate && sessionSel_.size() <= 1)
                 run({K::Clip, ch, slot}, kDuplicate, "Duplicate (" + name + ")");
-            if (copy && !picked.empty())
-                if (const auto loops = runtime_->sessionLoops()) {
-                    int c0 = kChannelCount, s0 = Engine::kClipSlots;
-                    for (const auto& [c2, s2] : picked) {
-                        c0 = std::min(c0, c2);
-                        s0 = std::min(s0, s2);
-                    }
-                    clipClipboard_.clear();
-                    for (const auto& [c2, s2] : picked) {
-                        ClipCopy copied{c2 - c0, s2 - s0, {}, clipNames_[static_cast<std::size_t>(c2)][static_cast<std::size_t>(s2)]};
-                        for (const midipad::SessionLoop& l : *loops)
-                            if (l.channel == c2 && l.clip == s2)
-                                copied.loops.push_back(l);
-                        clipClipboard_.push_back(std::move(copied));
-                    }
-                    toast_ = picked.size() > 1 ? "Copied (" + std::to_string(picked.size()) + " clips)" : "Copied (" + name + ")";
-                    toastUndone_ = false;
-                    toastPlain_ = true;
-                    toastUntil_ = ImGui::GetTime() + 2.0;
-                }
-            if (paste && !clipClipboard_.empty()) {  // from the cursor, as they were placed
-                std::vector<std::pair<int, int>> to;
-                for (const ClipCopy& copied : clipClipboard_)
-                    if (ch + copied.channels < kChannelCount && slot + copied.slots < Engine::kClipSlots)
-                        to.push_back({ch + copied.channels, slot + copied.slots});
-                undoWhat_ = to.size() > 1 ? "Paste (" + std::to_string(to.size()) + " clips)" : "Paste (" + name + ")";
-                rememberClips(to, "Paste");
-                undoWhat_.clear();
-                for (const ClipCopy& copied : clipClipboard_)
-                    if (ch + copied.channels < kChannelCount && slot + copied.slots < Engine::kClipSlots) {
-                        runtime_->restoreClip(ch + copied.channels, slot + copied.slots, copied.loops);
-                        clipNames_[static_cast<std::size_t>(ch + copied.channels)][static_cast<std::size_t>(slot + copied.slots)] = copied.name;
-                    }
-                sessionSel_ = to.size() > 1 ? to : std::vector<std::pair<int, int>>{};
-            }
+            if (paste && !clipClipboard_.empty())
+                pasteClips(ch, slot, name);
         } else if (sessionSlot_ == Engine::kClipSlots && chainCursor_ < Engine::kChainSteps && erase) {
             run({K::Step, ch, chainCursor_}, kEmptyStep, "Empty it (step " + std::to_string(chainCursor_ + 1) + ")");
         }
@@ -3214,7 +3253,42 @@ void GuiApp::openMenu(const PerformanceView::MenuTarget& t, const LiveState& liv
     menu.target = t;
     menu.fromController = fromController;
     menu.at = at;
-    auto add = [&](std::string label, int id, bool enabled = true) { menu.items.push_back({std::move(label), id, enabled}); };
+    // Every menu in the same order, its groups between lines: what plays; what
+    // changes its content; copy, paste and move; name and export; settings;
+    // last, in red, what clears or deletes. Lists go in submenus.
+    std::vector<MenuEntry>* into = &menu.items;
+    auto add = [&](std::string label, int id, bool enabled = true) {
+        MenuEntry e;
+        e.label = std::move(label);
+        e.id = id;
+        e.enabled = enabled;
+        into->push_back(std::move(e));
+    };
+    auto key = [&](const char* k) { into->back().shortcut = k; };
+    auto sep = [&] {
+        if (!into->empty() && !into->back().separator) {
+            MenuEntry e;
+            e.separator = true;
+            e.enabled = false;
+            into->push_back(std::move(e));
+        }
+    };
+    auto danger = [&] { into->back().danger = true; };
+    auto sub = [&](std::string label, const std::function<void()>& fill) {
+        std::vector<MenuEntry> list;
+        std::vector<MenuEntry>* outer = std::exchange(into, &list);
+        fill();
+        into = outer;
+        if (list.empty())
+            return;
+        MenuEntry e;
+        e.label = std::move(label);
+        e.id = -1;
+        e.enabled = std::any_of(list.begin(), list.end(), [](const MenuEntry& m) { return m.enabled; });
+        e.shortcut = "\xE2\x80\xBA";
+        e.sub = std::move(list);
+        into->push_back(std::move(e));
+    };
     // The same loop from another clip of the channel, into the current one (as it is: stretch, amplitude...).
     auto addCopyFrom = [&](int loopSource) {
         const auto lc = static_cast<std::size_t>(std::clamp(live.channel, 0, kChannelCount - 1));
@@ -3229,7 +3303,7 @@ void GuiApp::openMenu(const PerformanceView::MenuTarget& t, const LiveState& liv
     const bool runs = chains.at >= 0 && chains.playing == shown;
     const std::string chainName = "CHAIN " + PerformanceView::chainLetter(shown) +
                                   (chainNames_[c][static_cast<std::size_t>(shown)].empty() ? "" : "  " + chainNames_[c][static_cast<std::size_t>(shown)]);
-    static constexpr const char* kSourceNames[] = {"LEFT STICK", "RIGHT STICK", "FINGER 1", "FINGER 2", "TRIGGERS", "TILT", "NOTES"};
+    static constexpr const char* kSourceNames[] = {"LEFT STICK", "RIGHT STICK", "FINGER 1", "FINGER 2", "TRIGGERS", "TILT", "D-PAD", "NOTES"};
     const int source = std::clamp(t.source, 0, kLoopSourceCount - 1);
     switch (t.kind) {
     case K::Clip: {
@@ -3246,29 +3320,47 @@ void GuiApp::openMenu(const PerformanceView::MenuTarget& t, const LiveState& liv
             add("Stop", kStop);
         else
             add("Launch", kLaunch, has);
-        add("Launch the row", kLaunchRow);
         add("Edit the notes\xE2\x80\xA6", kEditClipNotes, ((live.clips[c * Engine::kClipSlots + static_cast<std::size_t>(t.slot)].sources >> static_cast<int>(LoopSource::Notes)) & 1u) != 0);
-        add("Record here", kRecordHere);
+        sep();
+        add("Copy", kClipCopy, has);
+        key("Ctrl+C");
+        add("Paste", kClipPaste, !clipClipboard_.empty());
+        key("Ctrl+V");
         add("Duplicate", kDuplicate, has && freeSlot);
-        add("Move up", kClipUp, has && t.slot > 0);
-        add("Move down", kClipDown, has && t.slot < Engine::kClipSlots - 1);
+        key("Ctrl+D");
+        sub("Move", [&] {
+            add("Up", kClipUp, has && t.slot > 0);
+            add("Down", kClipDown, has && t.slot < Engine::kClipSlots - 1);
+        });
         add("Add to the chain", kAddToChain, has && freeStep);
+        sep();
         add("Rename\xE2\x80\xA6", kRenameClip, has);
         add("Export as MIDI", kExportClip, has);
+        sep();
         add("Clear", kClearClip, has);
+        key("Del");
+        danger();
         break;
     }
     case K::Step: {
         const bool has = chain.clip[static_cast<std::size_t>(t.slot)] >= 0;
         menu.title = "STEP " + std::to_string(t.slot + 1) + "\nchain " + PerformanceView::chainLetter(shown);
         add("Start from here", kStartHere, has);
+        sep();
         add("Random (R)", kRandom);
         add("Silence (S)", kSilence);
-        add("Move left", kStepLeft, has && t.slot > 0);
-        add("Move right", kStepRight, has && t.slot < Engine::kChainSteps - 1);
+        sep();
+        sub("Move", [&] {
+            add("Left", kStepLeft, has && t.slot > 0);
+            add("Right", kStepRight, has && t.slot < Engine::kChainSteps - 1);
+        });
         add("Insert a step", kInsertStep);
-        add("Delete the step", kDeleteStep);
+        sep();
         add("Empty it", kEmptyStep, has);
+        key("Del");
+        danger();
+        add("Delete the step", kDeleteStep);
+        danger();
         break;
     }
     case K::Channel:  // slot 1: from the song screen, without what belongs to the session screen
@@ -3277,15 +3369,17 @@ void GuiApp::openMenu(const PerformanceView::MenuTarget& t, const LiveState& liv
             add("Stop", kChannelStop, ((live.clipsPlaying >> t.channel) & 1u) != 0);
         add(((live.muted >> t.channel) & 1u) ? "Unmute" : "Mute", kChannelMute);
         add(((live.soloed >> t.channel) & 1u) ? "Solo off" : "Solo", kChannelSolo);
+        if (t.slot != 1) {
+            if (chains.at >= 0)
+                add("Chain off", kChainOff);
+            else
+                add("Chain " + PerformanceView::chainLetter(shown) + " on", kChainOn, !chain.empty());
+        }
+        sep();
         add("Rename\xE2\x80\xA6", kRename);
         add("Colour\xE2\x80\xA6", kColour);
-        if (t.slot == 1)
-            break;
-        add("Copy mapping from\xE2\x80\xA6", kCopyMapping);
-        if (chains.at >= 0)
-            add("Chain off", kChainOff);
-        else
-            add("Chain " + PerformanceView::chainLetter(shown) + " on", kChainOn, !chain.empty());
+        if (t.slot != 1)
+            add("Copy mapping from\xE2\x80\xA6", kCopyMapping);
         break;
     case K::Row: {  // a row of the session screen: its clips on every channel
         const std::string& n = rowNames_[static_cast<std::size_t>(std::clamp(t.slot, 0, Engine::kClipSlots - 1))];
@@ -3299,6 +3393,7 @@ void GuiApp::openMenu(const PerformanceView::MenuTarget& t, const LiveState& liv
             all = all && ((((live.clipsPlaying >> k) & 1u) && live.currentClip[kc] == t.slot) || live.queuedClip[kc] == t.slot);
         }
         add(any && all ? "Stop the row" : "Launch the row", kRowLaunch, any);
+        sep();
         add("Rename\xE2\x80\xA6", kRenameRow);
         break;
     }
@@ -3312,17 +3407,26 @@ void GuiApp::openMenu(const PerformanceView::MenuTarget& t, const LiveState& liv
         int next = chain.then >= 0 ? (chain.then + 1) % Engine::kChains : (shown + 1) % Engine::kChains;
         if (next == shown)
             next = (next + 1) % Engine::kChains;
-        add("Then: back to step 1", kThenLoop, chain.then != Engine::kThenLoop);
-        add("Then: stop", kThenStop, chain.then != Engine::kThenStop);
-        add("Then: chain " + PerformanceView::chainLetter(next), kThenNext);
-        add("Previous chain", kPrevChain);
-        add("Next chain", kNextChain);
+        sep();
+        sub("Then", [&] {
+            add("Back to step 1", kThenLoop, chain.then != Engine::kThenLoop);
+            add("Stop", kThenStop, chain.then != Engine::kThenStop);
+            add("Chain " + PerformanceView::chainLetter(next), kThenNext);
+        });
+        sep();
         bool free = false;
         for (const LiveState::Chain& other : chains.list)
             free = free || (&other != &chain && other.empty());
         add("Duplicate", kDuplicateChain, !chain.empty() && free);
+        sub("Show", [&] {
+            add("Previous chain", kPrevChain);
+            add("Next chain", kNextChain);
+        });
+        sep();
         add("Rename\xE2\x80\xA6", kRenameChain);
+        sep();
         add("Clear", kClearChain, !chain.empty() || chain.then != Engine::kThenLoop);
+        danger();
         break;
     }
     case K::Lane:
@@ -3338,15 +3442,20 @@ void GuiApp::openMenu(const PerformanceView::MenuTarget& t, const LiveState& liv
             add("Unlock", kUnlock);
         else
             add("Lock", kLock, plays);
-        add(lane ? "Clear" + axis : "Clear", kClearLoop, st.state != LoopStatus::State::Empty);
         add("Back to 1x \xC2\xB7 100%", kResetShape, plays);
-        addCopyFrom(source);
-        if (lane && source != static_cast<int>(LoopSource::Notes)) {  // modulating another loop's amplitude
-            add("Modulate the amplitude of\xE2\x80\xA6", kModPick, plays);
-            add("Stop modulating", kModStop, st.modTargets != 0);
-            add(st.modSendsCc ? "Send its CC: on" : "Send its CC: off", kModSendCc, st.modTargets != 0);
-        }
+        sep();
+        sub("Copy from", [&] { addCopyFrom(source); });
+        if (lane && source != static_cast<int>(LoopSource::Notes))  // modulating another loop's amplitude
+            sub("Modulate", [&] {
+                add("The amplitude of\xE2\x80\xA6", kModPick, plays);
+                add("Stop modulating", kModStop, st.modTargets != 0);
+                add(st.modSendsCc ? "Send its CC: on" : "Send its CC: off", kModSendCc, st.modTargets != 0);
+            });
+        sep();
         add("Settings\xE2\x80\xA6", kSettings);
+        sep();
+        add(lane ? "Clear" + axis : "Clear", kClearLoop, st.state != LoopStatus::State::Empty);
+        danger();
         break;
     }
     case K::ModPick:
@@ -3360,8 +3469,20 @@ void GuiApp::openMenu(const PerformanceView::MenuTarget& t, const LiveState& liv
         else
             add("Lock", kLock, st.state == LoopStatus::State::Playing);
         add("Edit the notes\xE2\x80\xA6", kEditNotes);
-        addCopyFrom(static_cast<int>(LoopSource::Notes));
+        {  // a new clip of the channel: the first empty one, to record into, or a copy of this one there
+            const auto lc = static_cast<std::size_t>(std::clamp(live.channel, 0, kChannelCount - 1));
+            bool freeSlot = false;
+            for (int k = 0; k < Engine::kClipSlots; ++k)
+                freeSlot = freeSlot || live.clips[lc * Engine::kClipSlots + static_cast<std::size_t>(k)].sources == 0;
+            const bool has = live.clips[lc * Engine::kClipSlots + static_cast<std::size_t>(live.currentClip[lc])].sources != 0;
+            sep();
+            add("New clip", kNewClip, freeSlot && has);
+            add("New clip, a copy of this one", kNewClipCopy, freeSlot && has);
+        }
+        sub("Copy from", [&] { addCopyFrom(static_cast<int>(LoopSource::Notes)); });
+        sep();
         add("Clear", kClearLoop, st.state != LoopStatus::State::Empty);
+        danger();
         break;
     }
     case K::Control:
@@ -3370,8 +3491,6 @@ void GuiApp::openMenu(const PerformanceView::MenuTarget& t, const LiveState& liv
         break;
     case K::ChannelBlock:
         menu.title = "CHANNEL " + std::to_string(t.channel + 1);
-        add("Next channel", kNextChannel);
-        add("Previous channel", kPrevChannel);
         add("Rename\xE2\x80\xA6", kRename);
         add("Colour\xE2\x80\xA6", kColour);
         add("Copy mapping from\xE2\x80\xA6", kCopyMapping);
@@ -3386,16 +3505,25 @@ void GuiApp::openMenu(const PerformanceView::MenuTarget& t, const LiveState& liv
             add("Stop the song", kSongStop);
         else
             add(live.song.playing ? "Go here (next bar)" : "Play from here", kSongPlay);
-        add(live.song.loop ? "Loop section: off" : "Loop section: on", kSongLoop);
-        add(song_.loop ? "Loop song: off" : "Loop song: on", kLoopSong);
-        add("Rename\xE2\x80\xA6", kSectionRename);
-        add(sec.fit ? "Length: fixed" : "Length: = longest channel", kSectionFit);
+        add("Loop this section", kSongLoop);
+        into->back().checked = live.song.loop;
+        sep();
         add("Times played: " + std::to_string(std::max(sec.repeats, 1)) + "\xE2\x80\xA6", kSectionRepeats);
+        add(sec.fit ? "Length: fixed" : "Length: = longest channel", kSectionFit);
+        sep();
         add("Duplicate", kSectionDuplicate);
+        key("Ctrl+D");
         add("Insert a section above", kSectionInsert);
-        add("Move up", kSectionUp, t.slot > 0);
-        add("Move down", kSectionDown, t.slot < count - 1);
+        sub("Move", [&] {
+            add("Up", kSectionUp, t.slot > 0);
+            add("Down", kSectionDown, t.slot < count - 1);
+        });
+        sep();
+        add("Rename\xE2\x80\xA6", kSectionRename);
+        sep();
         add("Delete", kSectionDelete);
+        key("Del");
+        danger();
         break;
     }
     case K::SongCell: {
@@ -3404,11 +3532,15 @@ void GuiApp::openMenu(const PerformanceView::MenuTarget& t, const LiveState& liv
             return;
         menu.title = "CELL\nchannel " + std::to_string(t.channel + 1);
         add("Edit", kCellEdit);
-        add("Clear", kCellClear, !items->empty());
+        sep();
         add("Copy", kCellCopy, !items->empty());
+        key("Ctrl+C");
         add("Paste", kCellPaste, !songClipboard_.empty());
-        add("Rename the channel\xE2\x80\xA6", kRename);
-        add("Colour of the channel\xE2\x80\xA6", kColour);
+        key("Ctrl+V");
+        sep();
+        add("Clear", kCellClear, !items->empty());
+        key("Del");
+        danger();
         break;
     }
     case K::SongPick: {
@@ -3455,12 +3587,6 @@ void GuiApp::openMenu(const PerformanceView::MenuTarget& t, const LiveState& liv
                       : it.kind == midipad::SongItem::Kind::Clip ? "CLIP " + std::to_string(it.index + 1) : "CHAIN " + PerformanceView::chainLetter(it.index)) +
                      (glued ? std::string("\nright after the one before") : "\nbar " + std::string(where));
         add("Change\xE2\x80\xA6", kItemChange);
-        if (glued)
-            add("Start on a bar of its own", kItemGlue);
-        else
-            add("Start right after the one before", kItemGlue, t.axis > 0);
-        add("Move a bar left", kItemLeft, start > 1e-6);
-        add("Move a bar right", kItemRight, start < midipad::kMaxSectionBars - 1);
         if (it.kind == midipad::SongItem::Kind::Clip)  // its notes, in the editor, as from the session screen
             add("Edit the notes\xE2\x80\xA6", kItemEditNotes,
                 ((live.clips[static_cast<std::size_t>(t.channel * Engine::kClipSlots + std::clamp(it.index, 0, Engine::kClipSlots - 1))].sources >>
@@ -3469,16 +3595,35 @@ void GuiApp::openMenu(const PerformanceView::MenuTarget& t, const LiveState& liv
             add(it.loop ? "After its repeats: silence" : "After its repeats: loop on", kItemLoop);
             add(it.kind == midipad::SongItem::Kind::Clip ? "Make it a chain" : "Make it a clip", kItemKind);
         }
+        sep();
         add("Duplicate", kItemDuplicate, static_cast<int>(items->size()) < midipad::kMaxSongItems);
+        key("Ctrl+D");
+        sub("Move", [&] {
+            add("A bar left", kItemLeft, start > 1e-6);
+            add("A bar right", kItemRight, start < midipad::kMaxSectionBars - 1);
+            if (glued)
+                add("On a bar of its own", kItemGlue);
+            else
+                add("Right after the one before", kItemGlue, t.axis > 0);
+        });
+        sep();
         add("Delete", kItemDelete);
+        key("Del");
+        danger();
         break;
     }
     }
-    // The menus of the session and song screens end with Undo (the controller's way to it).
-    if ((t.kind == K::Clip || t.kind == K::Step || t.kind == K::Chain || t.kind == K::Channel || t.kind == K::Section ||
+    // Opened from the controller, the menus of the session and song screens end
+    // with Undo: its way to it (the keyboard has Ctrl+Z).
+    if (fromController &&
+        (t.kind == K::Clip || t.kind == K::Step || t.kind == K::Chain || t.kind == K::Channel || t.kind == K::Section ||
          t.kind == K::SongCell || t.kind == K::SongItem) &&
-        !menu.items.empty())
+        !menu.items.empty()) {
+        sep();
         add(undo_.empty() ? std::string("Undo") : "Undo: " + undo_.back().what, kUndo, !undo_.empty());
+    }
+    while (!menu.items.empty() && menu.items.back().separator)
+        menu.items.pop_back();
     menu.selected = 0;
     while (menu.selected < static_cast<int>(menu.items.size()) - 1 && !menu.items[static_cast<std::size_t>(menu.selected)].enabled)
         ++menu.selected;
@@ -3509,13 +3654,13 @@ void GuiApp::fillModMenu(ContextMenu& menu, const LiveState& live) const {
         const bool routed = m.source == self;
         const std::string label = std::string(PerformanceView::trackName(track)) +
                                   (routed ? "   " + std::to_string(m.depth) + " %" + (m.inverted ? " \xC2\xB7 inverted" : "") : "");
-        menu.items.push_back({label, kModTarget + track, statusOf(track).state == LoopStatus::State::Playing && !cycle, routed});
+        menu.items.push_back({label, kModTarget + track, statusOf(track).state == LoopStatus::State::Playing && !cycle, routed, {}, false, false, {}});
     }
     const bool on = modFocus_ >= 0;
     const std::string focus = on ? std::string(" \xC2\xB7 ") + PerformanceView::trackName(modFocus_) : "";
     const LoopModulation& f = modEdit_[static_cast<std::size_t>(std::max(modFocus_, 0))];
-    menu.items.push_back({"Depth" + focus + ": \xE2\x80\xB9 " + std::to_string(on ? f.depth : 100) + " % \xE2\x80\xBA", kModDepth, on});
-    menu.items.push_back({"Direction" + focus + (on && f.inverted ? ": inverted" : ": normal"), kModDirection, on});
+    menu.items.push_back({"Depth" + focus + ": \xE2\x80\xB9 " + std::to_string(on ? f.depth : 100) + " % \xE2\x80\xBA", kModDepth, on, false, {}, false, false, {}});
+    menu.items.push_back({"Direction" + focus + (on && f.inverted ? ": inverted" : ": normal"), kModDirection, on, false, {}, false, false, {}});
 }
 
 void GuiApp::changeModulation(int id, int step, const LiveState& live) {
@@ -3562,6 +3707,25 @@ void GuiApp::runMenu(const PerformanceView::MenuTarget& t, int id, const LiveSta
         rememberClips({{ch, to}}, "Loop copied");
         undoWhat_.clear();
         runtime_->copyTracks(ch, from, to, tracks);
+        return;
+    }
+    if (id == kNewClip || id == kNewClipCopy) {  // the channel's first empty clip: the next recording goes there, or this one is copied there
+        const int ch = live.channel;
+        const auto c = static_cast<std::size_t>(ch);
+        const int from = live.currentClip[c];
+        for (int k = 0; k < Engine::kClipSlots; ++k)
+            if (live.clips[c * Engine::kClipSlots + static_cast<std::size_t>(k)].sources == 0) {
+                if (id == kNewClip) {
+                    runtime_->setRecordSlot(ch, k);
+                    sessionSlot_ = k;
+                } else {
+                    rememberClips({{ch, k}}, "Clip duplicated");
+                    runtime_->copyClip(ch, from, k);
+                    clipNames_[c][static_cast<std::size_t>(k)] = clipNames_[c][static_cast<std::size_t>(from)];
+                    runtime_->launchClip(ch, k);
+                }
+                break;
+            }
         return;
     }
     if (t.kind == K::SongPick && id >= kPick) {  // what a song item plays: a new one, or this one's
@@ -3613,7 +3777,6 @@ void GuiApp::runMenu(const PerformanceView::MenuTarget& t, int id, const LiveSta
             }
         break;
     case kUndo: undoRedo(false); return;
-    case kLaunchRow: launchRow(t.slot, live); return;
     case kClipUp:
     case kClipDown: {  // swapped with the one above or below
         PerformanceView::SessionAction a{PerformanceView::SessionAction::Kind::ClipDrop, ch, t.slot + (id == kClipUp ? -1 : 1)};
@@ -3654,7 +3817,15 @@ void GuiApp::runMenu(const PerformanceView::MenuTarget& t, int id, const LiveSta
     switch (id) {
     case kLaunch: runtime_->launchClip(ch, t.slot); break;
     case kStop: runtime_->stopClip(ch); break;
-    case kRecordHere: moveSessionCursor(ch, t.slot, live); break;
+    case kClipCopy: {  // the selection when the clip is in it, else the clip
+        std::vector<std::pair<int, int>> picked{{ch, t.slot}};
+        if (sessionSel_.size() > 1 && std::find(sessionSel_.begin(), sessionSel_.end(), std::pair<int, int>{ch, t.slot}) != sessionSel_.end())
+            picked = sessionSel_;
+        const std::string name = picked.size() > 1 ? std::to_string(picked.size()) + " clips" : "clip " + std::to_string(t.slot + 1);
+        copyClips(picked, name);
+        break;
+    }
+    case kClipPaste: pasteClips(ch, t.slot, "clip " + std::to_string(t.slot + 1)); break;
     case kDuplicate:
         for (int k = 0; k < Engine::kClipSlots; ++k)
             if (live.clips[c * Engine::kClipSlots + static_cast<std::size_t>(k)].sources == 0) {
@@ -3779,8 +3950,6 @@ void GuiApp::runMenu(const PerformanceView::MenuTarget& t, int id, const LiveSta
         copyFrom_ = ch == 0 ? 1 : 0;
         openCopyDialog_ = true;
         break;
-    case kNextChannel: runtime_->setChannel((ch + 1) % kChannelCount); break;
-    case kPrevChannel: runtime_->setChannel((ch + kChannelCount - 1) % kChannelCount); break;
     case kRenameClip:
         renameChannel_ = ch;
         renameChain_ = renameSection_ = -1;
@@ -3838,10 +4007,6 @@ void GuiApp::runMenu(const PerformanceView::MenuTarget& t, int id, const LiveSta
         break;
     case kSongStop: runtime_->stopSong(); break;
     case kSongLoop: runtime_->setSongLoop(!live.song.loop); break;
-    case kLoopSong:
-        song_.loop = !song_.loop;
-        songEdited();
-        break;
     case kSectionRename:
         if (t.slot >= 0 && t.slot < static_cast<int>(song_.sections.size())) {
             renameSection_ = t.slot;
@@ -3975,8 +4140,22 @@ void GuiApp::runMenu(const PerformanceView::MenuTarget& t, int id, const LiveSta
     }
 }
 
+void GuiApp::enterSubmenu(int entry) {
+    if (!menu_ || entry < 0 || entry >= static_cast<int>(menu_->items.size()) || menu_->items[static_cast<std::size_t>(entry)].sub.empty())
+        return;
+    MenuEntry parent = menu_->items[static_cast<std::size_t>(entry)];
+    menu_->parents.emplace_back(menu_->title, std::move(menu_->items));
+    const auto nl = menu_->title.find('\n');
+    menu_->title = menu_->title.substr(0, nl) + "  \xE2\x80\xBA  " + parent.label + (nl == std::string::npos ? "" : menu_->title.substr(nl));
+    menu_->items = std::move(parent.sub);
+    menu_->selected = 0;
+    while (menu_->selected < static_cast<int>(menu_->items.size()) - 1 && !menu_->items[static_cast<std::size_t>(menu_->selected)].enabled)
+        ++menu_->selected;
+}
+
 // The controller in a menu: up and down (D-pad or a stick) go from item to
-// item, Select chooses, Menu or Back closes.
+// item, Select chooses (a submenu: opens it), Back goes up from a submenu,
+// Menu or Back closes.
 void GuiApp::menuEvent(Engine::SessionEvent e, const LiveState& live) {
     using E = Engine::SessionEvent;
     if (!menu_)
@@ -4020,7 +4199,9 @@ void GuiApp::menuEvent(Engine::SessionEvent e, const LiveState& live) {
     case E::Press: {
         const MenuEntry entry = menu_->items[static_cast<std::size_t>(menu_->selected)];
         const PerformanceView::MenuTarget target = menu_->target;
-        if (entry.enabled && keepsModMenu(entry.id)) {
+        if (entry.enabled && !entry.sub.empty()) {
+            enterSubmenu(menu_->selected);
+        } else if (entry.enabled && keepsModMenu(entry.id)) {
             changeModulation(entry.id, 1, live);
         } else if (entry.enabled) {
             menuFromController_ = true;
@@ -4032,8 +4213,20 @@ void GuiApp::menuEvent(Engine::SessionEvent e, const LiveState& live) {
         }
         break;
     }
-    case E::Menu:
-    case E::Back: menu_.reset(); break;
+    case E::Back:
+        if (!menu_->parents.empty()) {  // up from a submenu
+            auto [title, items] = std::move(menu_->parents.back());
+            menu_->parents.pop_back();
+            menu_->title = std::move(title);
+            menu_->items = std::move(items);
+            menu_->selected = 0;
+            while (menu_->selected < static_cast<int>(menu_->items.size()) - 1 && !menu_->items[static_cast<std::size_t>(menu_->selected)].enabled)
+                ++menu_->selected;
+            break;
+        }
+        menu_.reset();
+        break;
+    case E::Menu: menu_.reset(); break;
     default: break;
     }
 }
@@ -4056,7 +4249,8 @@ void GuiApp::drawContextMenu(const LiveState& live) {
     {  // inside the window: moved left when it would go past its right edge
         float w = ImGui::CalcTextSize(menu_->title.c_str()).x + ImGui::GetFontSize() * 2;
         for (const MenuEntry& item : menu_->items)
-            w = std::max(w, ImGui::CalcTextSize(item.label.c_str()).x);
+            w = std::max(w, ImGui::CalcTextSize(item.label.c_str()).x +
+                                (item.shortcut.empty() ? 0.0f : ImGui::CalcTextSize(item.shortcut.c_str()).x + ImGui::GetFontSize() * 2));
         w += ImGui::GetStyle().WindowPadding.x * 2 + ImGui::GetFontSize();
         const ImGuiViewport* vp = ImGui::GetMainViewport();
         menu_->at.x = std::max(vp->Pos.x, std::min(menu_->at.x, vp->Pos.x + vp->Size.x - w));
@@ -4069,11 +4263,37 @@ void GuiApp::drawContextMenu(const LiveState& live) {
                             nl == std::string::npos ? "" : menu_->title.substr(nl + 1).c_str());
         ImGui::Separator();
         std::optional<int> chosen;
+        int opened = -1;  // a submenu chosen
+        float keyedW = 0;  // the entries with a key: as wide as the widest, their keys in a column
+        for (const MenuEntry& item : menu_->items)
+            if (!item.shortcut.empty())
+                for (const MenuEntry& other : menu_->items)
+                    keyedW = std::max(keyedW, ImGui::CalcTextSize(other.label.c_str()).x + ImGui::GetFontSize() * 2 +
+                                                  (other.shortcut.empty() ? 0.0f : ImGui::CalcTextSize(other.shortcut.c_str()).x));
+        keyedW = std::max(keyedW, ImGui::GetContentRegionAvail().x);
         for (int k = 0; k < static_cast<int>(menu_->items.size()); ++k) {
             const MenuEntry& item = menu_->items[static_cast<std::size_t>(k)];
-            const ImGuiSelectableFlags flags = (item.enabled ? 0 : ImGuiSelectableFlags_Disabled) | (keepsModMenu(item.id) ? ImGuiSelectableFlags_NoAutoClosePopups : 0);
-            if (ImGui::Selectable(item.label.c_str(), menu_->fromController && k == menu_->selected, flags))
+            if (item.separator) {
+                ImGui::Separator();
+                continue;
+            }
+            const bool submenu = !item.sub.empty();
+            const ImGuiSelectableFlags flags = (item.enabled ? 0 : ImGuiSelectableFlags_Disabled) |
+                                               (keepsModMenu(item.id) || submenu ? ImGuiSelectableFlags_NoAutoClosePopups : 0);
+            const float shortcutW = item.shortcut.empty() ? 0.0f : ImGui::CalcTextSize(item.shortcut.c_str()).x;
+            if (item.danger && item.enabled)
+                ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(PerformanceView::Theme::kRed));
+            const bool clicked = ImGui::Selectable(item.label.c_str(), menu_->fromController && k == menu_->selected, flags,
+                                                   ImVec2(shortcutW > 0 ? keyedW : 0.0f, 0.0f));  // room for its key on the right
+            if (item.danger && item.enabled)
+                ImGui::PopStyleColor();
+            if (clicked && submenu)
+                opened = k;
+            else if (clicked)
                 chosen = item.id;
+            if (shortcutW > 0)
+                ImGui::GetWindowDrawList()->AddText(ImVec2(ImGui::GetItemRectMax().x - shortcutW, ImGui::GetItemRectMin().y + ImGui::GetStyle().ItemSpacing.y * 0.5f),
+                                                    ImGui::GetColorU32(ImGuiCol_TextDisabled), item.shortcut.c_str());
             // In the list of what a song item plays, 1 to 8 choose a clip, A to H a chain.
             if (menu_->target.kind == PerformanceView::MenuTarget::Kind::SongPick && item.enabled && item.id >= kPick && item.id < kPick + 16) {
                 const int n = item.id - kPick;
@@ -4092,7 +4312,9 @@ void GuiApp::drawContextMenu(const LiveState& live) {
             }
         }
         ImGui::EndPopup();
-        if (chosen && keepsModMenu(*chosen)) {
+        if (opened >= 0) {
+            enterSubmenu(opened);
+        } else if (chosen && keepsModMenu(*chosen)) {
             changeModulation(*chosen, 1, live);
         } else if (chosen) {
             const PerformanceView::MenuTarget target = menu_->target;
@@ -4652,7 +4874,7 @@ void GuiApp::drawPerformance(const LiveState& live) {
             const ImVec2 nsz = bold->CalcTextSizeA(px(15), FLT_MAX, 0, name.c_str());
             dl->AddText(bold, px(15), ImVec2(tx, p.y + (h - nsz.y) * 0.5f), Theme::kText, name.c_str());
         } else {
-            dl->AddText(bold, px(9), ImVec2(tx, p.y + px(2)), Theme::kDim, "MAPPING");
+            dl->AddText(bold, px(10), ImVec2(tx, p.y + px(2)), Theme::kDim, "MAPPING");
             const std::string name = shorten(hasFile_ ? preset_.name : std::string("Untitled"), 14, room);
             dl->AddText(bold, px(14), ImVec2(tx, p.y + px(13)), Theme::kText, name.c_str());
         }
@@ -4725,11 +4947,13 @@ void GuiApp::drawPerformance(const LiveState& live) {
     // colour, name and state (playing, recording, muted, solo). A click
     // chooses one, a double-click renames it, a right-click opens its menu,
     // the wheel goes through them.
-    if (!sessionView_ && !songView_) {
+    // In the session screen too: there, the eight channels shown are framed, and
+    // a channel chosen shows its eight.
+    if (!songView_) {
         performance_.setChannelColors(preset_.channelColors);
         const ImGuiIO& io = ImGui::GetIO();
         const ImVec2 r0 = ImGui::GetCursorScreenPos();
-        const float gap = px(4), chipH = px(24), chipW = (winW - px(16) - gap * (kChannelCount - 1)) / kChannelCount;
+        const float gap = px(4), chipH = px(34), chipW = (winW - px(16) - gap * (kChannelCount - 1)) / kChannelCount;
         bool overRail = false;
         for (int ch = 0; ch < kChannelCount; ++ch) {
             const auto c = static_cast<std::size_t>(ch);
@@ -4768,25 +4992,37 @@ void GuiApp::drawPerformance(const LiveState& live) {
                                                                                                          : IM_COL32(0x22, 0x24, 0x28, 255), px(4));
             dl->AddRect(a, b, active ? col : IM_COL32(0x30, 0x34, 0x3A, 255), px(4), px(active ? 1.4f : 1.0f));
             dl->AddRectFilled(ImVec2(a.x + px(2), a.y + px(5)), ImVec2(a.x + px(4.5f), b.y - px(5)), used ? col : IM_COL32(0x3A, 0x3E, 0x45, 255), px(1));
-            // Its state on the right: a dot (recording red, playing green), M, S.
+            // Its state on the number's line, on the right: a dot (recording red, playing green), M, S.
             float right = b.x - px(6);
+            const float sy = a.y + px(10);
             if (recording || plays) {
-                dl->AddCircleFilled(ImVec2(right - px(3), (a.y + b.y) * 0.5f), px(3), recording ? Theme::kRed : Theme::kGreen);
-                right -= px(10);
+                dl->AddCircleFilled(ImVec2(right - px(3), sy), px(3.5f), recording ? Theme::kRed : Theme::kGreen);
+                right -= px(11);
             }
             for (const auto& [on, letter, lc] : {std::tuple{soloed, "S", Theme::kBlue}, std::tuple{muted, "M", Theme::kOrange}})
                 if (on) {
-                    const ImVec2 lsz = bold->CalcTextSizeA(px(10), FLT_MAX, 0, letter);
-                    dl->AddText(bold, px(10), ImVec2(right - lsz.x, (a.y + b.y - lsz.y) * 0.5f), lc, letter);
+                    const ImVec2 lsz = bold->CalcTextSizeA(px(11), FLT_MAX, 0, letter);
+                    dl->AddText(bold, px(11), ImVec2(right - lsz.x, sy - lsz.y * 0.5f), lc, letter);
                     right -= lsz.x + px(4);
                 }
-            std::string label = std::to_string(ch + 1) + (name.empty() ? "" : " " + name);
-            const float room = right - (a.x + px(9)) - px(2);
-            while (label.size() > 1 && bold->CalcTextSizeA(px(10.5f), FLT_MAX, 0, label.c_str()).x > room)
-                label.pop_back();
-            const ImVec2 lsz = bold->CalcTextSizeA(px(10.5f), FLT_MAX, 0, label.c_str());
-            dl->AddText(bold, px(10.5f), ImVec2(a.x + px(9), (a.y + b.y - lsz.y) * 0.5f),
-                        muted ? Theme::kDim : active ? Theme::kText : used ? Theme::kLabel : IM_COL32(0x55, 0x5A, 0x62, 255), label.c_str());
+            // Its number small on top, its name below (shortened with an ellipsis).
+            const ImU32 ink = muted ? Theme::kDim : active ? Theme::kText : used ? Theme::kLabel : IM_COL32(0x55, 0x5A, 0x62, 255);
+            dl->AddText(bold, px(10.5f), ImVec2(a.x + px(9), a.y + px(3)), used ? Theme::kDim : IM_COL32(0x55, 0x5A, 0x62, 255), std::to_string(ch + 1).c_str());
+            if (!name.empty()) {
+                std::string label = name;
+                const float room = b.x - px(4) - (a.x + px(9));
+                if (bold->CalcTextSizeA(px(13), FLT_MAX, 0, label.c_str()).x > room) {
+                    while (label.size() > 1 && bold->CalcTextSizeA(px(13), FLT_MAX, 0, (label + "\xE2\x80\xA6").c_str()).x > room)
+                        label.pop_back();
+                    label += "\xE2\x80\xA6";
+                }
+                dl->AddText(bold, px(13), ImVec2(a.x + px(9), a.y + px(15)), ink, label.c_str());
+            }
+        }
+        if (sessionView_) {  // the eight the session screen shows
+            const int first = performance_.sessionFirst();
+            const float fa = r0.x + static_cast<float>(first) * (chipW + gap) - px(2), fb = fa + 8 * chipW + 7 * gap + px(4);
+            dl->AddRect(ImVec2(fa, r0.y - px(2)), ImVec2(fb, r0.y + chipH + px(2)), Theme::kCyan, px(6), px(1.8f));
         }
         if (overRail && io.MouseWheel != 0.0f)
             runtime_->setChannel((live.channel + (io.MouseWheel < 0 ? 1 : kChannelCount - 1)) % kChannelCount);
@@ -4807,7 +5043,7 @@ void GuiApp::drawPerformance(const LiveState& live) {
     } else if (sessionView_ && live.channel != sessionChannel_) {  // the channel changed elsewhere: the cursor follows
         runtime_->setRecordSlot(sessionChannel_, live.currentClip[static_cast<std::size_t>(sessionChannel_)]);
         sessionChannel_ = live.channel;
-        sessionSlot_ = live.currentClip[static_cast<std::size_t>(live.channel)];
+        sessionSlot_ = live.recordClip[static_cast<std::size_t>(live.channel)];
     }
     // The right stick sets the chain's values, and moves in a menu.
     // In the session screen and edit mode, the left stick moves and the right one sets values.

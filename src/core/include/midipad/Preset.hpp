@@ -106,8 +106,10 @@ struct TriggerBinding {
 // - Transpose: transposes the notes then played, or the note loop's, by up to
 //   transposeDown / transposeUp semitones at the ends of its travel (a trigger
 //   only up); by degrees of the scale when a tonality is chosen.
+// - Aftertouch: sends the channel's aftertouch (channel pressure), scaled to
+//   [min, max] as a CC.
 // A stick at rest changes nothing; a finger keeps its last value once lifted.
-enum class AxisMode : std::uint8_t { Cc, Program, Velocity, Transpose };
+enum class AxisMode : std::uint8_t { Cc, Program, Velocity, Transpose, Aftertouch };
 enum class TransposeTarget : std::uint8_t { Notes, Loop };
 enum class VelocityTarget : std::uint8_t { Notes, Loop, Both };
 inline constexpr int kMaxTranspose = 24;  // semitones each way
@@ -168,12 +170,14 @@ inline int loopCc(const LoopBinding& loop, const AxisBinding& axis, int which) {
 }
 
 // What a loop records: a stick (X, Y), a touchpad finger (X, Y or its pads),
-// the triggers' travel (L2 as X, R2 as Y), the tilt (X, Y), or the notes and
-// chords played by the buttons, the D-pad and the triggers as buttons.
-enum class LoopSource : std::uint8_t { LeftStick, RightStick, Finger1, Finger2, Triggers, Tilt, Notes };
-inline constexpr int kLoopSourceCount = 7;
+// the triggers' travel (L2 as X, R2 as Y), the tilt (X, Y), the D-pad (its
+// directions sending CCs: left-right as X, down-up as Y, each at 0, 1/2 or
+// 1), or the notes and chords played by the buttons, the D-pad and the
+// triggers as buttons.
+enum class LoopSource : std::uint8_t { LeftStick, RightStick, Finger1, Finger2, Triggers, Tilt, Dpad, Notes };
+inline constexpr int kLoopSourceCount = 8;
 // Their names in presets ("loops") and sessions, by LoopSource.
-inline constexpr std::array<std::string_view, kLoopSourceCount> kLoopSourceKeys{"left", "right", "finger1", "finger2", "triggers", "tilt", "notes"};
+inline constexpr std::array<std::string_view, kLoopSourceCount> kLoopSourceKeys{"left", "right", "finger1", "finger2", "triggers", "tilt", "dpad", "notes"};
 
 // By default on CC 70/71, 72/73 (sticks), 74/75, 76/77 (fingers), 78/79
 // (triggers) and 80/81 (tilt); a note loop sends the notes it recorded, its CCs are unused.
@@ -183,6 +187,7 @@ inline constexpr std::array<LoopBinding, kLoopSourceCount> kDefaultLoops{{{LoopP
                                                                           {LoopPlayback::Forward, 76, 77, {}},
                                                                           {LoopPlayback::Forward, 78, 79, {}},
                                                                           {LoopPlayback::Forward, 80, 81, {}},
+                                                                          {LoopPlayback::Forward, 0, 0, {}},
                                                                           {LoopPlayback::Forward, 0, 0, {}}}};
 
 enum class TouchMode : std::uint8_t { Off, Axis, Zones };

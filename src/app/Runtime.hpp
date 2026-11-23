@@ -110,6 +110,7 @@ struct LiveState {
     };
     std::array<Clip, midipad::kChannelCount * midipad::Engine::kClipSlots> clips{};
     std::array<std::int8_t, midipad::kChannelCount> currentClip{}, queuedClip{};
+    std::array<std::int8_t, midipad::kChannelCount> recordClip{};  // where the next recording goes (Engine::recordSlot)
     std::uint16_t clipsPlaying = 0;
     std::uint16_t muted = 0, soloed = 0;  // Engine::setMuted, setSoloed: a bit per channel
     std::array<float, midipad::kChannelCount> clipProgress{};
@@ -409,7 +410,7 @@ private:
     std::array<midipad::NoteInterval, LiveState::kMaxNoteLoopNotes> noteLoop_{};
     int noteLoopCount_ = 0;
     std::array<LiveState::Clip, midipad::kChannelCount * midipad::Engine::kClipSlots> clips_{};
-    std::array<std::int8_t, midipad::kChannelCount> currentClip_{}, queuedClip_{};
+    std::array<std::int8_t, midipad::kChannelCount> currentClip_{}, queuedClip_{}, recordClip_{};
     std::uint16_t clipsPlaying_ = 0;
     std::array<float, midipad::kChannelCount> clipProgress_{};
     std::array<LiveState::Chains, midipad::kChannelCount> chains_{};

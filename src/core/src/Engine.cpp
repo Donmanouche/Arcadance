@@ -983,6 +983,12 @@ void Engine::stop(const Sounding& s) {
     }
 }
 
+void Engine::sendPressure(int channel, int value) {
+    value = std::clamp(value, 0, 127);
+    lastPressure_[static_cast<std::size_t>(channel)] = static_cast<std::int16_t>(value);
+    sink_.send(MidiMessage::channelPressure(channel, value));
+}
+
 void Engine::sendCc(int channel, int cc, int value) {
     value = std::clamp(value, 0, 127);
     lastCc_[static_cast<std::size_t>(channel)][static_cast<std::size_t>(cc & 0x7F)] = static_cast<std::int16_t>(value);
@@ -1014,6 +1020,11 @@ void Engine::sendAxis(const AxisBinding& binding, float position, int key, bool 
         loopOnAxisCc(channel_, key < 4 ? key / 2 : static_cast<int>(LoopSource::Triggers), key < 4 ? key % 2 : key - 4))
         return;
     // Controllers report far more steps than a 7-bit CC has: skip repeats.
+    if (binding.mode == AxisMode::Aftertouch) {
+        if (lastPressure_[static_cast<std::size_t>(channel_)] != value)
+            sendPressure(channel_, value);
+        return;
+    }
     if (lastCc_[static_cast<std::size_t>(channel_)][binding.cc & 0x7F] == value)
         return;
     sendCc(channel_, binding.cc, value);
@@ -1028,11 +1039,13 @@ bool Engine::controlMoving(int source, int axis) const {
         return tiltActive_;
     if (source == static_cast<int>(LoopSource::Notes))
         return false;
+    if (source == static_cast<int>(LoopSource::Dpad))
+        return hatDir_.has_value();
     return fingerDown_[static_cast<std::size_t>(source - 2)];
 }
 
 bool Engine::loopOnAxisCc(int channel, int source, int axis) const {
-    if (!preset_ || source == static_cast<int>(LoopSource::Notes))
+    if (!preset_ || source == static_cast<int>(LoopSource::Notes) || source == static_cast<int>(LoopSource::Dpad))
         return false;
     const std::size_t index = loopIndex(channel, trackOf(source, axis));
     const Loop& loop = loops_[index];
@@ -1044,7 +1057,8 @@ bool Engine::loopOnAxisCc(int channel, int source, int axis) const {
                            : source == static_cast<int>(LoopSource::Tilt)     ? (axis == 0 ? &m.tilt.x : &m.tilt.y)
                            : axis == 0                                        ? &m.fingers[static_cast<std::size_t>(source - 2)].x
                                                                               : &m.fingers[static_cast<std::size_t>(source - 2)].y;
-    return !m.loops[static_cast<std::size_t>(source)].ownCcs && a->enabled && a->mode == AxisMode::Cc;
+    // (Aftertouch has no CC of its own: its loop always plays as aftertouch.)
+    return a->enabled && (a->mode == AxisMode::Aftertouch || (!m.loops[static_cast<std::size_t>(source)].ownCcs && a->mode == AxisMode::Cc));
 }
 
 void Engine::sendProgram(int channel, int program, int bankMsb, int bankLsb) {
@@ -1059,6 +1073,13 @@ void Engine::sendProgram(int channel, int program, int bankMsb, int bankLsb) {
 // --- Loops --------------------------------------------------------------------
 
 bool Engine::sourcePosition(int source, float& x, float& y) const {
+    if (source == static_cast<int>(LoopSource::Dpad)) {  // its direction: left-right as X, down-up as Y, each at 0, 1/2 or 1
+        static constexpr int kDx[] = {0, 1, 1, 1, 0, -1, -1, -1}, kDy[] = {1, 1, 0, -1, -1, -1, 0, 1};
+        const int d = hatDir_ ? static_cast<int>(*hatDir_) : -1;
+        x = d < 0 ? 0.5f : 0.5f + 0.5f * static_cast<float>(kDx[d]);
+        y = d < 0 ? 0.5f : 0.5f + 0.5f * static_cast<float>(kDy[d]);
+        return true;
+    }
     if (source < 2) {
         x = stickPosition_[static_cast<std::size_t>(source * 2)];
         y = stickPosition_[static_cast<std::size_t>(source * 2 + 1)];
@@ -1100,6 +1121,8 @@ bool Engine::trackEnabled(int channel, int track) const {
         return true;
     const Mapping& m = preset_->forChannel(channel);
     const int source = sourceOfTrack(track), axis = axisOfTrack(track);
+    if (source == static_cast<int>(LoopSource::Dpad))
+        return dpadRecords(channel);
     if (source < 2)
         return m.axes[static_cast<std::size_t>(source * 2 + axis)].enabled;
     if (source == static_cast<int>(LoopSource::Triggers))
@@ -1295,7 +1318,8 @@ void Engine::runLoops() {
             continue;
         if (stretchHeld())
             continue;  // under Shift, moving stretches a loop or (with Record) locks it
-        if (navigating() && (source == static_cast<int>(LoopSource::LeftStick) || source == static_cast<int>(LoopSource::RightStick)))
+        if (navigating() && (source == static_cast<int>(LoopSource::LeftStick) || source == static_cast<int>(LoopSource::RightStick) ||
+                             source == static_cast<int>(LoopSource::Dpad)))
             continue;  // it moves the session screen's cursor
         if (loops_[slotIndex(holdChannel_, recordSlot_[static_cast<std::size_t>(holdChannel_)], track)].locked) {  // locked during the hold
             waiting_[i] = false;
@@ -1892,6 +1916,13 @@ void Engine::sendLoopValue(std::size_t index, float p) {
     const int track = trackOfLoop(index), source = sourceOfTrack(track), axis = axisOfTrack(track);
     const Mapping& m = preset_->forChannel(channel);
     const LoopBinding& binding = m.loops[static_cast<std::size_t>(source)];
+    if (source == static_cast<int>(LoopSource::Dpad)) {  // the direction its X and Y make, pressed
+        loop.modValue = p;
+        if (!loop.sendsCc && modulatesOthers(index))
+            return;
+        playDpadLoop(channel, axis, p);
+        return;
+    }
     const AxisBinding* a = nullptr;
     if (source < 2) {
         a = &m.axes[static_cast<std::size_t>(source * 2 + axis)];
@@ -1921,7 +1952,8 @@ void Engine::sendLoopValue(std::size_t index, float p) {
     }
     // On the axis' own CC, the control takes over while it moves (the loop
     // goes on, silent, and sends again once the control is back at rest).
-    const bool onAxis = !binding.ownCcs && a->enabled && a->mode == AxisMode::Cc;
+    const bool pressure = a->enabled && a->mode == AxisMode::Aftertouch;  // played as aftertouch, as its axis
+    const bool onAxis = pressure || (!binding.ownCcs && a->enabled && a->mode == AxisMode::Cc);
     if (onAxis && channel == channel_ && controlMoving(source, axis)) {
         loop.sentX = -1;
         return;
@@ -1930,9 +1962,49 @@ void Engine::sendLoopValue(std::size_t index, float p) {
     const int lo = a->enabled ? a->min : 0, hi = a->enabled ? a->max : 127;
     const int v = lo + static_cast<int>(std::lround(position * static_cast<float>(hi - lo)));
     if (v != loop.sentX) {
-        sendCc(channel, loopCc(binding, *a, axis), v);
+        if (pressure)
+            sendPressure(channel, v);
+        else
+            sendCc(channel, loopCc(binding, *a, axis), v);
         loop.sentX = v;
     }
+}
+
+bool Engine::dpadRecords(int channel) const {
+    const Mapping& m = preset_->forChannel(channel);
+    for (const TriggerBinding& t : m.dpad)
+        if (t.type == ActionType::ControlChange)
+            return true;
+    return false;
+}
+
+void Engine::playDpadLoop(int channel, int axis, float v) {
+    const auto c = static_cast<std::size_t>(channel);
+    dpadLoopXY_[c][static_cast<std::size_t>(axis & 1)] = v;
+    auto third = [](float f) { return f < 1.0f / 3.0f ? -1 : f > 2.0f / 3.0f ? 1 : 0; };
+    const int dx = third(dpadLoopXY_[c][0]), dy = third(dpadLoopXY_[c][1]);
+    static constexpr int kDirs[3][3] = {{5, 4, 3}, {6, -1, 2}, {7, 0, 1}};  // HatDir by [dy + 1][dx + 1], up as +1
+    const int dir = kDirs[dy + 1][dx + 1];
+    if (dir == dpadLoopDir_[c])
+        return;
+    releaseDpadLoop(channel);
+    dpadLoopDir_[c] = static_cast<std::int8_t>(dir);
+    if (dir < 0 || silenced(channel))
+        return;
+    const TriggerBinding& t = preset_->forChannel(channel).dpad[static_cast<std::size_t>(dir)];
+    if (t.type == ActionType::ControlChange)
+        sendCc(channel, t.number, t.onValue);
+}
+
+void Engine::releaseDpadLoop(int channel) {
+    const auto c = static_cast<std::size_t>(channel);
+    const int dir = dpadLoopDir_[c];
+    dpadLoopDir_[c] = -1;
+    if (dir < 0 || !preset_ || silenced(channel))
+        return;
+    const TriggerBinding& t = preset_->forChannel(channel).dpad[static_cast<std::size_t>(dir)];
+    if (t.type == ActionType::ControlChange)
+        sendCc(channel, t.number, t.offValue);
 }
 
 // The samples of a step of a loop in steps (0: not in steps): its beats on
@@ -2145,7 +2217,7 @@ void Engine::tidyNoteLoop(int channel) {
         if (e.on) {
             if (count < kOpen)
                 list[count++] = static_cast<std::int16_t>(spans_.size());
-            spans_.push_back({e.at, -1, e.note, e.velocity, e.press});
+            spans_.push_back({e.at, -1, e.note, e.velocity, e.press, e.chance});
             continue;
         }
         int found = -1;
@@ -2155,7 +2227,7 @@ void Engine::tidyNoteLoop(int channel) {
         if (found < 0 && e.press == 0 && count > 0)
             found = 0;
         if (found < 0) {
-            spans_.push_back({-1, e.at, e.note, e.velocity, e.press});  // its note is not in the loop: kept as it is
+            spans_.push_back({-1, e.at, e.note, e.velocity, e.press, e.chance});  // its note is not in the loop: kept as it is
             continue;
         }
         spans_[static_cast<std::size_t>(list[static_cast<std::size_t>(found)])].end = e.at;
@@ -2188,13 +2260,13 @@ void Engine::tidyNoteLoop(int channel) {
         if (s.start == -2)
             continue;
         if (s.start < 0) {
-            events.push_back({s.end, s.note, s.velocity, false, s.press});
+            events.push_back({s.end, s.note, s.velocity, false, s.press, s.chance});
             continue;
         }
         const int start = std::min(s.start, loop.length - 2);  // room for its release after it
-        events.push_back({start, s.note, s.velocity, true, s.press});
+        events.push_back({start, s.note, s.velocity, true, s.press, s.chance});
         if (s.end >= 0)
-            events.push_back({std::clamp(s.end, start + 1, loop.length - 1), s.note, s.velocity, false, s.press});
+            events.push_back({std::clamp(s.end, start + 1, loop.length - 1), s.note, s.velocity, false, s.press, s.chance});
     }
     // In loop order; where a note ends and the next starts, the release first.
     sortEvents(events, [](const NoteEvent& a, const NoteEvent& b) { return a.at != b.at ? a.at < b.at : !a.on && b.on; });
@@ -2426,8 +2498,9 @@ bool Engine::addLoopNotes(int channel, const std::vector<NoteInterval>& notes) {
         const auto velocity = static_cast<std::uint8_t>(std::clamp<int>(n.velocity, 1, 127));
         const std::uint32_t press = ++pressCount_ == 0 ? ++pressCount_ : pressCount_;
         silenceLoopNote(channel, note);
-        events.push_back({start, note, velocity, true, press});
-        events.push_back({end, note, velocity, false, press});
+        const auto chance = static_cast<std::uint8_t>(std::clamp<int>(n.chance, 1, 100));
+        events.push_back({start, note, velocity, true, press, chance});
+        events.push_back({end, note, velocity, false, press, chance});
         any = true;
     }
     if (any)
@@ -3140,6 +3213,7 @@ bool Engine::restCc(std::size_t index, int& cc, int& value) const {
 }
 
 void Engine::restCcs(int channel, int from, int to) {
+    releaseDpadLoop(channel);  // the next clip's D-pad loop presses its own
     if (silenced(channel))
         return;
     std::bitset<128> kept, sent;

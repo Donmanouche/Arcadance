@@ -13,6 +13,7 @@
 #include <vector>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 
 using namespace midipad;
 
@@ -167,6 +168,12 @@ std::string MappingEditor::controlTitle(const std::string& spec) {
         return "Notes";
     if (p.size() == 1 && p[0] == "tilt")
         return "Tilt";
+    if (p.size() == 2 && p[0] == "loop") {  // a movement loop alone
+        static constexpr const char* kLoops[] = {"Left stick loop", "Right stick loop", "Finger 1 loop", "Finger 2 loop", "Triggers loop", "Tilt loop", "D-pad loop"};
+        const int source = std::atoi(p[1].c_str());
+        if (source >= 0 && source < static_cast<int>(std::size(kLoops)))
+            return kLoops[source];
+    }
     return spec;
 }
 
@@ -197,6 +204,7 @@ bool MappingEditor::drawAxisForm(const char* id, AxisBinding& a, float position,
     modeRadio("Program change##mode", AxisMode::Program);
     modeRadio("Velocity##mode", AxisMode::Velocity);
     modeRadio("Transpose##mode", AxisMode::Transpose);
+    modeRadio("Aftertouch##mode", AxisMode::Aftertouch);
     switch (a.mode) {
     case AxisMode::Program:
         changed |= inputProgram("From", a.min);
@@ -243,6 +251,12 @@ bool MappingEditor::drawAxisForm(const char* id, AxisBinding& a, float position,
         changed |= ImGui::Checkbox("Invert", &a.invert);
         break;
     }
+    case AxisMode::Aftertouch:
+        changed |= inputU7("Min", a.min);
+        ImGui::SameLine();
+        changed |= inputU7("Max", a.max);
+        changed |= ImGui::Checkbox("Invert", &a.invert);
+        break;
     case AxisMode::Cc:
         changed |= inputU7("CC", a.cc);
         changed |= inputU7("Min", a.min);
@@ -252,7 +266,7 @@ bool MappingEditor::drawAxisForm(const char* id, AxisBinding& a, float position,
         break;
     }
     ImGui::EndDisabled();
-    if (a.mode == AxisMode::Cc)
+    if (a.mode == AxisMode::Cc || a.mode == AxisMode::Aftertouch)
         axisValueBar(a, position, ImGui::GetFontSize() * 14);
     ImGui::PopID();
     return changed;
@@ -406,6 +420,10 @@ bool MappingEditor::drawControl(const std::string& spec, Mapping& m, const LiveS
         changed |= drawLoopForm(2 + finger, m, live);
     } else if (p.size() == 1 && p[0] == "notes") {
         changed |= drawLoopForm(static_cast<int>(LoopSource::Notes), m, live);
+    } else if (p.size() == 2 && p[0] == "loop") {  // a loop's curves clicked: its loop alone, the axes' mapping being the control's
+        const int source = std::atoi(p[1].c_str());
+        if (source >= 0 && source < static_cast<int>(LoopSource::Notes))
+            changed |= drawLoopForm(source, m, live);
     } else if (p.size() == 1 && p[0] == "tilt") {
         changed |= drawTiltForm(m, live);
         changed |= drawLoopForm(static_cast<int>(LoopSource::Tilt), m, live);
@@ -548,7 +566,7 @@ void MappingEditor::drawModulationForm(int source, const LiveState& live) {
 bool MappingEditor::drawLoopForm(int source, Mapping& m, const LiveState& live) {
     static constexpr const char* kTitles[] = {"Left stick loop (recorded movement)", "Right stick loop (recorded movement)",
                                               "Finger 1 loop (recorded movement)", "Finger 2 loop (recorded movement)",
-                                              "Triggers loop (recorded travel)", "Tilt loop (recorded movement)",
+                                              "Triggers loop (recorded travel)", "Tilt loop (recorded movement)", "D-pad loop (recorded directions)",
                                               "Note loop (recorded notes and chords)"};
     bool changed = false;
     LoopBinding& loop = m.loops[static_cast<std::size_t>(source)];
@@ -582,6 +600,13 @@ bool MappingEditor::drawLoopForm(int source, Mapping& m, const LiveState& live) 
         ImGui::PopID();
         return changed;
     }
+    if (source == static_cast<int>(LoopSource::Dpad)) {  // its directions, pressed again on their CCs
+        drawAxisLanes(source, m, live);
+        if (ImGui::Button("Clear the loop"))
+            clearLoopRequest_ = ClearLoop{source, -1};
+        ImGui::PopID();
+        return changed;
+    }
     // What the source itself sends.
     const bool finger = source == 2 || source == 3;
     const bool triggers = source == static_cast<int>(LoopSource::Triggers);
@@ -607,6 +632,8 @@ bool MappingEditor::drawLoopForm(int source, Mapping& m, const LiveState& live) 
             return "Velocity";
         if (axis.enabled && axis.mode == AxisMode::Transpose)
             return "Transpose";
+        if (axis.enabled && axis.mode == AxisMode::Aftertouch)
+            return "Aftertouch";
         return nullptr;
     };
     // On the axis' own CC (the control taking over while it moves), or on CCs of its own.
@@ -703,8 +730,10 @@ void MappingEditor::drawAxisLanes(int source, const Mapping& m, const LiveState&
     const bool finger = source == 2 || source == 3;
     const bool triggers = source == static_cast<int>(LoopSource::Triggers);
     const bool tilt = source == static_cast<int>(LoopSource::Tilt);
+    const bool dpad = source == static_cast<int>(LoopSource::Dpad);
     const ImU32 base = source == 0 ? T::kBlue : source == 1 ? T::kOrange : triggers ? T::kPink : source == 2 ? T::kCyan
-                     : tilt ? T::kViolet : T::kOrange;
+                     : tilt ? T::kViolet : dpad ? T::kGreen : T::kOrange;
+    static const AxisBinding kDpadAxis{true, 0, 0, 127};  // its directions' own CCs, not an axis
     const ImU32 kViolet = T::kViolet;
     auto alpha = [](ImU32 c, float a) {
         return (c & ~IM_COL32_A_MASK) | (static_cast<ImU32>(static_cast<float>((c >> IM_COL32_A_SHIFT) & 0xFF) * a) << IM_COL32_A_SHIFT);
@@ -720,9 +749,11 @@ void MappingEditor::drawAxisLanes(int source, const Mapping& m, const LiveState&
         const LoopStatus& st = lane.status;
         const ImVec4 c = ImGui::ColorConvertU32ToFloat4(base);  // Y: lighter
         const ImU32 color = axis == 0 ? base : ImGui::ColorConvertFloat4ToU32(ImVec4((c.x + 1) * 0.5f, (c.y + 1) * 0.5f, (c.z + 1) * 0.5f, 1));
-        const std::string nameText = triggers ? label(axis == 0 ? Button::LeftTrigger : Button::RightTrigger) : axis == 0 ? "X" : "Y";
+        const std::string nameText = triggers ? label(axis == 0 ? Button::LeftTrigger : Button::RightTrigger)
+                                     : dpad   ? (axis == 0 ? "Left-right" : "Down-up")
+                                     : axis == 0 ? "X" : "Y";
         const char* name = nameText.c_str();
-        const AxisBinding& binding = finger ? (axis == 0 ? m.fingers[static_cast<std::size_t>(source - 2)].x
+        const AxisBinding& binding = dpad ? kDpadAxis : finger ? (axis == 0 ? m.fingers[static_cast<std::size_t>(source - 2)].x
                                                          : m.fingers[static_cast<std::size_t>(source - 2)].y)
                                    : tilt     ? (axis == 0 ? m.tilt.x : m.tilt.y)
                                    : triggers ? m.axes[static_cast<std::size_t>(axis == 0 ? Axis::LeftTrigger : Axis::RightTrigger)]
@@ -825,8 +856,10 @@ void MappingEditor::drawAxisLanes(int source, const Mapping& m, const LiveState&
         dl->AddRectFilled(la, lb2, IM_COL32(0x14, 0x16, 0x19, 220), 6);
         dl->AddRect(la, lb2, dragging ? kViolet : alpha(color, 0.8f), 6);
         dl->AddText(ImVec2(la.x + 4, la.y + 1), dragging ? kViolet : T::kText, label.c_str());
-        const bool shapes = binding.enabled && (binding.mode == AxisMode::Velocity || binding.mode == AxisMode::Transpose);
-        const std::string cc = shapes ? (binding.mode == AxisMode::Velocity ? "VEL" : "TR") : "CC " + std::to_string(loopCc(lb, binding, axis));
+        const bool shapes = binding.enabled && (binding.mode == AxisMode::Velocity || binding.mode == AxisMode::Transpose || binding.mode == AxisMode::Aftertouch);
+        const std::string cc = dpad ? std::string()
+                             : shapes ? (binding.mode == AxisMode::Velocity ? "VEL" : binding.mode == AxisMode::Transpose ? "TR" : "AT")
+                                      : "CC " + std::to_string(loopCc(lb, binding, axis));
         const ImVec2 ccSize = ImGui::CalcTextSize(cc.c_str());
         dl->AddText(ImVec2(b.x - 16 - ccSize.x, b.y - ccSize.y - 4), T::kDim, cc.c_str());
         // The end: hovered, dragged.

@@ -60,6 +60,8 @@ public:
             return midipad::label(track == 8 ? midipad::Button::LeftTrigger : midipad::Button::RightTrigger);
         if (track == 10 || track == 11)
             return track == 10 ? "Tilt X" : "Tilt Y";
+        if (track == 12 || track == 13)
+            return track == 12 ? "D-pad left-right" : "D-pad down-up";
         return track >= 0 && track < 8 ? kNames[track] : "";
     }
 
@@ -233,6 +235,7 @@ public:
         rowNames_ = rows;
         clipNames_ = clips;
     }
+    int sessionFirst() const { return sessionFirst_; }  // the session screen's first channel shown (0 or 8)
     std::string clipLabel(int channel, int slot) const {  // its name, or "Clip n"
         const std::string& n = clipNames_[static_cast<std::size_t>(std::clamp(channel, 0, midipad::kChannelCount - 1))]
                                          [static_cast<std::size_t>(std::clamp(slot, 0, midipad::Engine::kClipSlots - 1))];
@@ -302,6 +305,8 @@ public:
     // Escape, during the last drawNoteEditor(), cancelled a drag or cleared the
     // selection: the window should stay open.
     bool tookEscape() const { return escapeTaken_; }
+    // Something Escape closes or calls off here: the song's palette, the notes picked, a drag.
+    bool escapeBusy() const { return escapeTaken_ || paletteChannel_ >= 0 || (editing_ && !selection_.empty()) || lengthDrag_.has_value(); }
     void setQuantize(int stepsPerBeat) { quantize_ = stepsPerBeat; }  // AppSettings::quantize
     // The editor's selected notes (all of them, none selected) put on its grid, at its next frame.
     void askQuantize() { quantizeAsked_ = true; }
@@ -483,6 +488,8 @@ private:
     bool escapeTaken_ = false;
     int sessionFirst_ = 0;  // the first channel the session screen shows (0 or 8)
     int sessionChannelSeen_ = -1;
+    int newNoteLength_ = 0;  // samples: the length of a note added in the editor (0: the last one played's)
+    std::optional<midipad::LoopNoteRef> laneHot_;  // the note whose stem the lane has under the mouse
     std::vector<midipad::LoopNoteRef> selection_;  // in the active channel's note loop
     int selectionChannel_ = -1;
     double lastNoteEdit_ = -1e9;

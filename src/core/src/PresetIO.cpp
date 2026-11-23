@@ -370,6 +370,8 @@ AxisBinding axisFromJson(const Json& j, const std::string& where) {
     a.enabled = !j.contains("enabled") || flag("enabled");
     if (flag("program"))
         a.mode = AxisMode::Program;
+    if (flag("aftertouch"))
+        a.mode = AxisMode::Aftertouch;
     if (flag("velocity")) {
         a.mode = AxisMode::Velocity;
         const std::string to = readString(j, "velocity_to", "notes", where);
@@ -431,6 +433,9 @@ Json axisToJson(const AxisBinding& a) {
         j["transpose"] = {{"down", a.transposeDown},
                           {"up", a.transposeUp},
                           {"to", a.transposeTarget == TransposeTarget::Loop ? "loop" : "notes"}};
+    } else if (a.mode == AxisMode::Aftertouch) {
+        j["aftertouch"] = true;
+        j["cc"] = a.cc;  // kept for when it sends a CC again
     } else {
         j["cc"] = a.cc;
     }

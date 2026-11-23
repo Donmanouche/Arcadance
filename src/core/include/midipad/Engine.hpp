@@ -196,7 +196,7 @@ public:
     // when that recording starts.
     static constexpr int kClipSlots = 8;
     // A clip's tracks: each movement source's X and Y (source * 2 + axis), then the note loop.
-    static constexpr int kTrackCount = 13, kNoteTrack = 12;
+    static constexpr int kTrackCount = 15, kNoteTrack = 14;
     static constexpr int trackOf(int source, int axis) {
         return source == static_cast<int>(LoopSource::Notes) ? kNoteTrack : source * 2 + (axis & 1);
     }
@@ -678,6 +678,28 @@ private:
     // Per channel and note of the note loop: how far the note on was transposed.
     std::array<std::array<std::int8_t, 128>, kChannelCount> loopShift_{};
     std::array<std::array<std::int16_t, 128>, kChannelCount> lastCc_{};
+    std::array<std::int16_t, kChannelCount> lastPressure_ = [] {  // the aftertouch sent last (-1: none)
+        std::array<std::int16_t, kChannelCount> a{};
+        a.fill(-1);
+        return a;
+    }();
+    void sendPressure(int channel, int value);
+    // The D-pad's loop: its X and Y as last played on each channel, the
+    // direction they make (-1: none) pressed, its CC sent.
+    std::array<std::array<float, 2>, kChannelCount> dpadLoopXY_ = [] {
+        std::array<std::array<float, 2>, kChannelCount> a{};
+        for (auto& xy : a)
+            xy = {0.5f, 0.5f};
+        return a;
+    }();
+    std::array<std::int8_t, kChannelCount> dpadLoopDir_ = [] {
+        std::array<std::int8_t, kChannelCount> a{};
+        a.fill(-1);
+        return a;
+    }();
+    void playDpadLoop(int channel, int axis, float v);
+    void releaseDpadLoop(int channel);
+    bool dpadRecords(int channel) const;  // a direction of its D-pad sends a CC
 
     std::uint8_t dpadBits_ = 0;
     std::optional<HatDir> hatDir_;
@@ -876,6 +898,7 @@ private:
         std::int32_t start = 0, end = 0;  // start < 0: a release alone; end < 0: still on
         std::uint8_t note = 0, velocity = 0;
         std::uint32_t press = 0;
+        std::uint8_t chance = 100;  // percent, kept through the tidying
     };
     std::vector<NoteSpan> spans_;
     // A stable sort of a note loop's events, by `less`, with no allocation
